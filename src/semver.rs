@@ -212,6 +212,7 @@ pub fn semver_rhai_register(engine: &mut Engine) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "rhai")] use rhai::Dynamic;
 
     #[test]
     fn test_parse_without_v_prefix() {
@@ -547,6 +548,504 @@ mod tests {
                 .eval::<bool>(r#"semver_from("1.2.3") < semver_from("v1.2.3")"#)
                 .unwrap(),
             "le `<` enregistré doit rendre faux à version égale et drapeaux opposés"
+        );
+    }
+
+    // ── Conversion des Scenario restants de ./semver.sdd (tâche « Convertir en tests Rust
+    // passants chaque Scenario »). Le code de production est sous contrat et n'est pas
+    // touché : chaque test ci-dessous dérive d'un Scenario et doit être vert d'emblée.
+    // Face Rust d'abord (aucune feature), face script ensuite (@rhai::Engine local
+    // enregistré par semver_rhai_register, ou @Script::new_bare pour le câblage). ──
+
+    // ── Scenario « le v initial est mémorisé, reproduit et jamais doublé » ──
+
+    // Then : `to_string` rend `v1.2.3`, puis `v1.3.0` après `inc_minor` — le drapeau
+    // survit à la mutation (« Returns » : le drapeau survit à tous les `inc_`).
+    // Lacune nommée par l'inventaire : « la survie du drapeau après mutation ».
+    #[test]
+    fn test_v_flag_survives_inc_minor() {
+        let mut sv = Semver::parse("v1.2.3").unwrap();
+        assert_eq!(Semver::to_string(&sv), "v1.2.3");
+        sv.inc_minor();
+        assert_eq!(
+            Semver::to_string(&sv),
+            "v1.3.0",
+            "le drapeau posé au parse doit survivre à inc_minor"
+        );
+    }
+
+    // Then du même Scenario : `vv1.2.3`, `V1.2.3`, `version` et `v` sont quatre rejets —
+    // le `v` n'est retiré qu'une fois, qu'en tête, jamais en majuscule. Variante
+    // @crate::Error::Semver verrouillée (préfixe d'affichage verrouillé séparément par
+    // `test_parse_rejections_carry_semver_error_prefix`).
+    #[test]
+    fn test_parse_rejects_v_prefix_variants() {
+        for input in ["vv1.2.3", "V1.2.3", "version", "v"] {
+            let err = Semver::parse(input).expect_err(&format!("`{input}` doit être rejeté"));
+            assert!(
+                matches!(err, Error::Semver(_)),
+                "`{input}` : variante Semver attendue, obtenu : {err}"
+            );
+        }
+    }
+
+    // ── Scenario « tout rejet revient avec le préfixe de crate » ──
+
+    // Then : chacun des six rejets nommés rend un @crate::Error::Semver dont l'affichage
+    // commence par `Semver error ` ; aucune suite n'est verrouillée (elle appartient à
+    // @semver::Error). Les trois premiers étaient déjà des rejets testés, mais sans
+    // variante ni affichage ; les rejets d'espaces et de préfixes étaient sans verrou.
+    #[test]
+    fn test_parse_rejections_carry_semver_error_prefix() {
+        for input in ["1.2", "not-semver", "", " 1.2.3 ", "1.2.3 ", "1.2.3-beta."] {
+            let err = Semver::parse(input).expect_err(&format!("`{input}` doit être rejeté"));
+            assert!(
+                matches!(err, Error::Semver(_)),
+                "`{input}` : variante Semver attendue, obtenu : {err}"
+            );
+            assert!(
+                err.to_string().starts_with("Semver error "),
+                "`{input}` : l'affichage doit commencer par `Semver error `, obtenu : {err}"
+            );
+        }
+    }
+
+    // ── Scenario « opt_parse transforme chaque rejet en None » ──
+
+    // Then : les deux succès rendent un Some aux composantes exactes, drapeau faux puis
+    // vrai. Le test existant ne vérifiait que la présence du Some.
+    #[test]
+    fn test_opt_parse_some_carries_exact_fields() {
+        let plain = Semver::opt_parse("1.0.0").expect("1.0.0 est une version valide");
+        assert_eq!(
+            (plain.version.major, plain.version.minor, plain.version.patch),
+            (1, 0, 0)
+        );
+        assert!(!plain.use_v);
+        let prefixed = Semver::opt_parse("v2.0.0").expect("v2.0.0 est une version valide");
+        assert_eq!(
+            (
+                prefixed.version.major,
+                prefixed.version.minor,
+                prefixed.version.patch
+            ),
+            (2, 0, 0)
+        );
+        assert!(prefixed.use_v);
+    }
+
+    // Then : `not-a-version`, `1.2` et `V1.2.3` rendent None, l'erreur avalée sans panic.
+    #[test]
+    fn test_opt_parse_rejections_return_none() {
+        for input in ["not-a-version", "1.2", "V1.2.3"] {
+            assert!(
+                Semver::opt_parse(input).is_none(),
+                "`{input}` : opt_parse doit rendre None, pas panic ni journal"
+            );
+        }
+    }
+
+    // ── Scenario « inc_minor efface patch, pre-release et build » ──
+
+    // Then : depuis `v1.2.3-beta.2+meta.7`, le rendu est `v1.3.0`, `major` reste `1` et
+    // `minor` vaut `3`. Le verrou d'effacement existait depuis le stable sans `v` ;
+    // celui-ci joue de surcroît le drapeau, le pre-release et le build du Given.
+    #[test]
+    fn test_inc_minor_from_prefixed_prerelease_build_renders_v_major_minor_zero() {
+        let mut sv = Semver::parse("v1.2.3-beta.2+meta.7").unwrap();
+        sv.inc_minor();
+        assert_eq!(Semver::to_string(&sv), "v1.3.0");
+        assert_eq!(sv.version.major, 1);
+        assert_eq!(sv.version.minor, 3);
+    }
+
+    // ── Scenario « inc_patch pousse en stable et ne vide que le pre-release sinon » ──
+
+    // Then : depuis `1.2.3+exp.1` (stable avec build), `patch` vaut `4` et le build est
+    // effacé. Lacune nommée : « l'effacement du `build` sur le bras stable de `inc_patch` »
+    // — l'effacement existant était joué sur le bras pre-release.
+    #[test]
+    fn test_inc_patch_stable_branch_clears_build() {
+        let mut sv = Semver::parse("1.2.3+exp.1").unwrap();
+        sv.inc_patch();
+        assert_eq!(sv.version.patch, 4);
+        assert!(
+            sv.version.build.is_empty(),
+            "le build doit être effacé par le bump stable"
+        );
+        assert_eq!(Semver::to_string(&sv), "1.2.4");
+    }
+
+    // Then + And : `1.2.3-rc.1+x` comme `1.2.3-alpha.9` — tout pre-release non vide
+    // déclenche la vidange : pre-release et build effacés, `patch` laissé à `3`.
+    #[test]
+    fn test_inc_patch_any_nonempty_prerelease_empties_it_and_build() {
+        let mut rc = Semver::parse("1.2.3-rc.1+x").unwrap();
+        rc.inc_patch();
+        assert_eq!(
+            rc.version.patch, 3,
+            "le patch ne doit pas bouger quand un pre-release est présent"
+        );
+        assert!(rc.version.pre.is_empty());
+        assert!(rc.version.build.is_empty());
+
+        let mut alpha = Semver::parse("1.2.3-alpha.9").unwrap();
+        alpha.inc_patch();
+        assert_eq!(alpha.version.patch, 3);
+        assert!(alpha.version.pre.is_empty());
+    }
+
+    // ── Scenario « inc_beta pousse le patch depuis le stable ou un pre-release étranger » ──
+
+    // Then : le label nu `1.2.3-beta` (sans point) compte comme état non-beta —
+    // patch poussé, pre posé à `beta.1`, rendu `1.2.4-beta.1`. Lacune : « le label nu ».
+    #[test]
+    fn test_inc_beta_bare_label_counts_as_non_beta() {
+        let mut sv = Semver::parse("1.2.3-beta").unwrap();
+        sv.inc_beta().unwrap();
+        assert_eq!(Semver::to_string(&sv), "1.2.4-beta.1");
+    }
+
+    // Then : traversée croisée — `1.2.4-alpha.3` sous inc_beta rend `1.2.5-beta.1`,
+    // patch poussé et compteur remis à `1`. Lacune : « les traversées croisées ».
+    #[test]
+    fn test_inc_beta_crossing_from_alpha_pushes_patch_and_resets_counter() {
+        let mut sv = Semver::parse("1.2.4-alpha.3").unwrap();
+        sv.inc_beta().unwrap();
+        assert_eq!(Semver::to_string(&sv), "1.2.5-beta.1");
+    }
+
+    // ── Scenario « inc_beta depuis beta.N avance le compteur sans toucher le patch » ──
+
+    // Then : `1.2.4-beta.0` devient `beta.1` (compteur `0` de l'inventaire), patch laissé
+    // à `4`.
+    #[test]
+    fn test_inc_beta_counter_zero_becomes_one() {
+        let mut zero = Semver::parse("1.2.4-beta.0").unwrap();
+        zero.inc_beta().unwrap();
+        assert_eq!(zero.version.pre.as_str(), "beta.1");
+        assert_eq!(zero.version.patch, 4);
+    }
+
+    // ÉCART contrat↔code constaté à la conversion, consigné ici sans réécrire la spec ni
+    // toucher au code (le primary tranche) — précédent : la « fausse sonde » de s3.
+    // Then visé (Scenario « inc_beta depuis beta.N… », repris aux Handles « Compteurs
+    // tordus ») : un @crate::Semver de `1.2.4-beta.01`, après inc_beta, rend `beta.2`,
+    // « le zéro-tête étant absorbé par le parse u32 ».
+    // Rendu mesuré : l'état d'entrée n'existe pas à la grammaire de la dépendance verrouillée
+    // (@semver 1.0.x) — `Semver::parse("1.2.4-beta.01")` échoue en
+    // `Error("invalid leading zero in pre-release identifier")`, et `@semver::Prerelease::new("beta.01")`
+    // refuse pareil : aucun appel public n'atteint jamais le reliquat `01`, la branche
+    // « absorption du zéro-tête » est inatteignable par construction. Le test est isolé
+    // (`#[ignore]`) dans l'attente de l'arbitrage : soit le Then est faux et se corrige
+    // dans la spec, soit il nomme un autre chemin d'entrée.
+    #[test]
+    #[ignore = "écart mesuré : @semver 1.0.x rejette tout zéro-tête en pre-release, l'entrée `beta.01` est inconstruisible par les portes publiques"]
+    fn test_inc_beta_counter_leading_zero_normalized() {
+        let mut padded = Semver::parse("1.2.4-beta.01").expect("le Scenario pose cet état atteignable");
+        padded.inc_beta().unwrap();
+        assert_eq!(padded.version.pre.as_str(), "beta.2");
+        assert_eq!(padded.version.patch, 4);
+    }
+
+    // ── Scenario « inc_alpha est le miroir exact de inc_beta » ──
+
+    // Then : depuis `1.2.4-alpha.2`, le pre-release devient `alpha.3` ET `patch` reste
+    // `4` — « ce que le test existant ne vérifie pas » (son jumeau beta l'asserte).
+    #[test]
+    fn test_inc_alpha_counter_branch_keeps_patch() {
+        let mut sv = Semver::parse("1.2.4-alpha.2").unwrap();
+        sv.inc_alpha().unwrap();
+        assert_eq!(sv.version.pre.as_str(), "alpha.3");
+        assert_eq!(sv.version.patch, 4, "le bras compteur ne touche pas le patch");
+    }
+
+    // Then : traversée opposée — `1.2.3-beta.5` sous inc_alpha rend `1.2.4-alpha.1`,
+    // compteur remis à `1`, beta effacé.
+    #[test]
+    fn test_inc_alpha_crossing_from_beta_resets_counter_and_pushes_patch() {
+        let mut sv = Semver::parse("1.2.3-beta.5").unwrap();
+        sv.inc_alpha().unwrap();
+        assert_eq!(Semver::to_string(&sv), "1.2.4-alpha.1");
+    }
+
+    // ── Scenario « un compteur non numérique erreur et laisse la version intacte » ──
+
+    // Then du second Given : `1.2.3-beta.4294967296` (dépassement d'amplitude u32) rend
+    // aussi un @crate::Error::ParseInt. Lacune nommée : « le rejet d'amplitude
+    // 1.2.3-beta.4294967296 … Then sans jeu ».
+    #[test]
+    fn test_inc_beta_counter_u32_overflow_is_rejected_as_parse_int() {
+        let mut sv = Semver::parse("1.2.3-beta.4294967296").unwrap();
+        let err = sv
+            .inc_beta()
+            .expect_err("le compteur hors amplitude u32 doit être rejeté");
+        assert!(
+            matches!(err, Error::ParseInt(_)),
+            "variante ParseInt attendue, ni Semver ni Other : {err}"
+        );
+    }
+
+    // ── Scenario « les maxima d'entiers saturent sans panic ni enroulement » ──
+
+    // Then : inc_major sur `18446744073709551615.9.9-beta.1` laisse `major` figé à la
+    // borne u64, `minor` et `patch` passent à `0`, pre-release vidé, sans panic.
+    #[test]
+    fn test_inc_major_saturates_at_u64_max_without_wrapping() {
+        let mut sv = Semver::parse("18446744073709551615.9.9-beta.1").unwrap();
+        sv.inc_major();
+        assert_eq!(
+            sv.version.major,
+            u64::MAX,
+            "la borne u64 doit figer, jamais enrollier"
+        );
+        assert_eq!(sv.version.minor, 0);
+        assert_eq!(sv.version.patch, 0);
+        assert!(sv.version.pre.is_empty());
+    }
+
+    // Then : inc_beta sur `1.2.3-beta.4294967295` rend Ok, pre-release réencodé
+    // identique (saturation du compteur u32), `patch` intact à `3`.
+    #[test]
+    fn test_inc_beta_counter_saturates_at_u32_max() {
+        let mut sv = Semver::parse("1.2.3-beta.4294967295").unwrap();
+        sv.inc_beta().expect("la saturation n'est pas une erreur");
+        assert_eq!(sv.version.pre.as_str(), "beta.4294967295");
+        assert_eq!(sv.version.patch, 3);
+    }
+
+    // ── Scenario « Display reproduit le v initial puis la queue complète » ──
+
+    // Then : construction par littéral (hors parse), drapeau vrai puis faux sur la même
+    // version `1.2.3-beta.1+b` — le Display préfixe quand même, aucun contrôle de
+    // cohérence n'existant à la construction ; la queue est l'affichage délégué de
+    // @semver::Version sans retraitement du wrapper.
+    #[test]
+    fn test_display_from_literal_construction_trusts_the_flag() {
+        let built = Semver {
+            version: Version::parse("1.2.3-beta.1+b").unwrap(),
+            use_v: true,
+        };
+        assert_eq!(Semver::to_string(&built), "v1.2.3-beta.1+b");
+        let unbuilt = Semver {
+            version: Version::parse("1.2.3-beta.1+b").unwrap(),
+            use_v: false,
+        };
+        assert_eq!(Semver::to_string(&unbuilt), "1.2.3-beta.1+b");
+    }
+
+    // ── Scenario « l'objet Rhai connaît ses méthodes, aucune de ses propriétés » ──
+    // Voix retenue comme chez les verrous voisins : @rhai::Engine local enregistré par
+    // semver_rhai_register, sauf les deux verrous de câblage qui jouent @Script::new_bare.
+
+    // Then : `type_of(semver_from("1.2.3"))` rend `Semver` (register_type_with_name).
+    // Lacune nommée : « `type_of` et les propriétés d'objet ».
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_type_of_renders_semver() {
+        let mut engine = Engine::new();
+        semver_rhai_register(&mut engine);
+        let name: String = engine
+            .eval(r#"type_of(semver_from("1.2.3"))"#)
+            .expect("type_of doit réussir sur un objet enregistré");
+        assert_eq!(name, "Semver");
+    }
+
+    // And : `v.use_v`, `v.version` et `v.major` échouent en propriété inconnue —
+    // register_type_with_name n'expose aucun champ public sans implémentation de rhai::Field.
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_object_exposes_no_properties() {
+        let mut engine = Engine::new();
+        semver_rhai_register(&mut engine);
+        for property in ["use_v", "version", "major"] {
+            let script = format!(r#"let v = semver_from("1.2.3"); v.{property}"#);
+            assert!(
+                engine.eval::<Dynamic>(&script).is_err(),
+                "`v.{property}` doit échouer en propriété inconnue"
+            );
+        }
+    }
+
+    // And : arités et constructeur refusés — `semver_from(1)` et `semver_from("1.2.3", 2)`
+    // ne parviennent pas à @crate::Semver::rhai_parse (fonction inconnue nommée), et
+    // `<=>` n'étant pas enregistré, l'expression échoue (mesuré : refus dès le parse rhai,
+    // l'opérateur triple n'existant pas dans la grammaire — « non enregistré » est vérifié
+    // en échec, pas en « fonction inconnue » littérale).
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_rejects_coercions_and_extra_arity() {
+        let mut engine = Engine::new();
+        semver_rhai_register(&mut engine);
+        for (script, mention) in [
+            ("semver_from(1)", "semver_from"),
+            (r#"semver_from("1.2.3", 2)"#, "semver_from"),
+        ] {
+            let err = engine.eval::<Dynamic>(script).expect_err(&format!(
+                "`{script}` doit échouer, aucune coercition n'est enregistrée"
+            ));
+            assert!(
+                err.to_string().contains(mention),
+                "`{script}` : l'échec doit nommer `{mention}`, obtenu : {err}"
+            );
+        }
+        assert!(
+            engine
+                .eval::<Dynamic>(r#"semver_from("1.2.3") <=> semver_from("1.2.4")"#)
+                .is_err(),
+            "`<=>` n'est enregistré sous aucune forme : l'expression doit échouer"
+        );
+    }
+
+    // ÉCART contrat↔code constaté à la conversion, consigné sans réécrire la spec ni
+    // toucher au code (le primary tranche). Then visé (Scenario « l'objet Rhai connaît
+    // ses méthodes ») : « les quatre premiers échouent en fonction inconnue », dont
+    // `semver_from("1.2.3") == "1.2.3"` et `semver_from("1.2.3") < 3`.
+    // Rendu mesuré (rhai verrouillé 1.25.1) : les deux opérandes mixtes ne sont pas des
+    // fonctions inconnues — le repli interne de rhai pour une comparaison entre types non
+    // combinables rend `false` sans erreur (`Ok(false)` mesuré, reproduit hors de la crate
+    // sur un type custom enregistré sur `<` et `==`). Les opérateurs enregistrés ne sont
+    // pas atteints et rien n'est coercé — l'esprit du contrat tient — mais le mode
+    // d'échec « fonction inconnue » nommé par le Then est faux. Test isolé en attente
+    // d'arbitrage : soit le Then se corrige en « rendent false sans atteindre les
+    // fermetures enregistrées », soit le harnais refusant tout repli silencieux tranche
+    // autrement.
+    #[cfg(feature = "rhai")]
+    #[test]
+    #[ignore = "écart mesuré : le repli interne de rhai rend `Ok(false)` sur (Semver, autre type), pas une fonction inconnue"]
+    fn test_script_mixed_operands_fail_as_unknown_function() {
+        let mut engine = Engine::new();
+        semver_rhai_register(&mut engine);
+        assert!(
+            engine.eval::<bool>(r#"semver_from("1.2.3") == "1.2.3""#).is_err(),
+            "le Then verrouille un échec en fonction inconnue, mesuré : Ok(false)"
+        );
+        assert!(
+            engine.eval::<bool>(r#"semver_from("1.2.3") < 3"#).is_err(),
+            "le Then verrouille un échec en fonction inconnue, mesuré : Ok(false)"
+        );
+    }
+
+    // And : `to_string` n'existe qu'à zéro argument (l'arité de plus est fonction
+    // inconnue) et rend exactement la chaîne de @std::fmt::Display, drapeau et queue
+    // compris.
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_to_string_zero_arg_renders_display() {
+        let mut engine = Engine::new();
+        semver_rhai_register(&mut engine);
+        let rendered: String = engine
+            .eval(r#"to_string(semver_from("v1.2.3-alpha.1+b"))"#)
+            .expect("to_string à zéro argument doit réussir");
+        assert_eq!(rendered, "v1.2.3-alpha.1+b");
+        assert!(
+            engine
+                .eval::<Dynamic>(r#"let v = semver_from("1.2.3"); v.to_string(1)"#)
+                .is_err(),
+            "to_string avec argument n'est pas enregistré"
+        );
+    }
+
+    // Given « un @rhai::Engine nu » : `semver_from` et les cinq `inc_` y sont inconnus.
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_bare_engine_knows_no_semver_names() {
+        let engine = Engine::new();
+        for script in [
+            r#"semver_from("1.2.3")"#,
+            "let v = 1; inc_major(v)",
+            "let v = 1; inc_minor(v)",
+            "let v = 1; inc_patch(v)",
+            "let v = 1; inc_beta(v)",
+            "let v = 1; inc_alpha(v)",
+        ] {
+            assert!(
+                engine.eval::<Dynamic>(script).is_err(),
+                "un engine sans enregistrement doit ignorer `{script}`"
+            );
+        }
+    }
+
+    // Handles « Réenregistrement et engine nu » : deux appels de semver_rhai_register
+    // sur le même engine rendent `()` et laissent les appels marcher à l'identique.
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_double_register_is_harmless() {
+        let mut engine = Engine::new();
+        semver_rhai_register(&mut engine);
+        semver_rhai_register(&mut engine);
+        let rendered: String = engine
+            .eval(r#"to_string(semver_from("1.2.3"))"#)
+            .expect("le double enregistrement ne doit rien casser");
+        assert_eq!(rendered, "1.2.3");
+    }
+
+    // Then du Given « engine nu … mais @Script::new_bare sous `rhai` seul les connaît
+    // tous sans intervention » : les six noms (constructeur + cinq mutateurs) joués
+    // d'un script, dans les deux formes, sans enregistrement manuel.
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_new_bare_knows_the_whole_semver_surface() {
+        let mut script = crate::engine::Script::new_bare(vec![]);
+        let rendered = script
+            .eval(
+                r#"
+                let v = semver_from("1.0.0");
+                inc_major(v);
+                v.inc_minor();
+                inc_patch(v);
+                v.inc_beta();
+                inc_alpha(v);
+                to_string(v)
+                "#,
+            )
+            .expect("new_bare doit connaître semver_from et les cinq inc_ sans intervention");
+        assert_eq!(
+            rendered.into_string().unwrap(),
+            "2.1.3-alpha.1",
+            "1.0.0 → inc_major → inc_minor → inc_patch → inc_beta → inc_alpha"
+        );
+    }
+
+    // Scenario « la mutation reste visible et l'erreur du script rattrapable » — forme
+    // pointée : `let w = semver_from("v1.2.3"); w.inc_patch(); to_string(w)` rend
+    // `v1.2.4`. Le verrou existant de ./engine.rs ne joue que la forme globale ; le
+    // Then nomme « les formes globale et pointée mutant également la variable exclusive ».
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_dot_form_mutates_exclusive_variable() {
+        let mut script = crate::engine::Script::new_bare(vec![]);
+        let rendered = script
+            .eval(r#"let w = semver_from("v1.2.3"); w.inc_patch(); to_string(w)"#)
+            .expect("la forme pointée doit muter la variable exclusive");
+        assert_eq!(rendered.to_string(), "v1.2.4");
+    }
+
+    // Then du même Scenario : `semver_from("nope")` dans un `try` avec `catch` est
+    // rattrapable et la première erreur, attrapée, commence par `Semver error `
+    // (l'enveloppe rhai et le suffixe @semver::Error ne sont pas verrouillés).
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_catchable_parse_error_carries_semver_error_prefix() {
+        let mut script = crate::engine::Script::new_bare(vec![]);
+        let caught = script
+            .eval(
+                r#"
+                let msg = "";
+                try {
+                    semver_from("nope");
+                    msg = "no error raised";
+                } catch (e) {
+                    msg = e;
+                }
+                msg
+                "#,
+            )
+            .expect("l'erreur doit être rattrapable par un try de script, sans paniquer");
+        let text = caught.to_string();
+        assert!(
+            text.starts_with("Semver error "),
+            "l'erreur attrapée doit commencer par `Semver error `, obtenu : {text}"
         );
     }
 }
