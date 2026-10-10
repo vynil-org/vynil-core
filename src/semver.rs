@@ -727,25 +727,33 @@ mod tests {
         assert_eq!(zero.version.patch, 4);
     }
 
-    // ÉCART contrat↔code constaté à la conversion, consigné ici sans réécrire la spec ni
-    // toucher au code (le primary tranche) — précédent : la « fausse sonde » de s3.
-    // Then visé (Scenario « inc_beta depuis beta.N… », repris aux Handles « Compteurs
-    // tordus ») : un @crate::Semver de `1.2.4-beta.01`, après inc_beta, rend `beta.2`,
-    // « le zéro-tête étant absorbé par le parse u32 ».
-    // Rendu mesuré : l'état d'entrée n'existe pas à la grammaire de la dépendance verrouillée
-    // (@semver 1.0.x) — `Semver::parse("1.2.4-beta.01")` échoue en
-    // `Error("invalid leading zero in pre-release identifier")`, et `@semver::Prerelease::new("beta.01")`
-    // refuse pareil : aucun appel public n'atteint jamais le reliquat `01`, la branche
-    // « absorption du zéro-tête » est inatteignable par construction. Le test est isolé
-    // (`#[ignore]`) dans l'attente de l'arbitrage : soit le Then est faux et se corrige
-    // dans la spec, soit il nomme un autre chemin d'entrée.
+    // Then amendé — « reprise à la mesure », décision du développeur principal du
+    // 2026-10-10 : Scenario « inc_beta depuis beta.N avance le compteur sans toucher le
+    // patch », Handles « Compteurs tordus mais numériques ». L'entrée `1.2.4-beta.01` est
+    // REJETÉE À LA PARSE : @semver 1.0.x refuse tout compteur à zéro-tête en pre-release
+    // (« invalid leading zero in pre-release identifier ») et `@semver::Prerelease::new("beta.01")
+    // refuse pareil — aucun appel public n'atteint la branche d'absorption du zéro-tête,
+    // inatteignable par construction et que le contrat ne promet plus. Le verrou porte la
+    // variante @crate::Error::Semver, le préfixe de crate et le texte interne que le
+    // Scenario amendé nomme en mesure ; `beta.0` (zéro simple) reste accepté, verrouillé
+    // par `test_inc_beta_counter_zero_becomes_one`.
     #[test]
-    #[ignore = "écart mesuré : @semver 1.0.x rejette tout zéro-tête en pre-release, l'entrée `beta.01` est inconstruisible par les portes publiques"]
-    fn test_inc_beta_counter_leading_zero_normalized() {
-        let mut padded = Semver::parse("1.2.4-beta.01").expect("le Scenario pose cet état atteignable");
-        padded.inc_beta().unwrap();
-        assert_eq!(padded.version.pre.as_str(), "beta.2");
-        assert_eq!(padded.version.patch, 4);
+    fn test_leading_zero_prerelease_counter_is_rejected_at_parse() {
+        let err = Semver::parse("1.2.4-beta.01")
+            .expect_err("le zéro-tête en compteur de pre-release est rejeté à la parse");
+        assert!(
+            matches!(err, Error::Semver(_)),
+            "variante Semver attendue, obtenu : {err}"
+        );
+        let text = err.to_string();
+        assert!(
+            text.starts_with("Semver error "),
+            "l'affichage doit commencer par `Semver error `, obtenu : {text}"
+        );
+        assert!(
+            text.contains("invalid leading zero in pre-release identifier"),
+            "le Scenario amendé nomme ce texte interne en mesure, obtenu : {text}"
+        );
     }
 
     // ── Scenario « inc_alpha est le miroir exact de inc_beta » ──
@@ -897,32 +905,52 @@ mod tests {
         );
     }
 
-    // ÉCART contrat↔code constaté à la conversion, consigné sans réécrire la spec ni
-    // toucher au code (le primary tranche). Then visé (Scenario « l'objet Rhai connaît
-    // ses méthodes ») : « les quatre premiers échouent en fonction inconnue », dont
-    // `semver_from("1.2.3") == "1.2.3"` et `semver_from("1.2.3") < 3`.
-    // Rendu mesuré (rhai verrouillé 1.25.1) : les deux opérandes mixtes ne sont pas des
-    // fonctions inconnues — le repli interne de rhai pour une comparaison entre types non
-    // combinables rend `false` sans erreur (`Ok(false)` mesuré, reproduit hors de la crate
-    // sur un type custom enregistré sur `<` et `==`). Les opérateurs enregistrés ne sont
-    // pas atteints et rien n'est coercé — l'esprit du contrat tient — mais le mode
-    // d'échec « fonction inconnue » nommé par le Then est faux. Test isolé en attente
-    // d'arbitrage : soit le Then se corrige en « rendent false sans atteindre les
-    // fermetures enregistrées », soit le harnais refusant tout repli silencieux tranche
-    // autrement.
+    // Then amendé — « reprise à la mesure », décision du développeur principal du
+    // 2026-10-10 : Scenario « l'objet Rhai connaît ses méthodes, aucune de ses
+    // propriétés ». Les deux opérandes mixtes ne sont pas des fonctions inconnues : le
+    // repli interne de @rhai pour une comparaison entre types non combinables court avant
+    // les fermetures enregistrées et rend `false` SANS erreur ni coercition (mesure rhai
+    // 1.25.1 : `Ok(false)` rendu sur `==` comme sur `<`). L'absence de signature mixte
+    // reste le contrat — les fermetures enregistrées ne sont pas atteintes, rien n'est
+    // coercé, et `semver_from(1)` comme `semver_from("1.2.3", 2)` restent des fonctions
+    // inconnues, verrouillés par `test_script_rejects_coercions_and_extra_arity` — seul
+    // le mode d'échec nommé par l'ancien Then était faux. Verrou : le résultat est un
+    // @std::primitive::bool `false` (nature verrouillée par le turbofish `eval::<bool>`)
+    // et l'évaluation réussit.
     #[cfg(feature = "rhai")]
     #[test]
-    #[ignore = "écart mesuré : le repli interne de rhai rend `Ok(false)` sur (Semver, autre type), pas une fonction inconnue"]
-    fn test_script_mixed_operands_fail_as_unknown_function() {
+    fn test_script_mixed_operands_fall_back_to_false_without_error() {
         let mut engine = Engine::new();
         semver_rhai_register(&mut engine);
+        for script in [
+            r#"semver_from("1.2.3") == "1.2.3""#,
+            r#"semver_from("1.2.3") < 3"#,
+        ] {
+            let rendered: bool = engine
+                .eval(script)
+                .expect("le repli interne de rhai rend une valeur, pas une erreur");
+            assert!(!rendered, "`{script}` doit rendre `false`, sans coercition");
+        }
+    }
+
+    // Then amendé — même décision « reprise à la mesure » du 2026-10-10 : le Scenario
+    // nomme l'échec « dès la COMPILATION ». Mesure : l'opérateur triple n'existe pas
+    // dans la grammaire @rhai — @rhai::Engine::compile rend une erreur de parse
+    // (`Unexpected '>'`, au signe `=`) et non une fonction inconnue à l'exécution ; le
+    // type même du rejet (@rhai::CompileError) atteste qu'il précède toute exécution.
+    // La branche « l'expression échoue aussi via `eval` » est déjà verrouillée par
+    // `test_script_rejects_coercions_and_extra_arity`.
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_script_triple_operator_fails_at_compile() {
+        let mut engine = Engine::new();
+        semver_rhai_register(&mut engine);
+        let err = engine
+            .compile(r#"semver_from("1.2.3") <=> semver_from("1.2.4")"#)
+            .expect_err("l'opérateur triple n'existe pas dans la grammaire rhai");
         assert!(
-            engine.eval::<bool>(r#"semver_from("1.2.3") == "1.2.3""#).is_err(),
-            "le Then verrouille un échec en fonction inconnue, mesuré : Ok(false)"
-        );
-        assert!(
-            engine.eval::<bool>(r#"semver_from("1.2.3") < 3"#).is_err(),
-            "le Then verrouille un échec en fonction inconnue, mesuré : Ok(false)"
+            err.to_string().contains("Unexpected"),
+            "rejet de grammaire attendu dès le parse, obtenu : {err}"
         );
     }
 

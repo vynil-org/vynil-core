@@ -179,7 +179,9 @@ Returns:
   @crate::shell::get_out — un @std::result::Result::Ok portant les deux flux capturés tels
     quels, nouvelle de fin et octets binaires compris, le status non nul restant un
     @std::result::Result::Ok.
-  @crate::shell::rhai_run — un @std::primitive::i64, rendu `int` par les scripts : le code
+  @crate::shell::rhai_run — un @std::primitive::i64, rendu `i64` par les scripts (mesure
+    @rhai 1.25 2026-10-10 : @rhai::Dynamic::type_of rend `i64` pour un entier, pas `int` ;
+    décision du développeur principal : amender le texte à la mesure) : le code
     d'exit transposé, `128 + signal` sous signal unix, `-1` si aucun des deux n'existe.
   @crate::shell::rhai_get_stdout — un @std::string::String de la stdout seule, sans rognage,
     vide quand le fils n'a rien écrit sur stdout, jamais un mélange des deux flux.
@@ -208,7 +210,7 @@ Raises:
 
 Handles:
   Code numérique absent sous signal unix — les deux collages voient `128 + signal`
-    (`kill -TERM` donne `143`) : @crate::shell::rhai_run le rend en `int`,
+    (`kill -TERM` donne `143`) : @crate::shell::rhai_run le rend en `i64` (mesure @rhai 1.25),
     @crate::shell::rhai_get_stdout échoue en `Error: Command failed, rc=143` ; même verdict
     des deux côtés, jamais un succès `0`.
   Commande vide et fils qui lit stdin — `sh -c ''` sort `0` ; `cat` rendu sans blocage par le
@@ -244,8 +246,11 @@ Tasks:
     (repris après 3e4295d) : ./shell.rs a un `mod tests` de cinq verrous `all(test, shell, rhai)`
     — signal `143` des deux collages, rc rendu et extrait stderr borné à 512 octets — qui
     verrouillent les Scenario correspondants ; restent sans test @crate::shell::run,
-    @crate::shell::get_out, la table des portes et le câblage @Script::new_bare. Le Scenario de lancement impossible exige un vidage de `PATH` global au processus :
-    test à isoler en série à part, friction connue à écrire dans le test même.
+    @crate::shell::get_out, la table des portes et le câblage @Script::new_bare. Le Scenario de lancement
+    impossible ne demande plus de vidage global du `PATH` du processus (mesure 2026-10-10 :
+    fils avec `PATH=""` explicite suffit — `env_clear` seul laisse `PATH` indéfini, execvp
+    retombe sur son chemin par défaut) : pas de test sérialisé, la friction est écrite dans
+    le test même.
   [x] Unifier le verdict de signal (`128 + signal`, `-1` hors unix) dans un helper privé
     partagé par @crate::shell::rhai_run et @crate::shell::rhai_get_stdout, et joindre un
     extrait de stderr borné à `Command failed, rc=<n>` (décisions actées) ; test d'abord depuis
@@ -318,10 +323,11 @@ Scenario: la commande vide et le fils muet sont des succès nuls
   When sur un engine enregistré un script évalue `shell_run("")` puis `shell_output("")`
   Then le premier rend l'entier `0` et le second la chaîne vide
 
-Scenario: shell_run rend le code de sortie comme int
+Scenario: shell_run rend le code de sortie comme un entier i64
   Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register sous `rhai` et `shell`
   When un script évalue `shell_run("true")`
-  Then l'évaluation réussit, `type_of` rend `int`, et la valeur est `0`
+  Then l'évaluation réussit, `type_of` rend `i64` (mesure @rhai 1.25 : les entiers rendent
+    `i64`, pas `int`), et la valeur est `0`
   When un script évalue `shell_run("exit 3")`
   Then l'évaluation réussit et rend `3`, @crate::shell::rhai_run ne jugeant jamais le code : le
     script doit le comparer lui-même
@@ -379,7 +385,11 @@ Scenario: la sortie non UTF-8 est refusée, pas assouplie
   But @crate::shell::rhai_get_stdout n'emploie jamais de conversion perteuse
 
 Scenario: sh introuvable remonte Stdio error sur les deux faces
-  Given un test isolé qui vide le `PATH` du processus le temps de l'appel, rendant `sh` introuvable
+  Given un test isolé qui rend le `PATH` explicitement vide (`PATH=""`, défini mais creux —
+    mesure 2026-10-10 : @std::process::Command::env_clear seul laisse `PATH` INDÉFINI et
+    @std::process::Command::execvp retombe sur son chemin par défaut, `sh` reste trouvé ; la
+    décision du développeur principal consigne cette mesure au contrat), rendant `sh`
+    introuvable
   When @crate::shell::run est appelée avec `echo`
   Then un @crate::Error::Stdio est rendu, dont l'affichage commence par `Stdio error ` suivi du
     message de @std::io::Error, sous linux typiquement `No such file or directory (os error 2)`,

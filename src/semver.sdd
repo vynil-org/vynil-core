@@ -281,9 +281,12 @@ Handles:
     @std::panic ; de même les `minor` et `patch` en `saturating_add` ; inc_beta sur
     `1.2.3-beta.4294967295` rend @std::result::Result::Ok après avoir réencodé le même
     compteur.
-  Compteurs tordus mais numériques — `beta.0` devient `beta.1`, `beta.01` devient `beta.2`, le
-    zéro-tête étant absorbé par le parse @std::primitive::u32 et la reconstruction
-    @semver::Prerelease::new réécrivant la forme canonique sans zéros têtes.
+  Compteurs tordus mais numériques — `beta.0` devient `beta.1`. Les compteurs à zéro-tête
+    (`beta.01`) sont INCONSTRUIBLES en amont (mesure 2026-10-10, @semver 1.0.x : le parse
+    rejette « invalid leading zero in pre-release identifier » — aucun appel public
+    n'atteint la branche d'absorption par le parse @std::primitive::u32, elle est
+    inatteignable et le contrat l'admet — décision du développeur principal : reprise à la
+    mesure).
   Rejet de compteur, état intact — `1.2.3-beta.rc` sous inc_beta :
     @std::result::Result::Err, `patch`, `pre`, `build` et `use_v` strictement inchangés, le
     parse du compteur intervenant avant toute assignation dans le bras compteur ; dans le
@@ -435,9 +438,10 @@ Scenario: inc_beta depuis beta.N avance le compteur sans toucher le patch
   Then le pre-release devient `beta.2`, `patch` reste `4`, `major` et `minor` sont inchangés
   Given un @crate::Semver de `1.2.4-beta.0`
   Then après @crate::Semver::inc_beta le pre-release est `beta.1`
-  Given un @crate::Semver de `1.2.4-beta.01`
-  Then après @crate::Semver::inc_beta il est `beta.2`, le zéro-tête étant absorbé par le parse
-    @std::primitive::u32 et la reconstruction par @semver::Prerelease::new
+  Given l'entrée `1.2.4-beta.01`
+  Then elle est rejetée À LA PARSE (« invalid leading zero in pre-release identifier »,
+    mesure @semver 1.0.x 2026-10-10) — la branche d'absorption du zéro-tête est inatteignable
+    par tout appel public, le contrat ne la promet plus
 
 Scenario: inc_alpha est le miroir exact de inc_beta
   Given un @crate::Semver de `1.2.3`
@@ -490,10 +494,16 @@ Scenario: l'objet Rhai connaît ses méthodes, aucune de ses propriétés
   Then `type_of(semver_from("1.2.3"))` rend `Semver`
   And `v.use_v`, `v.version` et `v.major` y échouent en propriété inconnue, le registre
     @rhai::Engine::register_type_with_name n'exposant aucun champ public
-  When `semver_from(1)`, `semver_from("1.2.3", 2)`, `semver_from("1.2.3") == "1.2.3"`,
-    `semver_from("1.2.3") < 3` et `semver_from("1.2.3") <=> semver_from("1.2.4")` sont évalués
-  Then les quatre premiers échouent en fonction inconnue sans parvenir à
-    @crate::Semver::rhai_parse, de même que `<=>` non enregistré
+  When `semver_from(1)` et `semver_from("1.2.3", 2)` sont évalués
+  Then ils échouent en fonction inconnue sans parvenir à @crate::Semver::rhai_parse
+  When `semver_from("1.2.3") == "1.2.3"` et `semver_from("1.2.3") < 3` sont évalués
+  Then ils rendent `false` SANS erreur ni coercition : le repli interne de @rhai pour les
+    signatures absentes court avant les fermetures enregistrées (mesure 2026-10-10, décision
+    du développeur principal : reprise à la mesure) — aucune coercition mixte ne passe,
+    l'absence de signature mixte reste le contrat, seul le mode d'échec nommé était faux
+  When `semver_from("1.2.3") <=> semver_from("1.2.4")` est évalué
+  Then l'échec survient dès la COMPILATION : l'opérateur triple n'existe pas dans la
+    grammaire @rhai (mesure — pas une fonction inconnue à l'exécution)
   And `to_string` n'existe qu'à zéro argument et rend la chaîne de @std::fmt::Display
   Given un @rhai::Engine nu, sans aucun appel de @crate::semver::semver_rhai_register
   Then `semver_from` et les cinq `inc_` y sont inconnus, mais @Script::new_bare sous `rhai` seul
