@@ -55,10 +55,16 @@ Must:
     together` (décision actée : un secret perdu en silence est une mauvaise configuration) ;
     puis .with_endpoint(endpoint).with_allow_http(true) seulement si `endpoint` est non vide ;
     @object_store::aws::AmazonS3Builder::build() mappé en @variant-Error::Other de son
-    `e.to_string()`. Sonde mesurée sur object_store 0.11.2 : bucket vide → build Err
-    (MissingBucketName) ; region vide, aucune credential, access non vide + secret vide,
+    `e.to_string()`. Sonde rejouée sur object_store 0.11.2 (mesure @validator, bin hors
+    arbre, hors réseau) : bucket vide → build Ok dans les quatre formes testées, la sonde
+    « Err (MissingBucketName) » qui circulait était FAUSSE — l'échec du bucket vide
+    appartient à la REQUÊTE (URL malformée `https://s3..amazonaws.com/`) ; region vide,
+    aucune credential, access non vide + secret vide,
     endpoint http y compris sans allow_http → tous build Ok — les gardes credentials et
-    schéma http_relaxé s'exercent à la requête, pas au build.
+    schéma http_relaxé s'exercent à la requête, pas au build, bucket vide compris
+    (décision du développeur principal 2026-10-10, option (a) : les trois endroits
+    répétant la fausse sonde sont repris à la mesure, le contrat sur les gardes du build
+    ne bouge pas).
   Lire un objet dans @crate::s3::s3_get_yaml : clé complète fabriquée par jonction normalisée
     — `prefix` privé de ses `/` finaux, `key` privé de ses `/` initiaux, joints par un unique
     `/` quand le préfixe restant est non vide, la clé seule sinon (décision actée : `"p"` et
@@ -166,7 +172,9 @@ Returns:
 Raises:
   Les deux fonctions publiques rendent @crate::RhaiRes, échec porté par @crate::rhai_err
     autour de @variant-Error::Other d'affichage `Error: <texte d'erreur @object_store>` —
-    triggers : build du store (bucket vide notamment, MissingBucketName mesuré), get, bytes,
+    triggers : build du store (credentials incomplets gardés par nous ; bucket vide PAS un
+    échec de build — re-mesure object_store 0.11.2 2026-10-10, l'échec part de la
+    requête), get, bytes,
     et chaque erreur du flux de list ; la forme interne du texte est de @object_store et
     n'est pas verrouillée.
   @crate::s3::s3_get_yaml — @variant-Error::UTF8 sur octets invalides (la forme @std::string::FromUtf8Error
@@ -195,18 +203,12 @@ Tasks:
     traversent pas les fonctions publiques ; les remplacer par des tests des fonctions
     internes `get_yaml_from_store` / `list_keys_from_store` (seam décidé), plus les Scenario
     sans réseau (erreurs de build, credentials incomplets, facettes Rhai).
-  # Question (round découpage 2026-10-09, CONFIRMÉE par le validator — à trancher) : la
-  # « sonde mesurée sur object_store 0.11.2 » affirme « bucket vide → build Err
-  # (MissingBucketName) » ; la mesure du validator (bin hors arbre, lock 0.11.2, hors
-  # réseau) rend Ok dans les quatre formes testées, reproduisant au caractère le
-  # bucket_endpoint "https://s3..amazonaws.com/" — la failure du bucket vide appartient à
-  # la requête (URL malformée). La fausse sonde est répétée à TROIS endroits : la phrase
-  # du `Must`, le parenthétique du `Raises` (« bucket vide notamment, MissingBucketName
-  # mesuré ») et le Scenario « bucket vide fait parler le build », écrit sur ce pied-là.
-  # Options : (a) reprendre les trois endroits à la mesure (le contrat sur les gardes ne
-  # bouge pas — il s'exerce à la requête, comme le dit déjà la fin de la clause) ;
-  # (b) garde explicite bucket vide en Error::Other (changement de comportement).
-  # Le Scenario est en attente, non verrouillé en test.
+    # Décision close 2026-10-10 (développeur principal, option (a)) : les trois endroits
+    # répétant la fausse sonde « bucket vide → build Err (MissingBucketName) » — la phrase
+    # du `Must`, le parenthétique du `Raises`, le Scenario — sont REPRIS À LA MESURE du
+    # validator (build Ok dans les quatre formes testées, l'échec appartient à la requête).
+    # La garde « les gardes s'exercent à la requête, pas au build » est inchangée ; la
+    # fausse sonde est consignée au `Must` pour ne pas être rejouée. Aucun geste de code.
   [x] Découper le corps en fonctions internes prenant un @object_store::ObjectStore, joindre
     `prefix`/`key` par `/` normalisé, trier `s3_list_keys`, refuser les credentials
     incomplets, passer par `crate::rt::block_on` (décisions actées).
@@ -235,14 +237,16 @@ Scenario: deux enregistrements successifs ne duppliquent pas
   Then chaque nom garde une résolution unique, @rhai::Engine::register_fn remplaçant
     l'enregistrement précédent, sans erreur ni empilement
 
-Scenario: bucket vide fait parler le build
-  Given un runtime tokio multi-thread (le corps exige `block_in_place` + `Handle::current`)
-  When @crate::s3::s3_get_yaml est appelée avec `bucket=""` et le reste arbitraire, hors réseau
-    réel requis
-  Then l'échec remonte via @crate::rhai_err portant @variant-Error::Other dont le texte vient
-    de @object_store (mesuré : MissingBucketName) — trigger verrouillé, forme laissée
+Scenario: bucket vide parle à la requête, pas au build
+  Given un runtime tokio multi-thread (le corps passe par @crate::rt::block_on)
+  When @crate::s3::s3_get_yaml est appelée avec `bucket=""` et le reste arbitraire, hors
+    réseau réel requis
+  Then le build interne rend Ok (re-mesure object_store 0.11.2 du validator : aucune
+    failure de build sur bucket vide dans les quatre formes testées) et l'échec remonte de
+    la REQUÊTE via @crate::rhai_err portant @variant-Error::Other de @object_store — l'URL
+    construite `https://s3..amazonaws.com/` est malformée, trigger verrouillé, forme laissée
   When @crate::s3::s3_list_keys est appelée avec `bucket=""`
-  Then le même @variant-Error::Other de build survient avant toute liste
+  Then le même échec de la requête survient, jamais un échec de build
 
 Scenario: region, credentials et endpoint vides construisent quand-même, credentials incomplets non
   Given un runtime tokio multi-thread, aucune credential d'environnement

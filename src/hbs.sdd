@@ -354,17 +354,17 @@ Tasks:
     (les tests tournent en parallèle) : la méthode est à l'avenant des moyens de la dépendance,
     pas du dépôt. Premier verrou de warn du dépôt — il fixe le précédent que les autres specs
     convertiront ou écarteront en connaissance de cause.
-  [ ] Uniformiser ou assumer les textes de @tracing::warn de la voie douce : `argon_hash`,
+  [x] Uniformiser ou assumer les textes de @tracing::warn de la voie douce : `argon_hash`,
     `bcrypt_hash` et `crc32_hash` disent « received a non-string password » et `header_basic`
     « username »/« password », alors que `base64_decode`, `base64_encode`, `url_encode`,
     `to_decimal` et `concat` disent « received a non-string parameter ». Le `Must` vient d'être
     mis à ce que fait le code : reste à décider si le code doit s'aligner sur le patron, ce qui
     change trois messages vus par les exploitants.
-    # Question (consignée 2026-10-09) : la tâche nomme elle-même l'indécis — « uniformiser OU
-    # ASSUMER ». Le patron à deux familles est cohérent (les mot de passe disent « password »,
-    # les paramètres génériques disent « parameter ») et le Must le décrit tel quel ; uniformiser
-    # doucherait la précision des premiers. Trancher : assumer (cocher sans geste, la tâche
-    # devenant le record de l'assomption) ou aligner sur un texte unique (lequel ?).
+    # Close AU RECORD 2026-10-10 (développeur principal) : le patron à deux familles est
+    # ASSUMÉ, la tâche est le record de l'assomption, sans geste de code. Cohérence retenue :
+    # les helpers à secret nomment ce qu'ils attendent (« password », « username »), les
+    # génériques nomment « parameter » ; uniformiser sur un texte unique doucherait la
+    # précision des premiers. Le `Must` décrit le patron tel quel et reste la forme liante.
 
 Scenario: new compose les trois couches et les deux réglages hérités
   Given un @crate::hbs::HandleBars construit par @crate::hbs::HandleBars::new sous `hbs`
