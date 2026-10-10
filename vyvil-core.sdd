@@ -156,7 +156,7 @@ Tasks:
     `crypto` par `dep:openssl` (déjà vérifié en grand à la mesure de faisabilité). Tâche
     commune aux faces « Pré-valider le PEM du CA » de ./src/http.sdd et « Faisabilité :
     basculer `oci-client` » de ./src/oci.sdd — les trois coches dans le même commit.
-  [ ] Reprendre la liste de commandes de ./AGENTS.md et la batterie de
+  [x] Reprendre la liste de commandes de ./AGENTS.md et la batterie de
     ./.opencode/agents/validator.md pour les deux portes neuves
     `--no-default-features --features rhai,fs` et `--no-default-features --features
     rhai,password` (test et clippy `--all-targets -- -D warnings`) — ces deux fichiers sont

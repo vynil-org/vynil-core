@@ -365,11 +365,23 @@ Tasks:
     enregistrements : `crypto` par default, `shell` par `rhai,shell` (combo nommé de la
     batterie), `fs` et `password` par `--all-features` — `fs` joue même en runtime sous cette
     porte depuis les tests `read_dir` de ce round, ce qui n'existait pas avant.
-    # Question (consignée, à trancher) : l'instrument décidé (la matrice) ne joue pas les
-    # branches de ./engine.rs — une porte nommée `rhai,fs` (voire `rhai,password`) dans la
-    # batterie explicite serait un événement ./tooling.sdd en lockstep. L'écart
-    # d'instrument est rendu, la tâche close sur la couverture effective, le tranchage
-    # attendu.
+    # Décision close 2026-10-10 (développeur principal) : des portes NOMMÉES `rhai,fs` et
+    # `rhai,password` entrent dans la batterie explicite — l'écart d'instrument mesuré ici
+    # (la matrice `--each-feature` ne compile AUCUNE des quatre branches gated de
+    # ./engine.rs, `fs`/`shell`/`password`/`crypto` n'impliquant pas `rhai`) est comblé par
+    # deux portes de plus, pas par l'assomption de la couverture `--all-features`. Cet
+    # événement se joue en lockstep dans ./tooling.sdd (batterie + `Must` des combinaisons
+    # porteuses de sens, qui reprenait le tri inverse consigné à la tâche `rhai,shell`),
+    # ./.github/workflows/workflows.sdd (matrice et boucle clippy de ./test.yml), la vue de
+    # ./AGENTS.md et la batterie de ./.opencode/agents/validator.md (tâche de la spec
+    # racine), plus la présente vue — toutes coches dans le même commit.
+  [x] Voir les quatre branches gated de ./engine.rs réparties sur leurs portes : `fs` et
+    `password` désormais jouées par les portes dédiées `rhai,fs` et `rhai,password` de la
+    batterie, `shell` par `rhai,shell` (existante), `crypto` par `default` et
+    `--all-features` (pas de porte `rhai,crypto` nommée — la décision 2026-10-10 ne nomme
+    que les deux premières, la branche crypto est déjà jouée par la porte des défauts) —
+    jumelle de « Ajouter les portes `rhai,fs` et `rhai,password` à la batterie » de
+    ./tooling.sdd, à cocher dans le même commit.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   arités fermées des shims (`assert(cond, mess)`, `import_*`), snapshot `ctx.clone()` de

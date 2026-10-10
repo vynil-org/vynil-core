@@ -70,7 +70,7 @@ Must:
     `--no-default-features --features hbs --all-targets` restent hors contrat, la porte du seam
     racine et celle de l'isolabilité #9 étant jouées en exécution de tests et en `cargo tree`, pas
     en lint. C'est aussi, explicitement, ce qui laisse `surface_without_features` hors de tout lint.
-  Compter dans les combinaisons testées les six runs de tests que la matrice explicite ne
+  Compter dans les combinaisons testées les huit runs de tests que la matrice explicite ne
     couvrait pas : `--no-default-features` seul (porte où `rhai` est éteinte, donc où le seam de
     la racine `surface_without_features` de `src/lib.sdd` et les 15 Display non gated sont
     réellement exécutés — mesuré : ils le sont aussi sous `hbs`, `crypto` et `hbs,crypto`, cette
@@ -87,18 +87,29 @@ Must:
     Handlebars `crypto` sans `rhai` — ./src/hbs.sdd) ; et `--no-default-features --features
     rhai,shell` (seule porte qui joue les cinq verrous `all(test, shell, rhai)` de
     ./src/shell.rs — mesuré par le `validator` : sous les dix portes courantes leur face n'est
-    que linte par `--all-features --all-targets`, jamais jouée). Le harnais clippy est tendu sur
-    ces quatre dernières portes en `--all-targets -- -D warnings` comme sur les précédentes : un verrou de
+    que linte par `--all-features --all-targets`, jamais jouée) ; et
+    `--no-default-features --features rhai,fs` et `--no-default-features --features
+    rhai,password` (seules portes nommées qui jouent les branches gated de `new_bare` que
+    ./src/engine.rs enregistre hors `--all-features` — `fs` et `password` n'impliquant pas
+    `rhai`, la matrice `--each-feature` ne compile AUCUNE de ces branches, mesuré
+    2026-10-10 ; décision du développeur principal, reprenant le tri consigné à la tâche
+    `rhai,shell` qui les écartait faute de verrou propre — c'est ici la face enregistrements
+    de l'engine qui nomme la porte). Le harnais clippy est tendu sur six de ces huit portes
+    (les deux portes à seam ci-dessus, `--no-default-features` et `hbs`, restant hors lint par
+    l'alinéa précédent) en `--all-targets -- -D warnings` comme sur les précédentes : un verrou de
     porte qui ne tourne que sur bonne volonté locale est un verrou aveugle là où le contrat est
-    tenu publiquement. Ces six runs figurent dans la batterie de l'agent `validator`, dans la
-    liste de commandes de ./AGENTS.md et dans la matrice de jobs de
+    tenu publiquement. Ces quatorze runs (huit portes de test et les six portes nommées
+    jouant leur harnais clippy) figurent
+    dans la batterie de l'agent `validator`, dans la liste de commandes de ./AGENTS.md et dans
+    la matrice de jobs de
     ./.github/workflows/test.yml, en lockstep (./vyvil-core.sdd).
   Compiler et linter chaque feature isolément par une règle, non par une liste manuelle :
     `cargo hack check --each-feature --no-dev-deps` puis le harnais clippy de même (décision
     actée), de sorte que chaque module gated (`fs`, `shell`, `password`, `crypto`, `http`, `hbs`
     sans `rhai`…) soit compilé seul par au moins une commande et que l'invariant d'isolabilité
     de `hbs` (racine `vyvil-core.sdd`) soit vérifié. Les combinaisons explicites qui portent un
-    sens (`k8s,oci,s3`, `--all-features`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`) restent
+    sens (`k8s,oci,s3`, `--all-features`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`,
+    `rhai,fs`, `rhai,password`) restent
     en plus.
 
 Must not:
@@ -199,6 +210,23 @@ Tasks:
     `hbs,password` sera à nommer ici. Jumelles : ./.github/workflows/workflows.sdd (entrée
     `rhai-shell` de la matrice et de la boucle clippy) et la vue de ./src/shell.sdd — les trois
     se cochent dans le même commit, qui tient le lockstep des cinq emplacements.
+
+  [x] Ajouter les portes `--no-default-features --features rhai,fs` et
+    `--no-default-features --features rhai,password` (test et clippy `--all-targets --
+    -D warnings`) à la batterie — reçues de ./src/engine.sdd : la matrice `cargo hack
+    --each-feature` ne compile AUCUNE des quatre branches gated de `new_bare` que
+    ./src/engine.rs enregistre (mesuré : `fs`, `shell`, `password` et `crypto` n'impliquent
+    pas `rhai`), et aucune des dix portes courantes ne joue `rhai,fs` ni `rhai,password`.
+    Reprend le tri consigné à la tâche `[x]` de la porte
+    `rhai,shell`, qui écartait `password` et `fs` faute de verrou de test en propre : le
+    développeur principal tranche le 2026-10-10 — les portes sont nommées pour la face
+    enregistrements de l'engine. Forme d'entrée GitHub `rhai-fs`/`rhai-password`, forme de
+    features entre virgules (précédents textuels `hbs-crypto`, `rhai-shell`). Lockstep des
+    cinq emplacements (règle de ./vyvil-core.sdd) : ce `Must` et la présente tâche, la liste
+    de commandes de ./AGENTS.md et la batterie de ./.opencode/agents/validator.md (tâche
+    jumelle de la spec racine, `Owns` de ces deux fichiers), la tâche jumelle de
+    ./.github/workflows/workflows.sdd (entrée de matrice et boucle clippy de ./test.yml), et
+    la vue de ./src/engine.sdd — toutes les coches dans le même commit.
   [ ] Interdire en CI le retour des deux défauts de forme `.sdd` mesurés sur ce dépôt, par un
     contrôle de quelques dizaines de lignes ajouté à ./.github/workflows/test.yml (avec sa spec
     `./workflows.sdd`) : l'artefact est un script de contrôle et non du code de `src/`, donc la

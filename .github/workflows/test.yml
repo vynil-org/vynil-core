@@ -17,7 +17,7 @@ jobs:
       fail-fast: false
       # Liste d'objets { name, args } : `args` porte la ligne de flags complète, ce que la
       # forme « features: [...] » ne pouvait pas exprimer pour `--no-default-features` seul
-      # (confondu avec l'entrée vide). Six portes sont contractuelles parce qu'elles sont les
+      # (confondu avec l'entrée vide). Huit portes sont contractuelles parce qu'elles sont les
       # seules à jouer un verrou nommé (tooling.sdd, workflows.sdd) : `no-default` (seam de la
       # racine), `hbs` seul (isolabilité #9 en exécution), `crypto` seul (seule famille de
       # portes où le verrou `#[cfg(not(feature = "rhai"))]` de crate::key::gen_private_key
@@ -27,12 +27,17 @@ jobs:
       # `sans crypto` de src/key.sdd a son domaine (verrou
       # `new_bare_without_crypto_rejects_gen_private_key`, écrit et joué sur cette porte),
       # `hbs-crypto` (seul graphe qui compile et joue un helper Handlebars `crypto` sans
-      # `rhai`) et `rhai-shell` (seule porte qui joue les cinq verrous
+      # `rhai`), `rhai-shell` (seule porte qui joue les cinq verrous
       # `all(test, shell, rhai)` de src/shell.rs — signal `143` des deux collages, rc et
       # extrait stderr borné à 512 octets ; sous les dix portes précédentes, leur face
-      # n'était que linte par `--all-features --all-targets`, jamais jouée). `hbs-crypto` et
-      # `rhai-shell` passent leurs features séparées par des virgules (`--features
-      # hbs,crypto`, `--features rhai,shell`) : `${{ matrix.args }}` est substitué
+      # n'était que linte par `--all-features --all-targets`, jamais jouée) et `rhai-fs` /
+      # `rhai-password` (seules portes nommées qui jouent les branches gated de `new_bare`
+      # que src/engine.rs enregistre — `fs` et `password` n'impliquant pas `rhai`, la matrice
+      # `--each-feature` ne compile AUCUNE de ces branches hors `--all-features`, mesuré
+      # 2026-10-10 ; décision du développeur principal). `hbs-crypto`, `rhai-shell`,
+      # `rhai-fs` et `rhai-password` passent leurs features séparées par des virgules
+      # (`--features hbs,crypto`, `--features rhai,shell`, `--features rhai,fs`,
+      # `--features rhai,password`) : `${{ matrix.args }}` est substitué
       # textuellement dans le script joué par le shell, et la virgule rend la ligne
       # indépendante de ce découpage — sans guillemets (`--features hbs crypto`), `crypto`
       # passerait hors de l'argument ; avec guillemets (`--features "hbs crypto"`) cela
@@ -62,6 +67,10 @@ jobs:
             args: "--no-default-features --features hbs,crypto"
           - name: rhai-shell
             args: "--no-default-features --features rhai,shell"
+          - name: rhai-fs
+            args: "--no-default-features --features rhai,fs"
+          - name: rhai-password
+            args: "--no-default-features --features rhai,password"
     steps:
       - uses: actions/checkout@v7
 
@@ -111,28 +120,34 @@ jobs:
       # Harnais clippy porté par Cargo.toml [lints] (strict family + pedantic/cargo en deny,
       # missing_docs warn) + `-D warnings` pour les warnings rustc hors [lints]. Ce job rejoue
       # en explicite, entre le `--all-targets` par défaut et le `--all-features`, les portes
-      # `k8s`, `oci`, `s3`, `k8s,oci,s3`, `crypto`, `rhai`, `hbs,crypto` et `rhai,shell`. Les
+      # `k8s`, `oci`, `s3`, `k8s,oci,s3`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`,
+      # `rhai,fs` et `rhai,password`. Les
       # quatre premières parce que les analyses pedantic (pureté de `must_use_candidate`, etc.)
       # dépendent du graphe de features et qu'un lint peut ne se déclencher que sur une
-      # combinaison (voir ../../tooling.sdd) ; `crypto`, `rhai`, `hbs,crypto` et `rhai,shell`
+      # combinaison (voir ../../tooling.sdd) ; `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`,
+      # `rhai,fs` et `rhai,password`
       # parce que les verrous des portes jouées doivent rougir en lint comme en exécution —
       # `crypto` seul (le verrou `#[cfg(not(feature = "rhai"))]` de
       # crate::key::gen_private_key), `rhai` seul (les onze verrous `mod script` de
       # src/password.rs, et la porte où la demi-clause « fonction inconnue » de src/key.sdd a
       # son domaine — verrou `new_bare_without_crypto_rejects_gen_private_key`, écrit et
       # joué), `hbs,crypto` (seul graphe qui compile un helper Handlebars `crypto` sans
-      # `rhai`, src/hbs.sdd) et `rhai,shell` (les cinq verrous `all(test, shell, rhai)` de
+      # `rhai`, src/hbs.sdd), `rhai,shell` (les cinq verrous `all(test, shell, rhai)` de
       # src/shell.rs — signal `143` des deux collages, rc et extrait stderr borné à 512
-      # octets). Le job `feature-matrix` compile bien ces graphes (`--each-feature` couvre
+      # octets) et `rhai,fs` / `rhai,password` (les branches gated de `new_bare` que
+      # src/engine.rs enregistre — `fs` et `password` n'impliquant pas `rhai`, la matrice
+      # `--each-feature` ne compile AUCUNE de ces branches hors `--all-features`).
+      # Le job `feature-matrix` compile bien ces graphes (`--each-feature` couvre
       # `crypto` et `rhai` seuls), mais avec `--no-dev-deps` : il ne construit ni les dix
       # binaires de ./tests ni les cibles `cfg(test)` où vivent les verrous, et n'isole qu'une
-      # feature à la fois — `hbs,crypto` et `rhai,shell` lui sont impossibles.
+      # feature à la fois — `hbs,crypto`, `rhai,shell`, `rhai,fs` et `rhai,password` lui sont
+      # impossibles.
       # `set -e` : la première combinaison qui tombe fait échouer le job.
       - name: cargo clippy (feature matrix)
         run: |
           set -e
           cargo clippy --all-targets -- -D warnings
-          for features in k8s oci s3 k8s,oci,s3 crypto rhai hbs,crypto rhai,shell; do
+          for features in k8s oci s3 k8s,oci,s3 crypto rhai hbs,crypto rhai,shell rhai,fs rhai,password; do
             cargo clippy --no-default-features --features "$features" --all-targets -- -D warnings
           done
           cargo clippy --all-features --all-targets -- -D warnings
@@ -153,7 +168,7 @@ jobs:
   # `cfg(test)` où vivent les verrous, et comme il n'isole qu'une feature à la fois, il ne
   # joue aucune combinaison à deux features. Les combinaisons explicites restent donc en
   # plus (../../tooling.sdd) : celles qui portent un sens (k8s,oci,s3, --all-features,
-  # crypto, rhai, hbs,crypto, rhai,shell).
+  # crypto, rhai, hbs,crypto, rhai,shell, rhai,fs, rhai,password).
   feature-matrix:
     name: Feature matrix (cargo hack)
     runs-on: ubuntu-latest
