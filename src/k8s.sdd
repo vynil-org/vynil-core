@@ -61,9 +61,9 @@ References:
     (kind exact/sensible à la casse, snapshot du `list` aux deux arités sous `list`, `get_meta`
     objet complet, `created` vs `mocks`, ns rempli par `apply` seul et quand absent, workloads
     en échec à la construction) — table fidèle sur les noms, sémantique rendue au `Must`.
-  ./tooling.sdd — harnais : ./k8s.rs compte 20 @allow (16 `needless_pass_by_value` + 4
-    `expect_used` commentés « panic by design » — dont les 2 posés par la migration
-    `crate::rt::block_on`, sous la question ouverte des `Tasks:`) et 14
+  ./tooling.sdd — harnais : ./k8s.rs compte 18 @allow hors tests (16 `needless_pass_by_value` + 2
+    `expect_used` commentés « panic by design », CLIENT et CACHE seulement — les 2 que la
+    conversion en @crate::Result a retirés sur le résolveur ne sont plus là) et 9
     @core::marker::must_use ;
     ./k8s_mock.rs 7 @allow + 10 @core::marker::must_use ; deux `#[macro_export]` pub sur
     macros @crate::register_k8s_object/@crate::register_k8s_generic/@crate::register_k8s_raw
@@ -103,15 +103,25 @@ Must:
     succès → REMPLACE le contenu du @tokio::sync::RwLock ; timeout ou échec → le VANCIEN cache
     est GARDÉ et SEUL UN warn trace (`E_DISCOVERY_TIMEOUT: update_k8s_crd_cache exceeded 60s, keeping old cache` —
     le texte dit 60 s comme l'implémentation (décision actée : texte corrigé) ; warn d'échec
-    `E_DISCOVERY_WARN: update_k8s_crd_cache failed ({e}), keeping old cache`) ; ne retourne rien.
+    `E_DISCOVERY_WARN: update_k8s_crd_cache failed ({e}), keeping old cache`) ; l'échec du
+    pont @crate::rt::block_on lui-même (runtime `current_thread` ou construction de runtime
+    impossible) est tracé par UN warn de la famille `E_DISCOVERY_WARN` nommant l'exception
+    du pont (décision du développeur principal 2026-10-10 : le silence du `.ok()` ne
+    contractait rien, le warn rend l'homogène des voies douces), l'ancien cache est GARDÉ ;
+    ne retourne rien.
   Résoudre une ressource par le CACHE SEULEMENT (@crate::k8s::K8sGeneric::new à partir de 479,
     @crate::k8s::K8sGeneric::new_api_version à 528) : parcourir @kube::discovery::Discovery::groups
     × @kube::discovery::ApiGroupDiscovery::resources_by_stability, matcher `name` par
     @core::cmp::PartialEq::eq_ignore_ascii_case SUR `kind` OU `plural` (insensible à la casse,
     pluriel ou singulier accepté, SANS conversion pluriel maison), départager l'ambiguïté
     multi-groupes par la MIN-LEXICOGRAPHIQUE du nom de groupe (`min_by_key` — le groupe cœur
-    gagne par construction) ; la construction ne FAIT JAMAIS d'appel API et ne rate JAMAIS :
-    non résolu = handle @core::option::Option::None rendu muet (§UnsupportedMethod) ; le scope
+    gagne par construction) ; la construction ne FAIT JAMAIS d'appel API et ne rate pas
+    faute de correspondance : non résolu = handle @core::option::Option::None rendu muet
+    (§UnsupportedMethod) ; seule saillie, le pont @crate::rt::block_on : sur runtime
+    `current_thread`, @crate::k8s::K8sGeneric::new et @crate::k8s::K8sGeneric::new_api_version
+    rendent @core::result::Result::Err de @variant-Error::Other `requires a multi-thread
+    tokio runtime` (décision du développeur principal 2026-10-10 : signatures en
+    @crate::Result, les deux `expect` posés par la migration sont retirés) ; le scope
     retenu : @kube::api::Scope::Cluster OU ns absent OU ns VIDE → @kube::api::Api::all_with —
     soit TOUTES les namespaces pour une ressource namespaced sans ns (comme `kubectl -A` ; la
     doc « the resource's actual scope » est à corriger, décision actée), sinon
@@ -333,9 +343,11 @@ Exposes:
     @crate::k8s::K8sObject::have_status/@crate::k8s::K8sObject::have_status_value (`#[must_use]`,
     Rust-only).
   @crate::k8s::K8sGeneric pub `#[derive(Clone, Debug)]` (champs `api`/`ns`/`kind`/`scope` PUBS) :
-    @crate::k8s::K8sGeneric::new/@crate::k8s::K8sGeneric::new_api_version (Rust, ns Option)
+    @crate::k8s::K8sGeneric::new/@crate::k8s::K8sGeneric::new_api_version (Rust, ns Option,
+    rendant @crate::Result<Self> — décision du développeur principal 2026-10-10)
     + @crate::k8s::K8sGeneric::new_global/@crate::k8s::K8sGeneric::new_ns/@crate::k8s::K8sGeneric::new_group_ns
-    (Rhai) ; surface low-level @crate::Result : list/list_labels/list_meta/get/get_meta/delete/
+    (Rhai, délégués, rendant @crate::RhaiRes — l'erreur du pont remonte en exception script
+    par @crate::rhai_err) ; surface low-level @crate::Result : list/list_labels/list_meta/get/get_meta/delete/
     create/replace/patch/apply/ exist + les `rhai_*` (exist/get_obj inclus ; `get_obj` rend
     @crate::k8s::K8sObject).
   @crate::k8s::K8sRaw pub `#[derive(Clone)] pub struct` : new + async get_url/get_url_as_disco/
@@ -401,8 +413,12 @@ Raises:
     `create discovery (excluding api-services)` (premier accès CACHE raté — LazyLock empoisonné,
     panic permanente, redémarrage du pod) ; @crate::get_client_name unset sur patch/apply
     (./client_name.sdd). Plus de panique tokio : sur `current_thread`, `crate::rt::block_on`
-    rend @variant-Error::Other `requires a multi-thread tokio runtime` (hors initialisation de
-    `CLIENT`/`CACHE`, où elle reste un `expect`).
+    rend @variant-Error::Other `requires a multi-thread tokio runtime` — rendue par
+    @core::result::Result::Err chez @crate::k8s::K8sGeneric::new/@crate::k8s::K8sGeneric::new_api_version
+    et leurs trois délégués script (décision du développeur principal 2026-10-10, option (b) :
+    les deux `expect` posés par la migration sur le résolveur sont retirés, la panique n'y
+    est plus contractuelle que pour l'initialisation de `CLIENT`/`CACHE`, où elle reste un
+    `expect`).
 
 Handles:
   Providers « premier gagne » (@core::cell::OnceLock) jamais réécrasables — une réinitialisation
@@ -467,24 +483,33 @@ Tasks:
     constantes hors contrat). Le voyage de `docs/rhai_helpers.md` (marque « pending
     implementation » et deux passages contradictoires rendus au livré) est inscrit en
     face : tâche jumelle de ./docs.sdd, cochée dans le même commit.
-  [ ] Migrer les 33 ponts `block_in_place` de ./k8s.rs vers `crate::rt::block_on` (voir
+  [x] Migrer les 33 ponts `block_in_place` de ./k8s.rs vers `crate::rt::block_on` (voir
     ./rt.sdd) ; le gate de `rt` est déjà `any(http, oci, s3, k8s)` depuis sa création, rien à y
     changer.
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
-    # Question 1 (migration 2026-10-09, à trancher — bloque la coche) : `K8sGeneric::new`
-    # et `new_api_version` ont une signature non-`Result` ; l'erreur du pont (current_thread)
-    # n'a pas de canal. L'implémentation rend un `expect` au message porteur
-    # (« requires a multi-thread tokio runtime »), `# Panics` documenté — mais le `Raises`
-    # ne nomme l'exception `expect` que pour l'initialisation de CLIENT/CACHE. Options :
-    # (a) amender le Raises pour nommer ces deux sites (la panique existait déjà avant la
-    # migration, en pire : block_in_place nu) ; (b) changer les deux signatures en
-    # `crate::Result<Self>` (changement d'API publique, crate < 1.0, mais casse les
-    # appelants rhai `new` du registre).
-    # Question 2 (même migration, à trancher) : `update_cache` sur courant_thread ou
-    # construction ratée rend `.ok()` — effet silencieux, ancien cache gardé. La voie douce
-    # est déjà la sienne (l. 403) mais rien ne contracte le silence du pont ; un `warn` au
-    # passage serait l'homogène. Trancher avec la tâche du texte 60 s.
+    # Question 1 close 2026-10-10 (développeur principal, option (b)) : les signatures
+    # deviennent @crate::Result — la panique du pont n'est plus contractuelle sur le
+    # résolveur, l'amendement est rendu dans le `Exposes`, le `Must` et le `Raises` de cette
+    # spec. Rendu du code par la tâche ci-dessous, teste d'abord.
+    # Question 2 close 2026-10-10 (développeur principal) : UN warn trace l'échec du pont de
+    # `update_cache` — clause ajoutée au `Must` de cette spec, rendu par la seconde tâche
+    # ci-dessous. Le texte du warn 60 s est déjà clos (tâche close plus haut).
+  [x] Convertir @crate::k8s::K8sGeneric::new et @crate::k8s::K8sGeneric::new_api_version en
+    @crate::Result<Self> et leurs trois délégués script (@crate::k8s::K8sGeneric::new_global/
+    @crate::k8s::K8sGeneric::new_ns/@crate::k8s::K8sGeneric::new_group_ns) en @crate::RhaiRes,
+    l'erreur du pont convertie par @crate::rhai_err — teste d'abord : hors runtime et sous
+    `current_thread`, les cinq faces rendent Err @variant-Error::Other `requires a
+    multi-thread tokio runtime` sans panique ; sur runtime multi-thread, la résolution reste
+    Ok. Retirer les deux @allow `expect_used` posés par la migration sur le résolveur et les
+    deux `# Panics` correspondants de la rustdoc (ne restent que ceux de CLIENT/CACHE).
+    Changement d'API publique (crate < 1.0) : nommé au message de commit pour les appelants
+    en aval (vynil). Le mock ne change pas (ses constructeurs mirror n'empruntent aucun pont).
+  [x] Tracer l'échec du pont de @crate::k8s::update_cache par un warn de la famille
+    `E_DISCOVERY_WARN` nommant l'exception du pont (le `.ok()` muet devient voie douce
+    tracée, `Must` amendé 2026-10-10) — teste d'abord : appel sur `current_thread` → warn
+    joué (verrou par @tracing-subscriber comme le précédent `to_decimal` de ./src/hbs.sdd),
+    aucun panic, aucun effet sur le CACHE, rend unité.
   [x] Cargo : retirer `dep:futures` de la feature `k8s` (vérifier `cargo hack`), déclarer
     `tokio` avec `time` (décision actée — déjà déclaré ainsi, consigné sans geste). Tâche
     jumelle de « Retirer `dep:futures` de la feature `k8s` » de ./vyvil-core.sdd, à cocher

@@ -311,8 +311,10 @@ pub static CACHE: LazyLock<RwLock<Discovery>> = LazyLock::new(|| RwLock::new(pop
 /// Exposed to Rhai as `update_k8s_crd_cache`.
 pub fn update_cache() {
     // La voie secours `rt::block_on` rend une erreur typée que `update_cache` n'a pas de
-    // canal pour rendre (rend unité, k8s.sdd) : l'appel est simplement sans effet.
-    crate::rt::block_on(async move {
+    // canal pour rendre (rend unité, k8s.sdd) : l'échec du pont est tracé par un warn de la
+    // famille `E_DISCOVERY_WARN` nommant son exception, l'ancien cache est gardé (décision
+    // du développeur principal 2026-10-10 — le silence du `.ok()` ne contractait rien).
+    if let Err(e) = crate::rt::block_on(async move {
         match tokio::time::timeout(std::time::Duration::from_mins(1), async_populate_cache()).await {
             Ok(Ok(discovery)) => {
                 *CACHE.write().await = discovery;
@@ -324,8 +326,9 @@ pub fn update_cache() {
                 tracing::warn!("E_DISCOVERY_TIMEOUT: update_k8s_crd_cache exceeded 60s, keeping old cache");
             }
         }
-    })
-    .ok();
+    }) {
+        tracing::warn!("E_DISCOVERY_WARN: update_k8s_crd_cache bridge failed ({e}), keeping old cache");
+    }
 }
 
 /// A single live Kubernetes object: its API handle plus the metadata fetched at creation.
@@ -616,14 +619,14 @@ impl K8sGeneric {
     /// On ambiguity the lexicographically smallest group wins (the core group in practice).
     /// Returns a handle with `api: None` when nothing matches.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics when called from a `current_thread` tokio runtime: the cache read rides
-    /// `crate::rt::block_on` (rt.sdd) and the signature carries no error channel — same
-    /// infrastructure-panic family as the `CACHE` initializer (k8s.sdd `Raises`).
-    #[must_use]
-    #[allow(clippy::expect_used)] // panic by design: signature non-Result, même exception que CACHE (k8s.sdd Raises) — remonté à la réconciliation
-    pub fn new(name: &str, ns: Option<String>) -> K8sGeneric {
+    /// Returns [`Error::Other`] (“requires a multi-thread tokio runtime”) when called from a
+    /// `current_thread` tokio runtime: the cache read rides `crate::rt::block_on` (rt.sdd),
+    /// which refuses without polling the future (k8s.sdd `Raises`, décision du développeur
+    /// principal 2026-10-10). Returns [`Error::Stdio`] if the no-runtime fallback cannot
+    /// build its temporary runtime.
+    pub fn new(name: &str, ns: Option<String>) -> Result<Self> {
         // Un ns vide est traité comme absent (k8s.sdd `Must`, décision actée) : pas d'URL
         // invalide, repli all-namespaces ; le `ns` stocké sur le handle suit la même règle.
         let ns = normalize_ns(ns);
@@ -667,20 +670,18 @@ impl K8sGeneric {
                 }
             }
         })
-        .expect("k8s resource resolution requires a multi-thread tokio runtime")
     }
 
     /// Resolves a resource by api group, version and kind/plural from the discovery cache.
     ///
     /// Returns a handle with `api: None` when nothing matches.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics when called from a `current_thread` tokio runtime (same as [`Self::new`]: cache
-    /// read via `crate::rt::block_on`, no error channel in the signature; k8s.sdd `Raises`).
-    #[must_use]
-    #[allow(clippy::expect_used)] // panic by design: signature non-Result, même exception que CACHE (k8s.sdd Raises) — remonté à la réconciliation
-    pub fn new_api_version(api_group: &str, version: &str, name: &str, ns: Option<String>) -> K8sGeneric {
+    /// Same bridge errors as [`Self::new`]: [`Error::Other`] when called from a
+    /// `current_thread` tokio runtime, [`Error::Stdio`] if the no-runtime fallback cannot
+    /// build its temporary runtime (k8s.sdd `Raises`).
+    pub fn new_api_version(api_group: &str, version: &str, name: &str, ns: Option<String>) -> Result<Self> {
         // Un ns vide est traité comme absent (k8s.sdd `Must`, décision actée), même règle que
         // dans `Self::new`.
         let ns = normalize_ns(ns);
@@ -730,33 +731,44 @@ impl K8sGeneric {
                 }
             }
         })
-        .expect("k8s resource resolution requires a multi-thread tokio runtime")
     }
 
     /// Rhai constructor `k8s_resource(name, ns)`: namespaced [`Self::new`].
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the bridge error of [`Self::new`] (converted by
+    /// [`crate::rhai_err`], k8s.sdd `Raises`).
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
-    pub fn new_ns(name: String, ns: String) -> K8sGeneric {
-        K8sGeneric::new(name.as_str(), Some(ns))
+    pub fn new_ns(name: String, ns: String) -> RhaiRes<K8sGeneric> {
+        K8sGeneric::new(name.as_str(), Some(ns)).map_err(rhai_err)
     }
 
     /// Rhai constructor `k8s_resource(name)`: cluster-wide [`Self::new`] lookup.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the bridge error of [`Self::new`] (converted by
+    /// [`crate::rhai_err`], k8s.sdd `Raises`).
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
-    pub fn new_global(name: String) -> K8sGeneric {
-        K8sGeneric::new(name.as_str(), None)
+    pub fn new_global(name: String) -> RhaiRes<K8sGeneric> {
+        K8sGeneric::new(name.as_str(), None).map_err(rhai_err)
     }
 
     /// Rhai constructor `k8s_resource(api_version, name, ns)`: splits `api_version` on `/`
     /// and delegates to [`Self::new_api_version`] (or [`Self::new`] when no group is present).
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns a Rhai error wrapping the bridge error of the delegated constructor
+    /// (converted by [`crate::rhai_err`], k8s.sdd `Raises`).
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
-    pub fn new_group_ns(api_version: String, name: String, ns: String) -> K8sGeneric {
+    pub fn new_group_ns(api_version: String, name: String, ns: String) -> RhaiRes<K8sGeneric> {
         let arr = api_version.split('/').collect::<Vec<&str>>();
         if arr.len() > 1 {
-            K8sGeneric::new_api_version(arr[0], arr[1], name.as_str(), Some(ns))
+            K8sGeneric::new_api_version(arr[0], arr[1], name.as_str(), Some(ns)).map_err(rhai_err)
         } else {
-            K8sGeneric::new(name.as_str(), Some(ns))
+            K8sGeneric::new(name.as_str(), Some(ns)).map_err(rhai_err)
         }
     }
 
@@ -2405,6 +2417,67 @@ mod tests {
         );
     }
 
+    // ── Scenario « pont du résolveur : Err typé, plus de panique » (k8s.sdd `Raises`,
+    // décision du développeur principal 2026-10-10) ──
+    // Seam verrouillable SANS cluster : sous `current_thread`, `rt::block_on` refuse AVANT
+    // de polliner le futur — le LazyLock CACHE (et sa panic d'initialisation) ne sont
+    // jamais touchés. Les cinq faces jouent par `k8s_resource` surchargé par arité :
+    // `new_global` (1 chaîne), `new_ns` (2), `new_group_ns` (3, avec et sans `/` — le cas
+    // avec `/` route vers `new_api_version`). Les faces Rust directes `new`/
+    // `new_api_version` ne sont verrouillables qu'avec la signature `Result` (leur test
+    // voyage avec la conversion). `catch_unwind` rend le test rouge sous l'ancien code :
+    // la panique `expect` y est capturée et tombe sous le `panic!` du troisième bras.
+    #[tokio::test(flavor = "current_thread")]
+    async fn k8s_resource_constructors_render_bridge_error_not_panic_on_current_thread() {
+        let mut engine = Engine::new();
+        k8sgeneric_rhai_register(&mut engine);
+        for script in [
+            r#"k8s_resource("pods")"#,
+            r#"k8s_resource("pods", "app")"#,
+            r#"k8s_resource("v1", "mod", "app")"#,
+            r#"k8s_resource("acme.io/v1", "widget", "app")"#,
+        ] {
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.eval::<Dynamic>(script)));
+            match outcome {
+                Ok(Err(e)) => assert!(
+                    e.to_string().contains("requires a multi-thread tokio runtime"),
+                    "l'exception script doit porter l'erreur du pont ({script}) : {e}"
+                ),
+                Ok(Ok(v)) => panic!("une erreur était attendue, rendu : {v:?} ({script})"),
+                Err(payload) => panic!(
+                    "panique capturée sur {script} : le pont doit rendre Err, jamais paniquer ({payload:?})"
+                ),
+            }
+        }
+    }
+
+    // Face Rust directe, verrouillable SANS cluster sous `current_thread` (le futur n'est
+    // jamais polliné, le LazyLock CACHE n'est pas touché). Hors runtime, la résolution
+    // d'abord le CACHE — voie `populate_cache` (panic d'infrastructure contractée,
+    // k8s.sdd) — donc non verrouillable sans cluster : consigné aux Tasks de k8s.sdd.
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_on_current_thread_returns_typed_bridge_error() {
+        match K8sGeneric::new("pods", Some("app".to_string())) {
+            Err(crate::Error::Other(msg)) => assert!(
+                msg.contains("requires a multi-thread tokio runtime"),
+                "message attendu explicite, obtenu : {msg}"
+            ),
+            other => panic!("Error::Other attendu, rendu : {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_api_version_on_current_thread_returns_typed_bridge_error() {
+        match K8sGeneric::new_api_version("acme.io", "v1", "widget", None) {
+            Err(crate::Error::Other(msg)) => assert!(
+                msg.contains("requires a multi-thread tokio runtime"),
+                "message attendu explicite, obtenu : {msg}"
+            ),
+            other => panic!("Error::Other attendu, rendu : {other:?}"),
+        }
+    }
+
     #[test]
     fn have_status_value_missing_prop() {
         let obj = dynobj(serde_json::json!({"status": {}}));
@@ -2957,5 +3030,70 @@ mod tests {
         let out = dep.wait_available(1);
         responder.abort();
         assert!(out.is_ok(), "condition satisfaie dès la liste initiale : {out:?}");
+    }
+}
+
+/// Verrou du warn d'échec du pont de [`update_cache`] (k8s.sdd `Must`, décision du
+/// développeur principal 2026-10-10) : le `.ok()` muet devient voie douce tracée. Le
+/// captureur reprend le précédent `to_decimal` de ./hbs.rs (`warn_tests`) : couche de
+/// capture du seul champ `message`, subscriber confiné au fil courant par
+/// `tracing::subscriber::with_default` (thread-local), jamais `set_global_default`.
+#[cfg(test)]
+mod warn_tests {
+    use super::update_cache;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
+    /// Couche de capture minimale : ne retient que le texte formaté du champ `message` de
+    /// chaque événement — le strict nécessaire pour assertionner le texte et le nombre du
+    /// warn du contrat.
+    struct MessageCapture(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for MessageCapture {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = MessageOnly(Vec::new());
+            event.record(&mut visitor);
+            self.0.lock().unwrap().extend(visitor.0);
+        }
+    }
+
+    /// Ne visite que `message` : le warn du contrat n'a que ce champ.
+    struct MessageOnly(Vec<String>);
+
+    impl Visit for MessageOnly {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.push(format!("{value:?}"));
+            }
+        }
+    }
+
+    /// Scenario (k8s.sdd `Must`, amendé 2026-10-10) : appel de `update_cache` sur runtime
+    /// `current_thread` — le pont `rt::block_on` refuse sans polliner le futur → UN warn de
+    /// la famille `E_DISCOVERY_WARN` nommant l'exception du pont, rendu unité, sans panic.
+    /// CACHE intact : sous `current_thread` le futur n'est jamais polliné, donc le `LazyLock`
+    /// n'est pas touché — et tout touch hors cluster paniquerait « create discovery » (voie
+    /// `populate_cache`) : l'absence de panic EST la preuve observable de l'intégrité.
+    #[tokio::test(flavor = "current_thread")]
+    async fn update_cache_bridge_failure_emits_one_family_warn_and_keeps_cache() {
+        let captured: Arc<Mutex<Vec<String>>> = Arc::default();
+        let subscriber =
+            tracing_subscriber::registry::Registry::default().with(MessageCapture(Arc::clone(&captured)));
+        tracing::subscriber::with_default(subscriber, || {
+            update_cache(); // rend unité ; toute panique ferait échouer le test.
+        });
+        let warns = captured.lock().unwrap().clone();
+        assert_eq!(
+            warns.len(),
+            1,
+            "un seul warn attendu pour l'échec du pont, capturés : {warns:?}"
+        );
+        assert!(
+            warns[0].contains("E_DISCOVERY_WARN: update_k8s_crd_cache")
+                && warns[0].contains("requires a multi-thread tokio runtime"),
+            "le warn doit porter la famille E_DISCOVERY_WARN et nommer l'exception du pont, obtenu : {:?}",
+            warns[0]
+        );
     }
 }
