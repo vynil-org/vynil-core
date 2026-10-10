@@ -511,15 +511,21 @@ mod tests {
 
     // ── Harnais de capture des faits `tracing` (même patron que le verrou de src/hbs.rs) ──
     // Couche de capture minimale, confinée au fil courant via `with_default` (jamais
-    // `set_global_default`) : ne retient que le texte formaté du champ `message`, pour
-    // assertionner texte et nombre des `tracing::error!` contractés par `engine.sdd`.
-    struct MessageCapture(Arc<Mutex<Vec<String>>>);
+    // `set_global_default`) : ne retient que le niveau et le texte formaté du champ
+    // `message`, pour assertionner texte, nombre ET niveau des `tracing` contractés par
+    // `engine.sdd` (erreurs `Compiling`/`Evaluating` de `add_code`, faces des `log_*`,
+    // bruit `START:`/`END:` des voies typées, `cannot convert` de `set_dynamic`).
+    struct MessageCapture(Arc<Mutex<Vec<(String, String)>>>);
 
     impl<S: tracing::Subscriber> Layer<S> for MessageCapture {
         fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
             let mut visitor = MessageOnly(Vec::new());
             event.record(&mut visitor);
-            self.0.lock().unwrap().extend(visitor.0);
+            let level = event.metadata().level().as_str().to_string();
+            self.0
+                .lock()
+                .unwrap()
+                .extend(visitor.0.into_iter().map(|message| (level.clone(), message)));
         }
     }
 
@@ -534,9 +540,13 @@ mod tests {
     }
 
     /// Évalue `run` sur `script` sous le subscriber de capture confiné au fil courant et
-    /// retourne sa sortie avec les textes d'événement capturés, dans l'ordre d'émission.
-    fn capture_logs<T>(script: &mut Script, run: impl FnOnce(&mut Script) -> T) -> (T, Vec<String>) {
-        let captured: Arc<Mutex<Vec<String>>> = Arc::default();
+    /// retourne sa sortie avec les couples (niveau, texte d'événement) capturés, dans
+    /// l'ordre d'émission.
+    fn capture_logs<T>(
+        script: &mut Script,
+        run: impl FnOnce(&mut Script) -> T,
+    ) -> (T, Vec<(String, String)>) {
+        let captured: Arc<Mutex<Vec<(String, String)>>> = Arc::default();
         let subscriber =
             tracing_subscriber::registry::Registry::default().with(MessageCapture(Arc::clone(&captured)));
         let out = tracing::subscriber::with_default(subscriber, || run(script));
@@ -1068,11 +1078,11 @@ fn run(args) { return "fallback/1"; }
         );
         assert!(
             logs.iter()
-                .any(|l| l.starts_with("Compiling ") && l.contains(" failed with : ")),
+                .any(|l| l.1.starts_with("Compiling ") && l.1.contains(" failed with : ")),
             "expected a « Compiling ... failed with : » error, got {logs:?}"
         );
         assert!(
-            !logs.iter().any(|l| l.starts_with("Evaluating ")),
+            !logs.iter().any(|l| l.1.starts_with("Evaluating ")),
             "the evaluating label must not appear on a compile failure, got {logs:?}"
         );
         assert_eq!(
@@ -1095,11 +1105,11 @@ fn run(args) { return "fallback/1"; }
         );
         assert!(
             logs.iter()
-                .any(|l| l.starts_with("Evaluating ") && l.contains(" failed with : ")),
+                .any(|l| l.1.starts_with("Evaluating ") && l.1.contains(" failed with : ")),
             "expected a « Evaluating ... failed with : » error, got {logs:?}"
         );
         assert!(
-            !logs.iter().any(|l| l.starts_with("Compiling ")),
+            !logs.iter().any(|l| l.1.starts_with("Compiling ")),
             "the compiling label must not appear on an eval failure, got {logs:?}"
         );
     }
@@ -1124,6 +1134,641 @@ fn run(args) { return "fallback/1"; }
         assert!(
             s.eval(r#"import_run("absent", #{}, #{}, [])"#).is_ok(),
             "the import_run shim must still work after a recall"
+        );
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // Lot « Convertir les Scenario en tests passants » — faces JAMAIS verrouillées
+    // par la porte script dans ./engine.rs à l'ouverture de la tâche : la face
+    // publique `Script` (`set_dynamic`, `run_file`, `eval_truth`, `eval_map_string`,
+    // `eval_map_json`, `json_encode_escape`, `basename`,
+    // `dirname`, les `log_*`) et le chemin feature-gate câblé par `new_bare`
+    // (`fs`, bcrypt/argon, `gen_password*`, `shell_*`, `Registry`).
+    // Convention des verrous gated : la moitié négative (« sans la feature, les
+    // noms sont fonction-inconnue ») est HORS COMPILATION ici — le module entier
+    // est gated `rhai` et chaque verrou ne compile qu'avec SA feature. Elle est
+    // jouée par les portes de la batterie (AGENTS.md : `--no-default-features
+    // --features rhai` vs `rhai,fs`/`rhai,password`/`rhai,shell`, `crypto` par les
+    // défauts), et déjà verrouillée en module pour `password`
+    // (./password.rs::wiring_new_bare_sans_password) et `crypto`/`key`
+    // (./lib.rs::new_bare_without_crypto_rejects_gen_private_key).
+    // ════════════════════════════════════════════════════════════════════════════
+
+    // ── Scenario « le scope survit aux évaluations » : face `set_dynamic` ──────
+
+    /// `set_dynamic` pose la valeur JSON dans le scope partagé (&mut self.ctx) : les
+    /// `eval` suivants la voient ; un rappel sous le même nom `set_or_push`-replace
+    /// l'homonyme au lieu d'en empiler une seconde (le `ctx` public est observable par
+    /// `len`).
+    #[test]
+    fn test_set_dynamic_pose_et_remplace_sans_dupliquer() {
+        let mut s = make_script();
+        s.set_dynamic("donnee", &serde_json::json!({"cle": "valeur"}));
+        assert_eq!(s.eval("donnee.cle").unwrap().to_string(), "valeur");
+        assert_eq!(
+            s.eval("donnee.cle").unwrap().to_string(),
+            "valeur",
+            "posée une fois, la variable survit aux évaluations suivantes"
+        );
+        assert_eq!(s.ctx.len(), 1);
+        s.set_dynamic("donnee", &serde_json::json!({"cle": "remplacee"}));
+        assert_eq!(
+            s.ctx.len(),
+            1,
+            "set_or_push remplace l'homonyme, n'en duplique pas une seconde"
+        );
+        assert_eq!(s.eval("donnee.cle").unwrap().to_string(), "remplacee");
+    }
+
+    /// Un `let` de niveau supérieur posé dans une évaluation reste visible des
+    /// évaluations suivantes sur le MÊME Script : le Scope public est partagé par
+    /// toutes les méthodes d'évaluation.
+    #[test]
+    fn test_let_de_niveau_superieur_survit_entre_evaluations() {
+        let mut s = make_script();
+        assert!(s.eval("let x = 1;").unwrap().is_unit(), "un let nu rend l'unité");
+        assert_eq!(
+            s.eval("x").unwrap().cast::<i64>(),
+            1,
+            "le second eval voit le let du premier"
+        );
+    }
+
+    /// Branche d'échec de `set_dynamic` : le Scenario nomme « la conversion serde d'un
+    /// Dynamic non sérialisable (valeur fonction) » — inatteignable par la face
+    /// `&serde_json::Value`, qui ne transporte pas de fonction (mesure : `u64::MAX`
+    /// passe le round-trip `@rhai` sans erreur, le désérialiseur n'est pas borné `i64`
+    /// dans ce graphe). Le même canal (`from_str::<Dynamic>`) est ici joué par une
+    /// conversion réellement en échec : un JSON imbriqué au-delà de la limite de
+    /// récursion de 128 du désérialiseur `@serde_json.` Contrat : aucun canal d'erreur,
+    /// aucune panique, scope intact, seul un `tracing::error!` « cannot convert … »
+    /// paraît.
+    #[test]
+    fn test_set_dynamic_conversion_en_echec_laisse_le_scope_intact() {
+        let mut deep = serde_json::json!({"k": 1});
+        for _ in 0..130 {
+            deep = serde_json::json!({"n": deep});
+        }
+        let mut s = make_script();
+        s.set_dynamic("ok", &serde_json::json!(7));
+        let ((), logs) = capture_logs(&mut s, |sc| {
+            sc.set_dynamic("deep", &deep);
+        });
+        assert_eq!(
+            logs.len(),
+            1,
+            "la conversion en échec ne doit émettre qu'un seul événement, got {logs:?}"
+        );
+        assert_eq!(
+            logs[0].0, "ERROR",
+            "l'événement est un tracing::error!, got {logs:?}"
+        );
+        assert!(
+            logs[0].1.starts_with("cannot convert deep"),
+            "le libellé nomme la variable en échec, got {:?}",
+            logs[0].1
+        );
+        assert_eq!(s.ctx.len(), 1, "le scope reste intact (seule `ok` y figure)");
+        assert_eq!(
+            s.eval("ok").unwrap().cast::<i64>(),
+            7,
+            "la variable posée avant survit"
+        );
+        assert!(s.eval("deep").is_err(), "la valeur en échec n'est jamais posée");
+    }
+
+    // ── Scenario « les cinq voies d'évaluation et leurs types » ────────────────
+
+    /// `eval_truth` rend le booléen attendu ; un résultat non convertible (`1 + 1`)
+    /// est une `Error::RhaiError` de cette méthode — la conversion `@rhai` inadmissible
+    /// passe par le `map_err(RhaiError)` nu, sans `error_chain`.
+    #[test]
+    fn test_eval_truth_rend_le_booleen_et_rejette_le_non_booleen() {
+        let mut s = make_script();
+        assert!(s.eval_truth("1 > 0").unwrap());
+        assert!(!s.eval_truth("false").unwrap());
+        let err = s.eval_truth("1 + 1").unwrap_err();
+        assert!(
+            matches!(err, Error::RhaiError(_)),
+            "le non-booléen est une RhaiError nue, got {err:?}"
+        );
+    }
+
+    /// `eval_map_string` rend la sérialisation `@serde_json` COMPACTE de la `@rhai::Map` ;
+    /// un script retournant un scalaire échoue en `RhaiError`.
+    #[test]
+    fn test_eval_map_string_rend_la_serialisation_compacte_et_rejette_le_scalaire() {
+        let mut s = make_script();
+        let rendered = s.eval_map_string(r#"#{"a": 1 + 1}"#).unwrap();
+        assert!(!rendered.contains(' '), "la chaîne est compacte, got {rendered}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rendered).unwrap(),
+            serde_json::json!({"a": 2})
+        );
+        let err = s.eval_map_string("42").unwrap_err();
+        assert!(
+            matches!(err, Error::RhaiError(_)),
+            "un scalaire n'est pas une Map : RhaiError, got {err:?}"
+        );
+    }
+
+    /// `eval_map_json` rend le `@serde_json::Value` correspondant de la Map ; un
+    /// scalaire échoue en `RhaiError`.
+    #[test]
+    fn test_eval_map_json_rend_la_valeur_et_rejette_le_scalaire() {
+        let mut s = make_script();
+        assert_eq!(
+            s.eval_map_json(r#"#{"a": [1, "x"], "b": true}"#).unwrap(),
+            serde_json::json!({"a": [1, "x"], "b": true})
+        );
+        let err = s.eval_map_json("42").unwrap_err();
+        assert!(
+            matches!(err, Error::RhaiError(_)),
+            "un scalaire n'est pas une Map : RhaiError, got {err:?}"
+        );
+    }
+
+    /// Le cadre `START:`/`END:` en `@tracing::debug` autour du script brut n'appartient
+    /// QU'à `eval_truth` et `eval_map_string` — ni `eval`, ni `eval_map_json`, ni
+    /// `run_file`. Les quatre voies muettes sont capturées vides sous le subscriber
+    /// confiné au fil (les deux bruitées sont vérifiées niveau par niveau, texte par
+    /// texte).
+    #[test]
+    fn test_seul_eval_truth_et_eval_map_string_sont_bruitees_start_end() {
+        let truth_script = "1 > 0";
+        let mut s = make_script();
+        let (truth, logs) = capture_logs(&mut s, |sc| sc.eval_truth(truth_script));
+        assert!(truth.unwrap());
+        assert_eq!(
+            logs,
+            vec![
+                ("DEBUG".to_string(), format!("START: eval_truth({truth_script})")),
+                ("DEBUG".to_string(), format!("END: eval_truth({truth_script})")),
+            ],
+            "eval_truth est encadrée START:/END: en debug, rien d'autre"
+        );
+
+        let map_script = r#"#{"a": 1}"#;
+        let (rendered, logs) = capture_logs(&mut s, |sc| sc.eval_map_string(map_script));
+        assert!(rendered.is_ok());
+        assert_eq!(
+            logs,
+            vec![
+                (
+                    "DEBUG".to_string(),
+                    format!("START: eval_map_string({map_script})")
+                ),
+                ("DEBUG".to_string(), format!("END: eval_map_string({map_script})")),
+            ],
+            "eval_map_string est encadrée START:/END: en debug, rien d'autre"
+        );
+
+        let (plain, logs) = capture_logs(&mut s, |sc| sc.eval("1 + 1"));
+        assert!(plain.is_ok());
+        assert!(logs.is_empty(), "eval ne bruit jamais, got {logs:?}");
+
+        let (value, logs) = capture_logs(&mut s, |sc| sc.eval_map_json(map_script));
+        assert!(value.is_ok());
+        assert!(logs.is_empty(), "eval_map_json ne bruit jamais, got {logs:?}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("muet.rhai");
+        std::fs::write(&good, "1 + 1").unwrap();
+        let (filed, logs) = capture_logs(&mut s, |sc| sc.run_file(&good));
+        assert!(filed.is_ok());
+        assert!(logs.is_empty(), "run_file ne bruit jamais, got {logs:?}");
+    }
+
+    // ── Face propre des `log_*` (exécutés incidemment par le skip des shims sans
+    // verrou de leur face jusqu'ici) : la macro @tracing du nom, et l'unité en sortie ──
+
+    /// Chacun des quatre `log_*` appelle la macro `@tracing` de SON niveau (DEBUG/INFO/
+    /// WARN/ERROR capturés), émet exactement un événement porteur du texte reçu, et
+    /// rend l'unité.
+    #[test]
+    fn test_log_helpers_emettent_a_leur_niveau_et_rendent_l_unite() {
+        let cases = [
+            ("log_debug", "DEBUG"),
+            ("log_info", "INFO"),
+            ("log_warn", "WARN"),
+            ("log_error", "ERROR"),
+        ];
+        for (name, level) in cases {
+            let mut s = make_script();
+            let (res, logs) = capture_logs(&mut s, move |sc| sc.eval(&format!("{name}(\"trace-{name}\")")));
+            assert!(res.unwrap().is_unit(), "{name} doit rendre l'unité");
+            assert_eq!(
+                logs,
+                vec![(level.to_string(), format!("trace-{name}"))],
+                "{name} doit émettre exactement un événement au niveau {level}"
+            );
+        }
+    }
+
+    // ── Scenario « les utilitaires verrouillent leurs valeurs » : faces manquantes ──
+
+    /// `json_encode_escape` rend `format!("{str:?}")` de la sortie json : la chaîne a
+    /// ses guillemets englobants échappés, donc un JSON imbriqué D'UN CRAN — décodé
+    /// une fois c'est une chaîne (le texte JSON), pas une carte.
+    #[test]
+    fn test_json_encode_escape_imbrique_le_json_d_un_cran() {
+        let mut s = make_script();
+        assert_eq!(
+            s.eval("json_encode_escape(#{})").unwrap().to_string(),
+            "\"{}\"",
+            "la carte vide rend une chaîne entre guillemets englobants échappés"
+        );
+        assert_eq!(
+            s.eval(r#"type_of(json_decode(json_encode_escape(#{"a": 1})))"#)
+                .unwrap()
+                .to_string(),
+            "string",
+            "un cran d'imbrication : le premier décodage rend une chaîne"
+        );
+    }
+
+    /// `basename`/`dirname` appliquent `@std::path::Path::file_name/``@std::path::Path::parent`,
+    /// tout `None` rendant la chaîne vide : les deux cas figures du Scenario
+    /// (`basename("/a/")` → `a`, `dirname("/")` → vide) plus la forme courante.
+    #[test]
+    fn test_basename_et_dirname_verrouillent_leurs_cas_figures() {
+        let mut s = make_script();
+        assert_eq!(s.eval(r#"basename("/a/")"#).unwrap().to_string(), "a");
+        assert_eq!(s.eval(r#"dirname("/a/b.txt")"#).unwrap().to_string(), "/a");
+        assert_eq!(s.eval(r#"basename("/a/b.txt")"#).unwrap().to_string(), "b.txt");
+        assert_eq!(
+            s.eval(r#"dirname("/").len()"#).unwrap().cast::<i64>(),
+            0,
+            "parent de « / » est None : la chaîne vide, jamais une erreur"
+        );
+    }
+
+    // ── Scenario « run_file garde ses trois portes » ───────────────────────────
+
+    /// Première porte : chemin absent OU repertoire → `Error::MissingScript`
+    /// d'affichage `Missing script <chemin>` (le test `is_file` couvre les deux).
+    #[test]
+    fn test_run_file_absent_et_repertoire_sont_missing_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = make_script();
+        let absent = dir.path().join("absent.rhai");
+        let err = s.run_file(&absent).unwrap_err();
+        assert!(matches!(err, Error::MissingScript(_)), "got {err:?}");
+        assert_eq!(err.to_string(), format!("Missing script {}", absent.display()));
+        let dossier = dir.path().to_path_buf();
+        let err = s.run_file(&dossier).unwrap_err();
+        assert!(
+            matches!(err, Error::MissingScript(_)),
+            "un repertoire n'est pas un script, got {err:?}"
+        );
+    }
+
+    /// Deuxième porte : chemin existant dont l'`@std::ffi::OsStr` n'est pas UTF-8 →
+    /// `Error::Other` porteur du suffixe `: path is not valid UTF-8` (le fichier doit
+    /// EXISTER, la garde `is_file` passant avant la garde UTF-8).
+    #[cfg(unix)]
+    #[test]
+    fn test_run_file_chemin_non_utf8_est_other_avec_suffixe() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bizarre = dir.path().join(std::ffi::OsStr::from_bytes(&[0xff_u8]));
+        std::fs::File::create(&bizarre).unwrap();
+        let mut s = make_script();
+        let err = s.run_file(&bizarre).unwrap_err();
+        assert!(matches!(err, Error::Other(_)), "got {err:?}");
+        assert!(
+            err.to_string().ends_with(": path is not valid UTF-8"),
+            "le suffixe contractuel est attendu, got {err}"
+        );
+    }
+
+    /// Troisième porte : fichier `.rhai` de syntaxe invalide → `RhaiError` de
+    /// compilation ; d'un fichier valide, le `@rhai::Dynamic` de la dernière expression,
+    /// évalué dans le scope persistant (les variables posées avant y entrent, les
+    /// `let` du fichier en ressortent visibles des `eval` suivants).
+    #[test]
+    fn test_run_file_syntaxe_invalide_puis_valide_dans_le_scope_persistant() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = make_script();
+        let bad = dir.path().join("bad.rhai");
+        std::fs::write(&bad, "fn broken( {").unwrap();
+        let err = s.run_file(&bad).unwrap_err();
+        assert!(matches!(err, Error::RhaiError(_)), "got {err:?}");
+        let good = dir.path().join("good.rhai");
+        std::fs::write(&good, "let w = v + 1;\nw").unwrap();
+        s.set_dynamic("v", &serde_json::json!(41));
+        assert_eq!(
+            s.run_file(&good).unwrap().cast::<i64>(),
+            42,
+            "la dernière expression, évaluée dans le scope persistant"
+        );
+        assert_eq!(s.eval("w").unwrap().cast::<i64>(), 42, "le let du fichier survit");
+    }
+
+    // ── fs sous sa double porte : trajet « script via new_bare » des `file_*`,
+    // `create_dir`, `read_dir` (erreur d'E/S) et `is_file`/`is_dir`. Complète les
+    // deux verrous `read_dir` déjà en place. La clause « `fs` sans `rhai`
+    // n'enregistre rien » et la moitié sans-feature sont hors compilation ici :
+    // batterie (porte `--no-default-features --features rhai` + `cargo hack`). ──
+
+    /// `file_write` crée puis écrase INTÉGRALEMENT (write, pas append) ; `file_read`
+    /// relit ce qui a été écrit (aller-retour par la porte script).
+    #[cfg(feature = "fs")]
+    #[test]
+    fn test_file_write_cree_puis_ecrase_integralement_et_file_read_relit() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("f");
+        let mut s = make_script();
+        let write = |s: &mut Script, content: &str| {
+            s.eval(&format!("file_write(\"{}\", \"{content}\")", f.display()))
+        };
+        assert!(
+            write(&mut s, "premier").unwrap().is_unit(),
+            "file_write rend l'unité"
+        );
+        assert_eq!(
+            s.eval(&format!("file_read(\"{}\")", f.display()))
+                .unwrap()
+                .to_string(),
+            "premier"
+        );
+        assert!(write(&mut s, "second").unwrap().is_unit());
+        assert_eq!(
+            s.eval(&format!("file_read(\"{}\")", f.display()))
+                .unwrap()
+                .to_string(),
+            "second",
+            "écrasement intégral, pas d'append"
+        );
+    }
+
+    /// `file_write("dir/f", …)` sans parent existant échoue en erreur préfixée
+    /// `Stdio error ` (`@variant-Error::Stdio` porté par `@crate::rhai_err`) : les
+    /// parents ne sont JAMAIS créés par `file_write`.
+    #[cfg(feature = "fs")]
+    #[test]
+    fn test_file_write_sans_parent_est_une_erreur_stdio_sans_creation() {
+        let dir = tempfile::tempdir().unwrap();
+        let profond = dir.path().join("manquant/sous-manquant/f");
+        let mut s = make_script();
+        let err = s
+            .eval(&format!("file_write(\"{}\", \"x\")", profond.to_string_lossy()))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Stdio error"),
+            "la préfixe Stdio est attendue, got {err}"
+        );
+        assert!(
+            !dir.path().join("manquant").exists(),
+            "file_write ne crée JAMAIS les dossiers parents"
+        );
+    }
+
+    /// `file_copy` écrase la destination et NE DÉPLACE PAS la source (deux copies
+    /// successives, la source reste lisible avec son contenu).
+    #[cfg(feature = "fs")]
+    #[test]
+    fn test_file_copy_ecrase_la_destination_et_ne_deplace_pas_la_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src");
+        let dst = dir.path().join("dst");
+        std::fs::write(&src, "source").unwrap();
+        std::fs::write(&dst, "ancienne").unwrap();
+        let mut s = make_script();
+        let copy = |s: &mut Script| {
+            s.eval(&format!(
+                "file_copy(\"{}\", \"{}\")",
+                src.display(),
+                dst.display()
+            ))
+        };
+        assert!(copy(&mut s).unwrap().is_unit(), "file_copy rend l'unité");
+        assert_eq!(
+            std::fs::read_to_string(&dst).unwrap(),
+            "source",
+            "la destination est écrasée"
+        );
+        assert!(copy(&mut s).unwrap().is_unit());
+        assert_eq!(
+            std::fs::read_to_string(&src).unwrap(),
+            "source",
+            "la source n'est pas déplacée"
+        );
+    }
+
+    /// `create_dir` est un `create_dir_all` récursif et idempotent : deux niveaux
+    /// manquants créés d'un coup, le second appel ne se plaint pas.
+    #[cfg(feature = "fs")]
+    #[test]
+    fn test_create_dir_est_recursif_et_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let profond = dir.path().join("a/b/c");
+        let mut s = make_script();
+        assert!(
+            s.eval(&format!("create_dir(\"{}\")", profond.to_string_lossy()))
+                .unwrap()
+                .is_unit(),
+            "create_dir rend l'unité"
+        );
+        assert!(profond.is_dir());
+        assert!(
+            s.eval(&format!("create_dir(\"{}\")", profond.to_string_lossy()))
+                .unwrap()
+                .is_unit(),
+            "le second appel idempotent ne se plaint pas"
+        );
+    }
+
+    /// `file_read` est un `read_to_string` donc UTF-8 STRICT : des octets invalides
+    /// rendent une erreur, jamais un contenu corrompu ou vidé. L'erreur est une
+    /// erreur d'E/S de `read_to_string` donc préfixée `Stdio error ` (le `Must` fs :
+    /// « toutes les erreurs d'E/S passent par `rhai_err` de `Error::Stdio` » ;
+    /// `Error::UTF8` n'est désigné par le `Raises` que pour `read_dir`).
+    #[cfg(feature = "fs")]
+    #[test]
+    fn test_file_read_non_utf8_est_une_erreur() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("binaire");
+        std::fs::write(&f, [0xff_u8, 0xfe_u8]).unwrap();
+        let mut s = make_script();
+        let err = s.eval(&format!("file_read(\"{}\")", f.display())).unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("Stdio error") && text.contains("valid UTF-8"),
+            "l'échec UTF-8 strict doit remonter en erreur d'E/S Stdio, got {text}"
+        );
+    }
+
+    /// Une erreur d'E/S de `read_dir` (ici : chemin absent) lui remonte en Stdio
+    /// — la troisième face du Scenario, les deux autres (liste UTF-8, entrée
+    /// non-UTF-8) étant déjà verrouillées plus haut.
+    #[cfg(feature = "fs")]
+    #[test]
+    fn test_read_dir_sur_chemin_absent_est_une_erreur_stdio() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut s = make_script();
+        let err = s
+            .eval(&format!(
+                "read_dir(\"{}\")",
+                dir.path().join("absent").to_string_lossy()
+            ))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("Stdio error"),
+            "la préfixe Stdio est attendue, got {err}"
+        );
+    }
+
+    /// `is_file`/`is_dir` sur chemin brisé rendent `false` SANS erreur aucune, et
+    /// distinguent le vrai fichier du vrai dossier.
+    #[cfg(feature = "fs")]
+    #[test]
+    fn test_is_file_et_is_dir_ne_peuvent_jamais_erreur() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("f");
+        std::fs::write(&f, "x").unwrap();
+        let mut s = make_script();
+        let brise = dir.path().join("brise").to_string_lossy().into_owned();
+        for (name, attendu) in [("is_file", false), ("is_dir", false)] {
+            assert_eq!(
+                s.eval(&format!("{name}(\"{brise}\")")).unwrap().cast::<bool>(),
+                attendu,
+                "{name} sur chemin brisé rend false sans erreur"
+            );
+        }
+        assert!(
+            s.eval(&format!("is_file(\"{}\")", f.display()))
+                .unwrap()
+                .cast::<bool>()
+        );
+        assert!(
+            s.eval(&format!("is_dir(\"{}\")", dir.path().display()))
+                .unwrap()
+                .cast::<bool>()
+        );
+        assert!(
+            !s.eval(&format!("is_dir(\"{}\")", f.display()))
+                .unwrap()
+                .cast::<bool>()
+        );
+    }
+
+    // ── password sous sa porte : trajet « script via new_bare » des deux noms
+    // (la face script complète est verrouillée dans ./password.rs ; la moitié
+    // négative y est aussi verrouillée, wiring_new_bare_sans_password) ──
+
+    /// `gen_password(len)` tient longueur et minima d'une unité par classe, la
+    /// surcharge binaire lit sa spec, `gen_password_alphanum` ne rend jamais de
+    /// symbole config-safe.
+    #[cfg(feature = "password")]
+    #[test]
+    fn test_gen_password_via_new_bare_tient_longueur_classes_et_alphanum() {
+        let mut s = make_script();
+        let p = s.eval("gen_password(20)").unwrap().into_string().unwrap();
+        assert_eq!(p.chars().count(), 20);
+        assert!(p.chars().any(|c| c.is_ascii_lowercase()));
+        assert!(p.chars().any(|c| c.is_ascii_uppercase()));
+        assert!(p.chars().any(|c| c.is_ascii_digit()));
+        assert!(
+            p.chars().any(|c| !c.is_ascii_alphanumeric()),
+            "unaire : au moins un symbole, got {p}"
+        );
+        let b = s
+            .eval("gen_password(16, #{ symbols: 8 })")
+            .unwrap()
+            .into_string()
+            .unwrap();
+        assert_eq!(b.chars().count(), 16);
+        assert!(
+            b.chars().filter(|c| !c.is_ascii_alphanumeric()).count() >= 8,
+            "la spec lue par new_bare est honorée, got {b}"
+        );
+        let a = s
+            .eval("gen_password_alphanum(24)")
+            .unwrap()
+            .into_string()
+            .unwrap();
+        assert_eq!(a.chars().count(), 24);
+        assert!(
+            a.chars().all(|c| c.is_ascii_alphanumeric()),
+            "alphanum : jamais de symbole, got {a}"
+        );
+    }
+
+    // ── crypto sous sa porte (jouée par `default` et `--all-features`) : trio
+    // `bcrypt_hash` + `new_argon`/`hash` via new_bare. La moitié négative de `key`
+    // est verrouillée ./lib.rs::new_bare_without_crypto_rejects_gen_private_key,
+    // celle de bcrypt/argon se joue à la porte `--no-default-features --features
+    // rhai`. Budget : bcrypt `DEFAULT_COST` + argon2 défaut ≈ 1 s en debug, sous la
+    // barre des 2 s (mesuré contre le verrou jumeau de ./hashes.rs). ──
+
+    /// `bcrypt_hash` rend l'enveloppe bcrypt (`$2b$…`), `new_argon()` rend le type
+    /// nommé `Argon` et sa méthode `hash` l'enveloppe argon2id — par la porte script
+    /// de `new_bare`, sans enregistrement manuel.
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn test_bcrypt_et_argon_via_new_bare_rendent_leurs_enveloppes() {
+        let mut s = make_script();
+        let b = s.eval(r#"bcrypt_hash("secret")"#).unwrap().into_string().unwrap();
+        assert!(b.starts_with("$2b$"), "l'enveloppe bcrypt est attendue, got {b}");
+        assert_eq!(
+            s.eval("type_of(new_argon())").unwrap().into_string().unwrap(),
+            "Argon",
+            "le type est enregistré sous son nom"
+        );
+        let a = s
+            .eval(r#"new_argon().hash("secret")"#)
+            .unwrap()
+            .into_string()
+            .unwrap();
+        assert!(
+            a.starts_with("$argon2id$"),
+            "l'enveloppe argon2id est attendue, got {a}"
+        );
+    }
+
+    // ── shell sous sa porte (jouée par la porte nommée `rhai,shell`) : trajet
+    // « script via new_bare » des deux noms (les cinq verrous de face sont dans
+    // ./shell.rs ; la moitié négative se joue à la porte `--no-default-features
+    // --features rhai`) ──
+
+    /// `shell_run` rend le code de sortie (0 pour succès, `7` pour `exit 7` — un
+    /// code non nul n'EST PAS une erreur de cette face) ; `shell_output` rend la
+    /// stdout capturée.
+    #[cfg(feature = "shell")]
+    #[test]
+    fn test_shell_run_et_shell_output_via_new_bare() {
+        let mut s = make_script();
+        assert_eq!(s.eval(r#"shell_run("true")"#).unwrap().cast::<i64>(), 0);
+        assert_eq!(s.eval(r#"shell_run("exit 7")"#).unwrap().cast::<i64>(), 7);
+        assert_eq!(
+            s.eval(r#"shell_output("printf sortie")"#)
+                .unwrap()
+                .into_string()
+                .unwrap(),
+            "sortie"
+        );
+    }
+
+    // ── oci sous sa porte (jouée par `--all-features`) : `new_registry` câblé par
+    // new_bare résout le VRAI @crate::oci::Registry — jamais @crate::oci_mock
+    // (`Must not` « Cabler ... un _mock_rhai_register »). Hors compilation sans
+    // `oci` : la moitié fonction-inconnue se joue à la batterie. Construction sans
+    // réseau : la face `Registry::new` ne pourchasse rien (verrou jumeau ./oci.rs). ──
+
+    /// Le type résolu par `new_registry` passe-porte est `Registry`, le nom sous
+    /// lequel le VRAI `@crate::oci::Registry` est enregistré.
+    #[cfg(feature = "oci")]
+    #[test]
+    fn test_new_registry_via_new_bare_resout_le_vrai_registry() {
+        let mut s = make_script();
+        assert_eq!(
+            s.eval(r#"type_of(new_registry("reg.example", "u", "p"))"#)
+                .unwrap()
+                .into_string()
+                .unwrap(),
+            "Registry",
+            "le vrai type s'enregistre sous « Registry », le mock jamais"
         );
     }
 }
