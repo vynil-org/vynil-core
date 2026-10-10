@@ -36,12 +36,16 @@ References:
     pas l'hôte » (../vyvil-core.sdd) ; la rustdoc d'exemple du module le montre.
   ./Cargo.toml — `default = ["http", "crypto", "rhai", "hbs", "hbs-scripting"]` (ligne 50) :
     `http` est LE module réseau par défaut, contrairement à `oci`/`s3`/`k8s` ;
-    `http = ["dep:reqwest", "dep:schemars", "dep:tokio", "rhai"]` (ligne 75) implique `rhai`.
-    @reqwest déclaré optionnel `0.12.24` avec features `["rustls-tls"]` SEULEMENT — les
-    features par défaut de @reqwest (default-tls, donc native-tls) ne sont PAS désactivées :
-    deux piles TLS coexistent dans le graphe, à unifier sur rustls (tâche de faisabilité
-    commune avec ./oci.sdd) ; lock 0.12.28 (drift de patch mineur, même
-    pattern que @rhai 1.20/1.25). @schemars pulled par la feature, consommé pour @schemars::JsonSchema
+    `http = ["dep:reqwest", "dep:schemars", "dep:tokio", "rhai", "dep:rustls-pki-types"]`
+    (ligne 76) implique `rhai`.
+    @reqwest déclaré optionnel `0.12.24` avec `default-features = false` et features
+    ["rustls-tls", "charset", "http2", "system-proxy"] — bascule rustls jouée 2026-10-10,
+    `default-tls`/native-tls EXCLUS du graphe (mesuré : zéro native-tls/hyper-tls sous
+    http/oci/s3/k8s) ; lock 0.12.28 (drift de patch mineur, même
+    pattern que @rhai 1.20/1.25). @rustls-pki-types optionnel `1.15` (lock 1.15.1, déjà dans
+    le graphe via rustls, même parseur PEM que reqwest emploie en interne) : pré-validation
+    de l'enveloppe PEM du CA dans `get_client` avant `add_root_certificate`. @schemars
+    pulled par la feature, consommé pour @schemars::JsonSchema
     des quatre énum @crate::http::obj ; @tokio pour les ponts.
   ./docs/rhai_helpers.md — table HTTP fidèle sur les formes (`.head` rend map {code, headers},
     `.post_form` « drops any Content-Type header ») ; MAIS sa phrase centrée (~ligne 228)
@@ -120,8 +124,11 @@ Must:
     @std::primitive::u16 de status élargi par @std::primitive::i64::from (sans aller-retour
     par chaîne) ; `headers` = vecteur de tuples (nom, valeur) avec
     @reqwest::header::HeaderValue::to_str repliée en chaîne VIDE sur non-UTF-8 ; `body` = texte
-    brut ; `json` = @serde_json::from_str du corps `unwrap_or(json!({}))` — corps invalide →
-    map vide SILENCIEUSE ; TOUT statut hors 2xx reste `Ok(map)` ; échec de
+    brut ; `json` = @serde_json::from_str::<@rhai::Dynamic> du corps — valide → @rhai::Dynamic
+    natif, invalide → VRAIE map @rhai vide (@rhai::Map::new(), JAMAIS un @serde_json::Value
+    opaque — décision du développeur principal 2026-10-10 : le repli est une map, la forme
+    `unwrap_or(json!({}))` qui stockait un Value opaque est écartée) — map vide SILENCIEUSE ;
+    TOUT statut hors 2xx reste `Ok(map)` ; échec de
     @reqwest::Response::text → Erreur seule avec le texte `Error reading response body: {e}`,
     sans insertion préalable de `body` de bourrage (décision actée : nettoyage, contrat
     du tier script figé par ailleurs : un 4xx/5xx se lit, un `json` invalide vaut `#{}`) ;
@@ -225,10 +232,14 @@ Depends on:
     add_root_certificate, identity, use_rustls_tls, default_headers, form, get/put/post/patch/delete),
     @reqwest::Response (@reqwest::Response::status/@reqwest::Response::headers/@reqwest::Response::text),
     @reqwest::StatusCode (is_success, @reqwest::StatusCode::as_str/@reqwest::StatusCode::canonical_reason
-    `unwrap_or("unknown")`) ; 0.12.24 déclaré, lock 0.12.28 ; features déclarées `["rustls-tls"]`
-    SANS désactiver default-tls → native-tls aussi dans le graphe (à unifier sur rustls, tâche de
-    faisabilité). Le comportement réseau réel
+    `unwrap_or("unknown")`) ; 0.12.24 déclaré, lock 0.12.28 ; features déclarées
+    ["rustls-tls", "charset", "http2", "system-proxy"] avec default-features désactivés —
+    rustls seul, native-tls exclu du graphe (bascule 2026-10-10, verrou cargo tree). Le comportement réseau réel
     (redirects, pool, timeouts fins) appartient à la dépendance.
+  rustls-pki-types — @rustls_pki_types::CertificateDer::pem_slice_iter, pré-validation de
+    l'enveloppe PEM du CA dans `get_client` (décision 2026-10-10 option (b) : CA invalide =
+    Err à la construction sous rustls seul) ; même parseur que reqwest emploie en interne,
+    déjà dans le graphe via rustls — version unique 1.15.1 mesurée.
   tokio — via `crate::rt::block_on` (voir ./rt.sdd) sous les 32 ponts (28 avant migration),
     partagé avec ./s3.sdd et
     ./oci.sdd ; features `macros`+`rt-multi-thread`.
@@ -333,9 +344,13 @@ Raises:
     jamais ni ne requiert de runtime.
 
 Handles:
-  La pile TLS à trois régimes : base sans CA = piles de @reqwest (native-tls ET rustls
-    co-déclarées, à unifier) ; CA présente = @reqwest::ClientBuilder::use_rustls_tls forcé ; mTLS = identité PEM key+`\n`+cert ;
-    le PEM ne parle qu'à la première requête.
+  La pile TLS à trois régimes, rustls SEUL depuis la bascule 2026-10-10 (native-tls exclu du
+    graphe, verrou cargo tree) : base sans CA = @reqwest::ClientBuilder::use_rustls_tls et
+    racines de @reqwest ; CA présente = PEM PRÉ-VALIDÉ par @rustls_pki_types dans
+    `get_client` puis @reqwest::ClientBuilder::add_root_certificate — invalide = Err à la
+    construction, jamais ignoré silencieusement ; mTLS = identité PEM key+`\n`+cert, validée
+    par @reqwest::Identity::from_pem à la construction ; le PEM parle à chaque
+    `get_client`, jamais au setter.
   Le triptyque statut→valeur : `body_*` d'un 4xx/5xx en @variant-Error::MethodFailed (sauf delete
     sur 404 = succès), `rhai_*` d'un 4xx/5xx en `Ok(map)`, mock d'un trou de fixture en
     chaîne d'erreur — trois traitements du « pas content », contractés séparément.
@@ -354,16 +369,22 @@ Handles:
 Tasks:
   [ ] Convertir les Scenario en tests passants. ./http.rs portait 11 tests inline à HEAD
     (215 sous la porte `http` — la baseline que ce fichier annonçait « 8 » et « 199 » était
-    fausse, mesuré) ; le lot A-F y a ajouté 22 verrous (aujourd'hui 33 inline, 237 sous
+    fausse, mesuré) ; le lot A-F y a ajouté 22 verrous et le lot G (repli json + CA
+    pré-validé) 4 de plus (aujourd'hui 37 inline, 241 sous
     `http`) : casse de `add_header`, idempotence des setters, skip de `post_form`, log
     `CLIENT:` par tous les verbes, erreurs des `rhai_*`, politiques JSON, statut jamais
     erreur, `auth_type` et User-Agent de `http_get_yaml`, face wiremock des `obj_*`, vrai
-    HEAD et alias `http_head`. Reste SANS VERROU par la porte script : les builders TLS
-    (identité, CA multiples), le 404-delete de `body_delete`, les Scenarios réseau de bas
+    HEAD et alias `http_head`, repli `json` map vide ×3, pré-validation CA ×2. Reste SANS VERROU par la porte script : les builders TLS
+    (identité, CA multiples — le CA simple est verrouillé depuis la bascule 2026-10-10), le 404-delete de `body_delete`, les Scenarios réseau de bas
     de fichier (redirects, timeouts fins), le Then complet du Scenario `http_get_yaml` 404
     (seul le code du label est figé, pas `HTTP 404 Not Found for <url>` en entier) ; et
     ./http_mock.rs : ZÉRO test (pas même first-match ni le texte d'erreur — les Scenario
     mock/co-enregistrement attendent là). Les Scenario réseau se verrouillent en @wiremock.
+  [ ] Verrouiller par test la VOIE VALIDE du `json` des `rhai_*` (première moitié du `Must`
+    amendé 2026-10-10 : corps JSON valide → @rhai::Dynamic NATIF, indexable en script) —
+    les verrous du repli posés par le lot G n'assurent que le bras `Err` ; un corps valide
+    servi par @wiremock avec assertions d'indexation script (`r.json.a`, `type_of`) est le
+    verrou manquant, dans le sillage de `script_json_fallback_is_an_empty_indexable_map`.
 
   [x] `add_header` insensible à la casse (remplace toute entrée de même nom), idempotence
     `Content-Type`/`Accept` et skip de `post_form` insensibles à la casse, suppression de la
@@ -381,15 +402,18 @@ Tasks:
   [x] `rhai_*` : `code` par `i64::from`, échec de lecture du corps = erreur seule ;
     `post_form` refuse les valeurs composites ; figer par test le contrat « statut jamais
     erreur » et les deux politiques JSON (décisions actées).
-    # Question (mesurée au validation 2026-10-10, à trancher) : le repli `json` quand le
-    # corps n'est pas du JSON valide est `Dynamic::from(json!({}))` — rhai 1.25.1 n'a PAS de
-    # `From<serde_json::Value> for Dynamic`, le Value est stocké OPAQUE (le test vert
-    # `.cast::<Value>() == json!({})` le prouve ; une map rhai ferait paniquer ce cast). Le
-    # `Must` (`unwrap_or(json!({}))`) est donc vrai ; le Scenario « `json` = `#{}` » et le
-    # `Returns` « valeur rhai ou map vide » sont FAUX sur le repli (asymétrie
-    # valide=map native / repli=Value opaque). Options : (a) amender Scenario et `Returns` à
-    # l'opaque ; (b) changer le repli en map rhai vide (changement de comportement côté
-    # script). Le code d'aujourd'hui rend le `Must`, pas le Scenario.
+    # Décision close 2026-10-10 (développeur principal, option (b)) : le repli `json` doit
+    # être une VRAIE map @rhai vide — rhai 1.25.1 n'a pas de From<serde_json::Value> pour
+    # Dynamic et le repli json!({}) stockait un Value opaque (asymétrie avec la voie valide,
+    # mesurée au validation 2026-10-10 : le test vert `.cast::<Value>() == json!({})` le
+    # prouvait). Le Scenario « `json` = `#{}` » et le `Returns` « map vide » reprennent leur
+    # vérité par la tâche ci-dessous, qui amende le code, pas la spec.
+  [x] Basculer le repli `json` de tous les `rhai_*` qui rendent une clé `json` sur une VRAIE
+    map @rhai vide (@rhai::Map::new() en repli de la désérialisation, quatre sites
+    `unwrap_or(Dynamic::from(json!({})))` mesurés — décompte exhaustif à l'implémentation),
+    le `Must` portant déjà la forme amendée. Teste d'abord : réécrire les verrous verts
+    actuels `.cast::<Value>() == json!({})` en verrous de map vide (index vide, pas de
+    panic au cast de map, `#{}` côté script) ; implémentation minimale ensuite.
   [x] `http_get_yaml` : `auth_type` `""`/`bearer`/`basic` insensible à la casse, erreur
     `unknown auth_type` sinon ; User-Agent = `client_name` ; code renommé
     `HTTP-GET-YAML-001` (décisions actées) ; adapter les 4 tests inline.
@@ -400,24 +424,22 @@ Tasks:
     constructeur ; il ne l'est plus — les 11 sites k8s nommés dans la reprise).
   [x] `header_head` en vrai HEAD (label `Head`) et alias script `http_head` (29 noms ;
     décisions actées).
-  [ ] Remplacer les ponts tokio (28 couples d'avant-migration, 32 sites
+  [x] Remplacer les ponts tokio (28 couples d'avant-migration, 32 sites
     `crate::rt::block_on` mesurés après, les deux get/head absorbés inclus) par
     `crate::rt::block_on` (voir ./rt.sdd, décision
     actée) ; tester `body_post` hors runtime et sur `current_thread`.
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
-    # Question (migration 2026-10-09, à trancher) : le « tester body_post hors runtime »
-    # verrouille ce qui est verrouillable — voie secours sert, erreur de transport typée
-    # sans panique — mais un Ok(texte) complet hors runtime est inaccessible : reqwest lie
-    # le timer de TotalTimeoutBody au runtime qui a émis send ; lu depuis le runtime
-    # temporaire suivant, response.text() panique dans le timer tokio. Un Ok hors runtime
-    # exigerait un pont unique pour les body_* ou un runtime temporaire partagé — interdit
-    # par ./rt.sdd (Must not). Options : (a) accepter le verrouillage partiel, la voie
-    # secours ne promet pas le succès des body_* ; (b) exclure les body_* de la voie
-    # secours (erreur explicite hors runtime) et le contracter en Raises.
-    # Le `#[allow(dead_code)]` de ./rt.rs survit à cette tâche : sous le graphe `s3` seul
-    # (mesuré), `block_on` n'a encore aucun appelant — l'allow partira avec la migration
-    # de ./s3.rs, dernier porteur de la clause.
+    # Question close 2026-10-10 (développeur principal, option (a)) : verrouillage partiel
+    # ACCEPTÉ pour le « tester body_post hors runtime ». Reqwest lie le timer de
+    # TotalTimeoutBody au runtime qui a émis send ; relire le corps depuis le runtime
+    # temporaire panique dans le timer tokio (mesuré) — un Ok(texte) complet hors runtime
+    # est inatteignable sans pont unique, lui-même exclu par ./rt.sdd (`Must not`). La voie
+    # secours ne promet pas le succès des body_* hors runtime : les verrous en place (voie
+    # secours sert, erreur de transport typée sans panique) suffisent et la limite est
+    # consignée ici. Aucun changement de contrat, aucun geste de code.
+    # Le `#[allow(dead_code)]` de ./rt.rs est parti avec la migration de ./s3.rs, dernier
+    # porteur de la clause (close à ./rt.sdd, vérifié : rt.rs n'a plus d'allow).
   [ ] Unifier sur rustls (`reqwest` avec `default-features = false`) : tâche de faisabilité
     commune avec ./oci.sdd.
     # Faisabilité mesurée (2026-10-10, tentative réversible jouée en grand) : la bascule
@@ -433,12 +455,27 @@ Tasks:
     # construction du client) et le test `get_client_build_failure_warns_client_for_
     # every_verb` bascule en conséquence (divergence réelle, pas un faux négatif ;
     # l'identité mTLS en revanche reste validée à la construction sous rustls).
-    # Question (à trancher, bloque les deux faces de la tâche) : (a) amender le contrat —
-    # abandon de la validation à la construction, verrou réécrit « CA invalide = ignoré /
-    # erreur au handshake », risque sécurité : un CA privé cassé passe inaperçu ;
-    # (b) pré-valider le PEM dans ./http.rs avant `add_root_certificate` (geste hors
-    # manifest, dépendance `rustls-pki-types` ou pré-parse manuel à trancher). L'option
-    # partielle ne sauve rien : le test qui bascule est causée par le build reqwest seul.
+    # Décision close 2026-10-10 (développeur principal, option (b)) : le contrat TIEND —
+    # pré-valider le PEM du CA dans ./http.rs avant @reqwest::ClientBuilder::add_root_certificate,
+    # CA invalide = @core::result::Result::Err à la construction du client. Le `Must` (le PEM
+    # invalide ne rate qu'à la PREMIÈRE requête, à la construction du client) et le test
+    # get_client_build_failure_warns_client_for_every_verb restent vrais sous rustls seul ;
+    # l'option (a) (validation au handshake seulement) est écartée pour son risque sécurité.
+    # L'option partielle ne sauvait rien : le test qui basculait est causée par le build
+    # reqwest seul. La bascule du manifest (./Cargo.toml) est la tâche jumelle de
+    # ./vyvil-core.sdd, à cocher dans le même commit ; la face oci dans ./oci.sdd.
+    # Dépendance à arbitrer à l'implémentation et à consigner au commit : @rustls-pki-types
+    # (déjà dans le graphe via rustls, valide l'enveloppe PEM et le base64 — assez pour la
+    # forme `not-a-pem` mesurée) contre pré-parse manuel du PEM.
+  [x] Pré-valider le PEM du CA dans ./http.rs (construction du client, avant
+    `add_root_certificate`) puis jouer la bascule rustls : `reqwest` en `default-features =
+    false` avec ["rustls-tls", "charset", "http2", "system-proxy"] (liste mesurée verte le
+    2026-10-10), `oci-client` en `default-features = false` feature `rustls-tls` côté
+    ./oci.sdd, manifest par la tâche jumelle de ./vyvil-core.sdd. Teste d'abord : CA
+    invalide → Err à la construction sous rustls seul (le verrou qui basculait tient),
+    verrouillage partiel des body_* hors runtime inchangé ; `native-tls` à zéro dans
+    les graphes http/oci/s3/k8s (mesuré). Jointe à la tâche de ./oci.sdd et à celle de
+    ./vyvil-core.sdd, trois coches dans le même commit.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   statut jamais erreur côté script, `json_delete` enrobant contre `json_*` stricts, mock

@@ -142,8 +142,30 @@ Tasks:
     la création du module est close dans ./src/rt.sdd (`cbe8f41`, `mod rt` ligne 404,
     privé) et les quatre migrations sont closes chez les specs propriétaires :
     ./src/oci.sdd (`a2ffac6`), ./src/s3.sdd et ./src/rt.sdd ensemble (`9b64dd7`) ;
-    ./src/http.sdd et ./src/k8s.sdd restent `[ ]` sous leurs questions consignées — le
-    module est déclaré, vivant, sans dead_code depuis la jumelle s3.
+    ./src/http.sdd et ./src/k8s.sdd closes 2026-10-10 : leurs questions consignées sont
+    closes (verrouillage partiel des body_* accepté ; signatures du résolveur k8s en
+    @crate::Result, rendues et validées par le `validator`) ;
+    le module est déclaré, vivant, sans dead_code depuis la jumelle s3.
+  [x] Basculer ./Cargo.toml sur rustls seul : @reqwest en `default-features = false` avec
+    les features ["rustls-tls", "charset", "http2", "system-proxy"] (liste mesurée verte le
+    2026-10-10, le code n'use d'aucune feature perdue) et @oci-client en
+    `default-features = false` avec la feature `rustls-tls` ; ajouter @rustls-pki-types en
+    dépendance directe si l'implémentation de la pré-validation du PEM (./src/http.sdd) la
+    choisit contre le pré-parse manuel — elle est déjà dans le graphe via rustls ;
+    `native-tls`/`hyper-tls` à zéro dans les graphes http/oci/s3/k8s, @openssl confiné à
+    `crypto` par `dep:openssl` (déjà vérifié en grand à la mesure de faisabilité). Tâche
+    commune aux faces « Pré-valider le PEM du CA » de ./src/http.sdd et « Faisabilité :
+    basculer `oci-client` » de ./src/oci.sdd — les trois coches dans le même commit.
+  [ ] Reprendre la liste de commandes de ./AGENTS.md et la batterie de
+    ./.opencode/agents/validator.md pour les deux portes neuves
+    `--no-default-features --features rhai,fs` et `--no-default-features --features
+    rhai,password` (test et clippy `--all-targets -- -D warnings`) — ces deux fichiers sont
+    dans l'`Owns` de cette spec et se reprennent sous sa main, ./tooling.sdd ne peut pas les
+    écrire. Tâche d'un lockstep de cinq emplacements : jumelles « Ajouter les portes
+    `rhai,fs` et `rhai,password` à la batterie » de ./tooling.sdd et « Porte jumelle » de
+    ./.github/workflows/workflows.sdd, plus la vue de ./src/engine.sdd — toutes les coches
+    dans le même commit (décision du développeur principal 2026-10-10, reçue de
+    ./src/engine.sdd).
   [x] Attribuer ../docs/ et ./README.md, prérequis de toute tâche documentaire : les trois
     pages de ../docs/ (rhai_helpers.md, handlebars_helpers.md, mocking.md) et ./README.md ne
     sont dans l'`Owns` d'aucune spec, alors que quatorze specs de ./src/ les nomment dans leurs

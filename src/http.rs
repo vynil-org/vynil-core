@@ -7,6 +7,7 @@ use crate::{Error, RhaiRes, rhai_err};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Certificate, Client, Response};
 use rhai::{Dynamic, Engine, Map};
+use rustls_pki_types::{CertificateDer, pem::PemObject};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -191,8 +192,35 @@ impl RestClient {
             .user_agent(crate::get_client_name())
             .timeout(DEFAULT_TIMEOUT);
         if let Some(ca) = &self.server_ca {
-            let ca_cert = Certificate::from_pem(ca.as_bytes()).map_err(log_build_err)?;
-            builder = builder.add_root_certificate(ca_cert).use_rustls_tls();
+            // Socle rustls seul (tâche « Pré-valider le PEM du CA » de http.sdd, option (b)
+            // actée 2026-10-10) : sous `rustls-tls` seul, `Certificate::from_pem` range le
+            // brut et le parse PEM de la construction reqwest (`read_pem_certs`, mesuré sur
+            // reqwest 0.12.28) IGNORE SILENCIEUSEMENT tout contenu sans section PEM — un CA
+            // invalide ne raterait plus jamais. Le choix de dépendance : `rustls-pki-types`,
+            // déjà dans le graphe via rustls et PARSEUR MÊME que reqwest emploie en interne,
+            // valide l'enveloppe PEM et le base64 (contre un pré-parse manuel à réinventer).
+            // Un CA sans aucune section valide (ou à base64 cassé) reste donc un `Err` À LA
+            // CONSTRUCTION du client (`Must` : le PEM invalide ne rate qu'à la PREMIÈRE
+            // requête, à la construction du client).
+            let mut pem_section_ok = false;
+            let mut pem_section_err = false;
+            for section in CertificateDer::pem_slice_iter(ca.as_bytes()) {
+                match section {
+                    Ok(_) => pem_section_ok = true,
+                    Err(_) => pem_section_err = true,
+                }
+            }
+            if pem_section_ok && !pem_section_err {
+                let ca_cert = Certificate::from_pem(ca.as_bytes()).map_err(log_build_err)?;
+                builder = builder.add_root_certificate(ca_cert).use_rustls_tls();
+            } else {
+                // `reqwest::Error` n'a AUCUN constructeur public : le contenu brut est remis
+                // comme DER (toujours accepté au stockage sous rustls) pour que rustls le
+                // rejette à `build()` — erreur de type builder, loggée par `log_build_err`
+                // et enveloppée en `Error::ReqwestError`, comme tout échec de construction.
+                let rejected = Certificate::from_der(ca.as_bytes()).map_err(log_build_err)?;
+                builder = builder.add_root_certificate(rejected).use_rustls_tls();
+            }
         }
         if let (Some(key), Some(cert)) = (&self.client_key, &self.client_cert) {
             let cli_cert = format!("{key}\n{cert}");
@@ -296,7 +324,7 @@ impl RestClient {
                     };
                     ret.insert(
                         "json".to_string().into(),
-                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                        serde_json::from_str(&text).unwrap_or_else(|_| Dynamic::from(Map::new())),
                     );
                     ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
@@ -499,7 +527,7 @@ impl RestClient {
                     };
                     ret.insert(
                         "json".to_string().into(),
-                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                        serde_json::from_str(&text).unwrap_or_else(|_| Dynamic::from(Map::new())),
                     );
                     ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
@@ -615,7 +643,7 @@ impl RestClient {
                     };
                     ret.insert(
                         "json".to_string().into(),
-                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                        serde_json::from_str(&text).unwrap_or_else(|_| Dynamic::from(Map::new())),
                     );
                     ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
@@ -731,7 +759,7 @@ impl RestClient {
                     };
                     ret.insert(
                         "json".to_string().into(),
-                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                        serde_json::from_str(&text).unwrap_or_else(|_| Dynamic::from(Map::new())),
                     );
                     ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
@@ -810,7 +838,7 @@ impl RestClient {
                     };
                     ret.insert(
                         "json".to_string().into(),
-                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                        serde_json::from_str(&text).unwrap_or_else(|_| Dynamic::from(Map::new())),
                     );
                     ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
@@ -917,7 +945,7 @@ impl RestClient {
                     };
                     ret.insert(
                         "json".to_string().into(),
-                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                        serde_json::from_str(&text).unwrap_or_else(|_| Dynamic::from(Map::new())),
                     );
                     ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
@@ -1120,7 +1148,7 @@ impl RestClient {
                     };
                     ret.insert(
                         "json".to_string().into(),
-                        serde_json::from_str(&text).unwrap_or(Dynamic::from(json!({}))),
+                        serde_json::from_str(&text).unwrap_or_else(|_| Dynamic::from(Map::new())),
                     );
                     ret.insert("headers".to_string().into(), Dynamic::from(headers));
                     ret.insert("body".to_string().into(), Dynamic::from(text));
@@ -1608,13 +1636,79 @@ mod tests {
         );
     }
 
+    // ── B2. socle rustls seul : pré-validation du PEM du CA à la construction ──
+
+    // Tâche « Pré-valider le PEM du CA » de http.sdd (option (b), décision 2026-10-10) :
+    // sous rustls seul, `Certificate::from_pem` range le brut et le parse PEM de la
+    // construction reqwest IGNORE SILENCIEUSEMENT un contenu sans section PEM (mesure
+    // reqwest 0.12.28 tls.rs, read_pem_certs : zéro section ⇒ zéro certificat ajouté,
+    // `build()` rend Ok). Sans pré-validation, le CA invalide ne raterait qu'au transport
+    // (`is_builder()` faux). Le contrat tient : Err à la CONSTRUCTION du client, pour tous
+    // les verbes — verrouillé ici par la nature builder de l'erreur, avant le `get_client_
+    // build_failure_warns_client_for_every_verb` qui verrouille log + enveloppe.
+    #[test]
+    fn invalid_server_ca_pem_fails_at_client_construction_not_at_send() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let mut client = RestClient::new("http://127.0.0.1:1");
+        client.set_server_ca("not-a-pem");
+        match client.http_get("x") {
+            Err(crate::Error::ReqwestError(e)) => assert!(
+                e.is_builder(),
+                "CA invalide = erreur de CONSTRUCTION du client (reqwest de type builder), pas \
+                 d'erreur d'envoi ; erreur obtenue : {e:?}"
+            ),
+            other => panic!("Error::ReqwestError attendu, rendu : {other:?}"),
+        }
+    }
+
+    // PEM CA autosigné légitime embarqué (génération `openssl req -x509`, CN=vyvil-core-test-ca,
+    // validité 10 ans — la validité n'est jamais vérifiée à l'ajout au magasin de racines).
+    const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIDGzCCAgOgAwIBAgIUIdRRsET8L4RLdB/Y4PW7B0992ocwDQYJKoZIhvcNAQEL
+BQAwHTEbMBkGA1UEAwwSdnl2aWwtY29yZS10ZXN0LWNhMB4XDTI2MTAxMDExMDgx
+NVoXDTM2MTAwNzExMDgxNVowHTEbMBkGA1UEAwwSdnl2aWwtY29yZS10ZXN0LWNh
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuJ/5zr7c5zIbqIId88b3
+BKNi+qVUApCH+ng/IsYT1kNLBLTAX/ZCHNQry8Djqa6rf1C/GN+CQDuqdCvVnjl9
+qEu1YJzNrH4IJsbS4qpmcIH8ZjGB2CdFl9AlrVns8KBuv1S/XagtU4EyPE7d1z4E
+MhteaujnAxfoTDLISiyOfKKWr6fKfQ7vHExE2RHq5ZrEkJOrXbN0KhRqA/duIj1e
+6m81cPzar38Pwfnd3YtViD/5A3cBOMy1j1Ezmls+WKD+TQZEA9HhPOdySEEKYFv2
+D2kBCMLX1RYdzwxiKPd67Kck+v7/FCj5qrQS3jZ1k3Vh4i1JE/ce55iaTLavuggu
+SQIDAQABo1MwUTAdBgNVHQ4EFgQUv8j070BMpj6YNNaIG/KRKnizvnAwHwYDVR0j
+BBgwFoAUv8j070BMpj6YNNaIG/KRKnizvnAwDwYDVR0TAQH/BAUwAwEB/zANBgkq
+hkiG9w0BAQsFAAOCAQEAgwLmYggOe6wKAh/Kqkowfpmf8+m2OZQ6MwDmrhvJhAZo
++R2TEExGRTKbWKxyd8Vi6gMWhHe9ub+EXOAYld94DSm/rGqlGakmhg6TRB7d4FCb
+XccvwhnAAelQuS8TRM5xdxzOzBCY8VQHZG26/8XUkiYZqACEQTCjqR+9giRHllaC
+HaVa5JuRpSPWm8wjIjgjSph5c7sR4VPP96DCeWUKBLix+Rar1YNEu7KLV7wEU/37
+s0SrlMLMd0/wxQ8R4KtfMzrkn8Ug287P3U5vkXVPZ2ffbKE7jVO781jNGnjv2Vbi
+JI/2Ub72WWBi1OfE3agVbrU/sewOI4hlz7Sq5O1ccQ==
+-----END CERTIFICATE-----
+";
+
+    // Contre-verrou : la pré-validation ne doit JAMAIS rejeter un PEM valide. Le client se
+    // construit (l'échec ressort au transport seul, port fermé → reqwest non-builder).
+    #[test]
+    fn valid_server_ca_pem_still_builds_client() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let mut client = RestClient::new("http://127.0.0.1:1");
+        client.set_server_ca(TEST_CA_PEM);
+        match client.http_get("x") {
+            Err(crate::Error::ReqwestError(e)) => assert!(
+                !e.is_builder(),
+                "un PEM CA valide doit passer la construction : l'échec attendu est le transport \
+                 (port fermé), pas le builder ; erreur obtenue : {e:?}"
+            ),
+            other => panic!("Error::ReqwestError de transport attendu, rendu : {other:?}"),
+        }
+    }
+
     // ── C. gabarit rhai_* figé + deux politiques JSON ───────────────────────
 
     // Scenario « rhai_get ne pleure jamais un statut » : 404 + corps non-JSON → `Ok(map)` seule,
-    // `code` i64 (rendu par `i64::from`, sans aller-retour par chaîne), `json` map vide
-    // silencieuse. (Le sous-assert « en-tête non-UTF-8 en chaîne vide » n'est pas verrouillable
-    // ici : @wiremock 0.6 ne sert pas de valeur d'en-tête invalide en UTF-8 — le Scenario le
-    // conditionne lui-même, repli consigné au rapport.)
+    // `code` i64 (rendu par `i64::from`, sans aller-retour par chaîne), `json` = VRAIE map rhai
+    // vide silencieuse (amendement 2026-10-10 du `Must` : jamais un `serde_json::Value` opaque,
+    // la forme `unwrap_or(json!({}))` est écartée). (Le sous-assert « en-tête non-UTF-8 en
+    // chaîne vide » n'est pas verrouillable ici : @wiremock 0.6 ne sert pas de valeur d'en-tête
+    // invalide en UTF-8 — le Scenario le conditionne lui-même, repli consigné au rapport.)
     #[tokio::test(flavor = "multi_thread")]
     async fn rhai_get_serves_404_non_json_as_ok_map() {
         crate::set_client_name(|| "vynil-core-tests".to_string());
@@ -1639,13 +1733,111 @@ mod tests {
                 .unwrap(),
             "pas-du-json"
         );
-        let json: Value = out.get("json").expect("json présent").clone().cast();
-        assert_eq!(
-            json,
-            json!({}),
-            "corps invalide → json = repli `unwrap_or(json!({{}}))` SILENCIEUX, aucune erreur \
-             (forme exacte du `Must` ; type du repli consigné au rapport)"
+        let json = out.get("json").expect("json présent");
+        assert!(
+            json.is_map(),
+            "corps invalide → `json` = repli VRAIE map rhai vide (`type_of` = \"map\" côté \
+             script), SILENCIEUX, aucune erreur, jamais un `serde_json::Value` opaque (forme \
+             amendée du `Must`, décision 2026-10-10)"
         );
+        let fallback: Map = json.clone().cast(); // le cast d'une vraie map ne panique pas
+        assert!(
+            fallback.is_empty(),
+            "le repli est la map VIDE, aucun bourrage : {fallback:?}"
+        );
+    }
+
+    // Référence du Scenario « `json` = `#{}` » côté SCRIPT : le repli est une map indexable
+    // vide (`type_of` = "Map"), pas un Value opaque — un script qui fait `r.json.cle` ou
+    // `r.json.len()` ne doit jamais broncher sur le repli.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn script_json_fallback_is_an_empty_indexable_map() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("pas-du-json"))
+            .mount(&server)
+            .await;
+        let mut engine = Engine::new();
+        http_rhai_register(&mut engine);
+        let base = server.uri();
+        let out = engine
+            .eval::<String>(&format!(
+                "let c = new_http_client(\"{base}\"); let r = c.get(\"x\"); \
+                 type_of(r.json) + \"|\" + r.json.len().to_string()"
+            ))
+            .expect("statut jamais erreur côté script ; le repli `json` doit être indexable");
+        assert_eq!(
+            out, "map|0",
+            "côté script, le repli `json` est un `#{{}}` rhai — `type_of` = \"map\" (rendu réel \
+             de rhai 1.25 pour une map), indexable, VIDE — pas un Value opaque : obtenu {out:?}"
+        );
+    }
+
+    // Décompte exhaustif du `Must` amendé : les SEPT `rhai_*` qui rendent une clé `json`
+    // (get, patch, put, post, post_form, delete, delete_with_body — `rhai_head` n'en rend
+    // aucune) partagent le même repli de VRAIE map rhai vide sur corps non-JSON.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn all_seven_rhai_json_fallbacks_are_true_empty_maps() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        for (verb, p) in [
+            ("GET", "/a"),
+            ("PATCH", "/b"),
+            ("PUT", "/c"),
+            ("POST", "/d"),
+            ("POST", "/e"),
+            ("DELETE", "/f"),
+            ("DELETE", "/g"),
+        ] {
+            Mock::given(method(verb))
+                .and(path(p))
+                .respond_with(ResponseTemplate::new(200).set_body_string("pas-du-json"))
+                .mount(&server)
+                .await;
+        }
+        let mut client = RestClient::new(server.uri().as_str());
+        let mut form = Map::new();
+        form.insert("k".into(), Dynamic::from("v"));
+        let outs: Vec<(&str, RhaiRes<Map>)> = vec![
+            ("rhai_get", client.rhai_get("a".to_string())),
+            (
+                "rhai_patch",
+                client.rhai_patch("b".to_string(), Dynamic::from("brut")),
+            ),
+            (
+                "rhai_put",
+                client.rhai_put("c".to_string(), Dynamic::from("brut")),
+            ),
+            (
+                "rhai_post",
+                client.rhai_post("d".to_string(), Dynamic::from("brut")),
+            ),
+            ("rhai_post_form", client.rhai_post_form("e".to_string(), form)),
+            ("rhai_delete", client.rhai_delete("f".to_string())),
+            (
+                "rhai_delete_with_body",
+                client.rhai_delete_with_body("g".to_string(), Dynamic::from("brut")),
+            ),
+        ];
+        assert_eq!(outs.len(), 7, "décompte exhaustif : sept sites à repli `json`");
+        for (label, out) in outs {
+            let map = out.unwrap_or_else(|e| panic!("{label} : `Ok(map)` attendu, erreur rendue : {e}"));
+            let json = map
+                .get("json")
+                .unwrap_or_else(|| panic!("{label} : clé `json` absente de {map:?}"));
+            assert!(
+                json.is_map(),
+                "{label} : repli `json` = VRAIE map rhai (`type_of` = \"map\" côté script), \
+                 jamais un Value opaque"
+            );
+            let fallback: Map = json.clone().cast();
+            assert!(
+                fallback.is_empty(),
+                "{label} : map de repli VIDE, aucun bourrage : {fallback:?}"
+            );
+        }
     }
 
     // « statut jamais erreur » figé aussi sur un verbe à corps : un 500 rend `Ok(map)`, pas

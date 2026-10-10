@@ -73,7 +73,7 @@ password = []
 # RestClient stores its headers as a rhai::Map internally rather than wrapping a plain-Rust type,
 # so it isn't independently rhai-optional either. RestClientMock (src/http_mock.rs) is a Rhai-only
 # test double on top of it.
-http = ["dep:reqwest", "dep:schemars", "dep:tokio", "rhai"]
+http = ["dep:reqwest", "dep:schemars", "dep:tokio", "rhai", "dep:rustls-pki-types"]
 # openssl-backed key generation (src/key.rs) + argon2/bcrypt password hashing (src/hashes.rs),
 # used unconditionally by the "always" Handlebars helpers (argon_hash/bcrypt_hash/gen_private_key)
 # when "hbs" is on. The Rhai bindings in both modules additionally need "rhai".
@@ -108,7 +108,11 @@ handlebars_misc_helpers = { version = "0.17.0", default-features = false, featur
 # whose Function trait lacks a Send bound — see src/hbs_json.rs).
 jmespath = { version = "0.5.0", optional = true }
 toml = { version = "0.8", optional = true }
-reqwest = { version = "0.12.24", features = ["rustls-tls"], optional = true }
+reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls", "charset", "http2", "system-proxy"], optional = true }
+# Choix de la pré-validation du PEM du CA (http.sdd, option (b) actée 2026-10-10) : même
+# version que celle déjà tirée dans le graphe par rustls via reqwest (`rustls-tls`), aucun
+# crate nouveau — valide l'enveloppe PEM et le base64, le parseur est celui de reqwest même.
+rustls-pki-types = { version = "1.15", optional = true }
 serde = { version = "1.0.214", features = ["derive"] }
 serde_json = "1.0.150"
 serde_yaml = "0.9"
@@ -132,7 +136,7 @@ schemars = { version = "1.0", features = ["chrono04"], optional = true }
 kube = { version = "3.1.0", features = ["runtime", "client", "derive"], optional = true }
 k8s-openapi = { version = "0.27.1", features = ["latest", "schemars"], default-features = false, optional = true }
 futures = { version = "0.3", optional = true }
-oci-client = { version = "0.15.0", optional = true }
+oci-client = { version = "0.15.0", default-features = false, features = ["rustls-tls"], optional = true }
 object_store = { version = "0.11", features = ["aws"], optional = true }
 flate2 = "1.1.4"
 tar = "0.4.46"

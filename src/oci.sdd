@@ -194,7 +194,8 @@ Depends on:
     OCI_IMAGE_MEDIA_TYPE, IMAGE_LAYER_GZIP_MEDIA_TYPE, IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE},
     @oci_client::errors::{OciDistributionError, OciErrorCode} ; 0.15.0 en lock. Les flux
     réseau réels (auth, retries, timeouts) appartiennent à la dépendance ; son backend TLS par
-    défaut (`native-tls`, donc OpenSSL système) est à remplacer par rustls (§`Tasks`).
+    défaut est rustls (`default-features = false`, feature `rustls-tls` — bascule jouée
+    2026-10-10, `native-tls`/OpenSSL système exclus du graphe, verrou cargo tree ; §`Tasks`).
   tokio — via `crate::rt::block_on` (voir ./rt.sdd), partagé avec ./s3.sdd ; features
     `macros`+`rt-multi-thread`.
   std — @std::process::Command (cosign), @std::fs::read_to_string, @std::path::PathBuf,
@@ -359,21 +360,23 @@ Tasks:
   [x] Tester les chemins réseau par un faux registre HTTP local (`httpmock` en
     dev-dependency, décision actée) — dont l'en-tête `Accept` reçu par
     `verify_tag_in_registry` — et le cas cosign absent par un test isolé qui vide le `PATH`.
-  [ ] Faisabilité : basculer `oci-client` (`default-features = false`, feature `rustls-tls`)
+  [x] Faisabilité : basculer `oci-client` (`default-features = false`, feature `rustls-tls`)
     et `reqwest` (`default-features = false`) sur rustls seul pour retirer `native-tls` et
-    l'OpenSSL système du graphe (mesure `cargo tree` : `oci-client` et `reqwest` tirent
-    aujourd'hui `native-tls`, `object_store` est déjà en rustls) ; ne garder OpenSSL que pour
+    l'OpenSSL système du graphe (mesure `cargo tree` d'avant-bascule : `oci-client` et
+    `reqwest` tiraient `native-tls`, `object_store` était déjà en rustls) ; ne garder OpenSSL que pour
     la feature `crypto` (décision actée : tâche de faisabilité, pas d'implémentation forcée).
     # Faisabilité mesurée (2026-10-10, face oci) : la voie existe — `oci-client` 0.15.0 a
     # bien `rustls-tls = ["reqwest/rustls-tls"]` dans sa liste réelle de features (source
     # du registre) et sa consommation reqwest est déjà `default-features = false` de son
     # côté ; `kube-client` 3.1 ne dépend pas de reqwest ; les seuls activeurs de
     # `native-tls` du graphe sont nos deux déclarations. La bascule oci-seule est verte
-    # (237 stable, native-tls zéro sous oci). La tâche COMMUNE reste bloquée sur la face
-    # http : le CA invalide silencieusement ignoré sous rustls contredit le `Must` de
-    # ./src/http.sdd — voir sa tâche jumelle et sa question (a)/(b). oci seul basculé
-    # n'est PAS un livrable (la tâche dit « les deux » et le graphe http garderait
-    # native-tls de toute façon).
+    # (237 stable, native-tls zéro sous oci). oci seul basculé n'est PAS un livrable (la
+    # tâche dit « les deux »). Décision close 2026-10-10 (développeur principal, option (b)
+    # de ./http.sdd) : le CA invalide sera pré-validé à la construction du client dans
+    # ./http.rs — le `Must` de ./http.sdd tient sous rustls seul, la tâche COMMUNE est
+    # DÉBLOQUÉE. exécution en lockstep : ./http.sdd (pré-validation + bascule), cette
+    # face-ci (`oci-client` en `default-features = false`, feature `rustls-tls`), et le
+    # manifest par la tâche jumelle de ../vyvil-core.sdd — trois coches dans le même commit.
 
 Scenario: oci éteint, les deux modules n'existent pas
   Given la crate compilée `--no-default-features --features rhai` (`oci` off par défaut)
