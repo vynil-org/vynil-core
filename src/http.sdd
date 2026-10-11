@@ -440,7 +440,7 @@ Tasks:
     # consignée ici. Aucun changement de contrat, aucun geste de code.
     # Le `#[allow(dead_code)]` de ./rt.rs est parti avec la migration de ./s3.rs, dernier
     # porteur de la clause (close à ./rt.sdd, vérifié : rt.rs n'a plus d'allow).
-  [ ] Unifier sur rustls (`reqwest` avec `default-features = false`) : tâche de faisabilité
+  [x] Unifier sur rustls (`reqwest` avec `default-features = false`) : tâche de faisabilité
     commune avec ./oci.sdd.
     # Faisabilité mesurée (2026-10-10, tentative réversible jouée en grand) : la bascule
     # TECHNIQUE est verte — `reqwest` `default-features = false` + `["rustls-tls",

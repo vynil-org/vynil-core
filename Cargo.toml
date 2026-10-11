@@ -8,12 +8,12 @@ authors = [
 edition = "2024"
 license = "BSD-3-Clause"
 description = "A Rust toolbox for bootstrapping projects combining a Rhai scripting engine and a Handlebars templating engine, with optional Kubernetes / OCI / S3 handlers."
-repository = "https://github.com/sebt3/vynil-core"
+repository = "https://github.com/vynil-org/vynil-core"
 readme = "README.md"
 keywords = ["rhai", "handlebars", "kubernetes", "templating", "scripting"]
 categories = ["template-engine", "config"]
 documentation = "https://docs.rs/vynil-core"
-homepage = "https://github.com/sebt3/vynil-core"
+homepage = "https://github.com/vynil-org/vynil-core"
 
 [lints.rust]
 unsafe_code = "forbid"

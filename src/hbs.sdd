@@ -7,7 +7,7 @@ Purpose:
     @handlebars_helper! — et rend ces moteurs accessibles en Rust comme en Rhai. La porte
     `hbs` seule ne tire jamais @rhai ; les cinq méthodes `rhai_*` et les deux enregistrements
     de répertoire `*.rhai` sont conditionnés plus finement (`rhai` ou `hbs-scripting`) pour
-    préserver l'isolabilité du graphe (issue sebt3/vynil-core#9, motif porté par
+    préserver l'isolabilité du graphe (issue vynil-org/vynil-core#9, motif porté par
     ./vyvil-core.sdd). Le module ne teste rien lui-même (zéro `mod tests` sur 400 lignes) et
     n'a zéro appelant interne dans ./src : toute sa face est consommée de l'extérieur.
 

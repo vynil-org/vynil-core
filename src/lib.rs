@@ -3,7 +3,7 @@
 //! Generic Rust toolbox combining a [Rhai] scripting engine and a
 //! [Handlebars] templating engine, with optional Kubernetes / OCI / S3 / HTTP handlers.
 //!
-//! Extracted from the [vynil](https://github.com/sebt3/vynil) workspace so it can be reused
+//! Extracted from the [vynil](https://github.com/vynil-org/vynil) workspace so it can be reused
 //! by other projects (`kuberest`, `kydah`, …) without pulling in vynil's business abstractions
 //! (CRDs, package model, instance controllers).
 //!

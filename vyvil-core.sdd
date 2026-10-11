@@ -28,7 +28,7 @@ Must:
     API Rhai directes, pas une API Rust séparée avec wrapper.
   Garder `hbs-scripting` isolable de `hbs` : `hbs` seul ne doit jamais réintroduire
     `handlebars/script_helper` (donc `rhai` ni `smartstring`) dans le graphe de dépendances
-    (https://github.com/sebt3/vynil-core/issues/9).
+    (https://github.com/vynil-org/vynil-core/issues/9).
   Ne jamais laisser un script Rhai paniquer l'hôte : toute entrée de script (format invalide,
     valeur démesurée, débordement, entropie défaillante) se traduit en @crate::RhaiRes en échec,
     rattrapable par un `try` de script, jamais en `panic!` ni en abort du processus. Les portes

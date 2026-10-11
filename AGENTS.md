@@ -9,7 +9,7 @@ SpecDD rules unless explicitly instructed otherwise.
 ## Projet
 
 Crate Rust générique (Rhai + Handlebars, handlers K8s/OCI/S3 optionnels), extraite du
-workspace [vynil](https://github.com/sebt3/vynil) pour être réutilisable par d'autres projets
+workspace [vynil](https://github.com/vynil-org/vynil) pour être réutilisable par d'autres projets
 (kuberest, kydah, …). Publiée sur crates.io, API instable (< 1.0). Licence BSD 3-Clause.
 
 ## Flux de travail : SpecDD + test-first
@@ -114,7 +114,7 @@ ne se déduit pas de `--each-feature` qui ne fait que compiler.
 Contraintes de features à préserver (voir racine `vyvil-core.sdd`) : `k8s`/`oci`/`s3`/`http`
 impliquent `rhai` (leurs types cœur sont des API Rhai directes) ; `hbs-scripting` doit rester
 isolable de `hbs` — `hbs` seul ne doit jamais réintroduire `handlebars/script_helper` (donc
-`rhai`/`smartstring`) dans le graphe — voir <https://github.com/sebt3/vynil-core/issues/9>.
+`rhai`/`smartstring`) dans le graphe — voir <https://github.com/vynil-org/vynil-core/issues/9>.
 
 ## Git
 

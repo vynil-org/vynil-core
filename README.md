@@ -3,7 +3,7 @@
 A Rust toolbox for bootstrapping projects that combine a **Rhai** scripting engine and a
 **Handlebars** templating engine, with optional Kubernetes / OCI / S3 handlers.
 
-`vynil-core` is the generic layer extracted from [vynil](https://github.com/sebt3/vynil) so it
+`vynil-core` is the generic layer extracted from [vynil](https://github.com/vynil-org/vynil) so it
 can be reused by other projects (kuberest, kydah, …) without pulling in vynil's business
 abstractions (CRDs, package model, instance controllers).
 
