@@ -311,14 +311,14 @@ Handles:
     les modules câblés qui l'exigent (`http`, `k8s`) ne sont justement pas câblés ici.
 
 Tasks:
-  [ ] Verrouiller la moitié « mêmes portes ouvertes » du Scenario « never-auto-wired même portes
+  [x] Verrouiller la moitié « mêmes portes ouvertes » du Scenario « never-auto-wired même portes
     ouvertes » : un test `#[cfg(test)]` gated `all(feature = "rhai", feature = "s3")` (et la
     pareille sous `k8s`) joue sur @Script::new_bare que `s3_get_yaml`, la construction
     `RestClient` et les noms `k8s_*` rendent fonction-inconnue AVEC leurs features actives —
     la face positive `new_registry` résolvant le VRAI @crate::oci::Registry est déjà verrouillée
     par la conversion (décision du développeur principal 2026-10-10 : écrire le verrou, joué
     par les portes `--all-features` et `k8s,oci,s3`).
-  [ ] Convertir les Scenario en tests passants : ./engine.rs porte 40 `#[test]` inline
+  [x] Convertir les Scenario en tests passants : ./engine.rs porte 40 `#[test]` inline
     (22 à HEAD + 18 de la tâche `add_code`/voies douces, face publique `new_bare` + `eval`,
     capture `tracing` et fixture d'import dans le `mod tests`) qui verrouillent yaml (10,
     quirk mort), json (2), base64 (2 dont le padding `aGVsbG8=`), semver (3),

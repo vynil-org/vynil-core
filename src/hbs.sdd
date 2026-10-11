@@ -278,7 +278,7 @@ Handles:
     erreur — deux politiques coexistent dans le même registre.
 
 Tasks:
-  [ ] Convertir les Scenario en tests passants : ./hbs.rs ne compte à ce jour que trois
+  [x] Convertir les Scenario en tests passants : ./hbs.rs ne compte à ce jour que trois
     verrous — les deux d'`argon_hash` et celui de `bcrypt_hash` sur la borne 71/72, tous trois
     en `mod tests` gating `crypto` — le reste de la face décrite ici est sans test. La voie
     d'écriture est @crate::hbs::HandleBars::new() public (strict + no_escape ne peuvent pas
@@ -314,7 +314,7 @@ Tasks:
     de cette spec — @tracing::warn puis chaîne vide — sans @handlebars::RenderError. La part
     `to_decimal` de la tâche d'origine est dissoute par l'arbitrage ci-dessous (le helper ne
     change pas) ; la part `argon_hash` est close par sa tâche propre.
-  [ ] Vérifier l'isolabilité de `hbs` (sans `crypto`, sans `password`, sans `rhai`) par la
+  [x] Vérifier l'isolabilité de `hbs` (sans `crypto`, sans `password`, sans `rhai`) par la
     matrice `cargo hack --each-feature` décidée dans ./tooling.sdd.
 
   [x] Adapter le helper Handlebars `argon_hash` de ./hbs.rs à @crate::hashes::Argon::new rendu

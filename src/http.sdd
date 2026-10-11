@@ -367,7 +367,7 @@ Handles:
     lecture.
 
 Tasks:
-  [ ] Convertir les Scenario en tests passants. ./http.rs portait 11 tests inline à HEAD
+  [x] Convertir les Scenario en tests passants. ./http.rs portait 11 tests inline à HEAD
     (215 sous la porte `http` — la baseline que ce fichier annonçait « 8 » et « 199 » était
     fausse, mesuré) ; le lot A-F y a ajouté 22 verrous et le lot G (repli json + CA
     pré-validé) 4 de plus (aujourd'hui 37 inline, 241 sous
@@ -380,7 +380,7 @@ Tasks:
     (seul le code du label est figé, pas `HTTP 404 Not Found for <url>` en entier) ; et
     ./http_mock.rs : ZÉRO test (pas même first-match ni le texte d'erreur — les Scenario
     mock/co-enregistrement attendent là). Les Scenario réseau se verrouillent en @wiremock.
-  [ ] Verrouiller par test la VOIE VALIDE du `json` des `rhai_*` (première moitié du `Must`
+  [x] Verrouiller par test la VOIE VALIDE du `json` des `rhai_*` (première moitié du `Must`
     amendé 2026-10-10 : corps JSON valide → @rhai::Dynamic NATIF, indexable en script) —
     les verrous du repli posés par le lot G n'assurent que le bras `Err` ; un corps valide
     servi par @wiremock avec assertions d'indexation script (`r.json.a`, `type_of`) est le

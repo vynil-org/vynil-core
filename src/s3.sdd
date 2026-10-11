@@ -200,11 +200,14 @@ Handles:
     documents YAML cassés liste sans erreur tandis qu'un seul get sur l'un d'eux échoue.
 
 Tasks:
-  [ ] Convertir les Scenario ci-dessus en tests passants : les deux tests inline actuels
+  [x] Convertir les Scenario ci-dessus en tests passants : les deux tests inline actuels
     (`#[tokio::test(flavor = "multi_thread")]` sur @object_store::memory::InMemory) ne
     traversent pas les fonctions publiques ; les remplacer par des tests des fonctions
     internes `get_yaml_from_store` / `list_keys_from_store` (seam décidé), plus les Scenario
     sans réseau (erreurs de build, credentials incomplets, facettes Rhai).
+    # Mesure à la conversion 2026-10-11 : les deux tests InMemory traversaient DÉJÀ les
+    # fonctions internes (l'inventaire était en arrière) ; complété sans remplacement —
+    # 12 verrous ajoutés, 19 sous la porte `s3`, synthèse validator verte.
     # Décision close 2026-10-10 (développeur principal, option (a)) : les trois endroits
     # répétant la fausse sonde « bucket vide → build Err (MissingBucketName) » — la phrase
     # du `Must`, le parenthétique du `Raises`, le Scenario — sont REPRIS À LA MESURE du

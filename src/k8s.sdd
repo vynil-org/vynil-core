@@ -435,7 +435,8 @@ Handles:
     sont perdus silencieusement (workloads typés, borne documentée).
 
 Tasks:
-  [ ] Convertir les Scenario sans test en tests passants. ./k8s.rs a 53 tests inline (résolution
+  [x] Convertir les Scenario sans test en tests passants. ./k8s.rs a 58 tests inline (53 annoncés
+    à l'écriture, baseline mesurée au cochage 2026-10-11 — résolution
     APIService agrégé, job_is_completed ×8, prepare_handle ×11, conditions ×15, seam tower-test
     pour le pont et les `rhai_*` de K8sRaw) et ./k8s_mock.rs 8
     (wait_for once + registers compilent + update_cache noop) : couverts par les Scenario ci-dessus

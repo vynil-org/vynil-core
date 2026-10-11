@@ -316,7 +316,7 @@ Handles:
     mondes, le dernier enregistré gagne à co-enregistrement — mécanisme laissé à @rhai.
 
 Tasks:
-  [ ] Convertir les Scenario en tests passants. ./oci.rs portait 7 `#[test]` inline à HEAD
+  [x] Convertir les Scenario en tests passants. ./oci.rs portait 7 `#[test]` inline à HEAD
     (get_auth_from_file ×4 via `tempfile`, sign_image clé vide, cosign introuvable en
     `is_err` seul, pull hors runtime servi par le runtime temporaire) plus 3
     `#[tokio::test]` gated `k8s` (@tower_test::mock sur

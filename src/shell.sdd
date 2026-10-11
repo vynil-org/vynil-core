@@ -239,7 +239,7 @@ Tasks:
 # Les parts ./docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
 # propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
 # leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
-  [ ] Convertir chaque Scenario de cette spec en test Rust dans un `mod tests` sous
+  [x] Convertir chaque Scenario de cette spec en test Rust dans un `mod tests` sous
     `#[cfg(test)]` de ./shell.rs, plus les appels de script sur un @rhai::Engine local
     enregistré par @crate::shell::shell_rhai_register et @Script::new_bare pour le Scenario de
     câblage ; les Scenario `cargo check` relèvent de la batterie de features. Inventaire réel

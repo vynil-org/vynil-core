@@ -315,7 +315,7 @@ Tasks:
 # Les parts ./docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
 # propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
 # leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
-  [ ] Convertir en tests Rust passants chaque Scenario de cette spec qui n'en a pas encore, dans
+  [x] Convertir en tests Rust passants chaque Scenario de cette spec qui n'en a pas encore, dans
     le `mod tests` sous `#[cfg(test)]` de ./semver.rs pour la face Rust et sur @rhai::Engine
     local — ou @Script::new_bare — pour la face script, la batterie de features de l'AGENTS.md
     servant de validation aux Scenario de portes. Inventaire exact de ce qui est verrouillé :

@@ -90,6 +90,12 @@ Depends on:
   ./tooling.sdd
 
 Tasks:
+  [x] Retirer de ./.opencode/agents/validator.md la règle « Ne lance JAMAIS `cargo test --ignored`
+    sans filtre » et son exemple `error_chain` sur source cyclique « échec volontaire » : mention
+    obsolète à la mesure 2026-10-11 — `tests::error_chain_terminates_on_cyclic_source` tourne et
+    passe, zéro `#[ignore]` dans ./src/ (décision du développeur principal Q-B du round de
+    conversion). La garde résiduelle utile (lancer filtré tout test ignoré devenu suspect) peut
+    tenir en une ligne si l'exécution juge qu'elle survit au retrait de l'exemple mort.
   [x] Ajouter @tracing-subscriber en `@std::cargo::dev-dependencies` de ./Cargo.toml : les trois
     dev-deps actuels (@wiremock, @tempfile, @tower-test) n'offrent aucun `Subscriber` de capture
     (mesuré par le `validator`), et écrire un `Subscriber` à la main contre @tracing nu a été

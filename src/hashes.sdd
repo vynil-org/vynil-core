@@ -259,7 +259,7 @@ Tasks:
     @argon2 et accuserait argon2 d'un échec d'encodage. Branche inatteignable à `16` octets et
     non injectable depuis cet `Owns` : aucun verrou d'exécution n'est honnêtement possible, la
     consigner tenue par la structure plutôt que d'écrire un test décoratif.
-  [ ] Convertir chaque Scenario de cette spec en test Rust passant dans un `mod tests` sous
+  [x] Convertir chaque Scenario de cette spec en test Rust passant dans un `mod tests` sous
     `#[cfg(test)]` de ./hashes.rs — Rust direct, @rhai::Engine local enregistré par
     @crate::hashes::hashes_rhai_register, @crate::hashes::crypto_hashes_rhai_register ou
     @Script::new_bare ; les Scenario de gating appartiennent à la batterie de features de la

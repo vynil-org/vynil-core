@@ -85,10 +85,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
   sont pas exclusives : le seam de la racine s'exécute aussi sous `hbs`, `crypto` et `hbs,crypto`
   (mesuré) ; chacune est nommée pour le verrou qu'elle est seule à jouer, pas pour une exclusivité
   qu'elle n'a pas (voir `tooling.sdd`).
-- Ne lance JAMAIS `cargo test --ignored` sans filtre : les tests `#[ignore]` du dépôt décrivent
-  des comportements pas encore implémentés et l'un d'eux (`error_chain` sur source cyclique,
-  `src/lib.sdd`) est un échec volontaire. Un test ignoré qui te semble suspect se lance filtré
-  (`-- --ignored <nom-du-test>`).
+- Si un test `#[ignore]` venait à exister et te semblait suspect, lance-le filtré
+  (`-- --ignored <nom-du-test>`), jamais en batterie (`cargo test --ignored` sans filtre).
 - Vérifier par `cargo tree -e features --no-default-features --features hbs` que `hbs` seul
   n'introduit ni `handlebars/script_helper` ni `rhai`/`smartstring` — contrainte de l'issue #9.
   La porte `hbs,crypto` est dans la liste courante : ne la relance pas en plus sous une autre
