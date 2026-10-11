@@ -81,6 +81,13 @@ Scenario: un comportement vu de l'utilisateur n'est nulle part documenté
     taisaient le refus des mots de passe de `72` octets et passent pour incomplètes
 
 Tasks:
+  [x] ./README.md : les trois extraits de dépendance passent de `0.7` à `0.8` avec la livraison
+    de ./vyvil-core.sdd (tâche « Livrer 0.8.0 », même commit).
+  [x] ./docs/handlebars_helpers.md : documenter @crate::hbs::HandleBars::new_restricted (issue
+    #13) — les six helpers retirés (`read_to_str`, `env_var`, `canonicalize`, `parent`,
+    `file_name`, `extension`), le cas d'usage (templates dont les données viennent de tiers non
+    fiables) et la réserve : `engine_mut` et `register_helper_dir` laissent l'appelant
+    ré-enregistrer. Jumelle de la tâche « Implémenter new_restricted » de ./src/hbs.sdd.
   [x] Rendre au livré les trois passages wait de ./docs/rhai_helpers.md (reçu de
     ./src/k8s.sdd) : la ligne de table `wait_for` (« the first predicate error then wins —
     it fails the wait whether the condition later held, timed out, or the watch broke »),

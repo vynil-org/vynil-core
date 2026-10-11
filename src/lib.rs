@@ -27,11 +27,11 @@
 //!
 //! ```toml
 //! # default: Rhai + Handlebars + HTTP + crypto
-//! vynil-core = "0.7"
+//! vynil-core = "0.8"
 //! # Kubernetes project
-//! vynil-core = { version = "0.7", features = ["k8s"] }
+//! vynil-core = { version = "0.8", features = ["k8s"] }
 //! # Handlebars only, no Rhai/smartstring in the graph
-//! vynil-core = { version = "0.7", default-features = false, features = ["hbs", "crypto"] }
+//! vynil-core = { version = "0.8", default-features = false, features = ["hbs", "crypto"] }
 //! ```
 //!
 #![cfg_attr(

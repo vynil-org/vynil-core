@@ -37,6 +37,30 @@ compile time:
 | `register_helper_dir(dir)` | Every `*.rhai` file in `dir` as a Handlebars **script helper** (Handlebars' `script_helper` feature — the helper body is Rhai code; needs the `hbs-scripting` feature, see above) |
 | `register_partial_dir(dir)` | Every `*.hbs` file in `dir` as a named template/partial |
 
+## Restricted engine: `HandleBars::new_restricted()`
+
+`HandleBars::new_restricted()` builds the same engine as `new()` minus the six helpers that
+read from the host:
+
+| Removed helper | Why it touches the host |
+|---|---|
+| `read_to_str` | Reads a file |
+| `env_var` | Reads the process environment |
+| `canonicalize` | Resolves the filesystem |
+| `parent`, `file_name`, `extension` | Canonicalize their input first, so they probe file existence |
+
+A template calling a removed helper fails with `Error::HbsRenderError` (strict mode) and renders
+no host data. Every other helper behaves as under `new()`.
+
+Use it for templates fed by untrusted third-party data, where a template must not read files or
+environment variables of the process rendering it.
+
+This is a restriction of the constructor only. `engine_mut()` gives direct access to the
+underlying `Handlebars` and can register those helpers again, and `register_helper_dir`
+(feature `hbs-scripting`) loads script helpers from a directory the caller chooses. Whatever
+registered after construction is outside the guarantee: do not rely on `new_restricted()` alone
+where the template author or the helper directory is not trusted.
+
 ## Feature tags
 
 Two helper groups are gated by a `vynil-core` Cargo feature beyond `hbs` itself:

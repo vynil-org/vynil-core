@@ -10,6 +10,7 @@ Purpose:
 
 Owns:
   ./Cargo.toml
+  ./CHANGELOG.md
   ./AGENTS.md
   ./.opencode/agents/
 
@@ -90,6 +91,12 @@ Depends on:
   ./tooling.sdd
 
 Tasks:
+  [x] Livrer `0.8.0` : bascule de `version` de ./Cargo.toml (0.7.7 → 0.8.0, rupture d'API
+    publique assumée sous `1.0`), ./CHANGELOG.md écrit à partir des commits depuis `v0.7.7`
+    (ruptures nommées pour les consommateurs vynil, kuberest, kydah), tag `v0.8.0` poussé après
+    CI verte — le workflow `publish.yml` vérifie tag et manifest et publie sur crates.io.
+    Décision du développeur principal 2026-10-11 ; les trois PR Dependabot (oci-client,
+    object_store, toml) sont hors de cette livraison, prises par la suivante.
   [x] Retirer de ./.opencode/agents/validator.md la règle « Ne lance JAMAIS `cargo test --ignored`
     sans filtre » et son exemple `error_chain` sur source cyclique « échec volontaire » : mention
     obsolète à la mesure 2026-10-11 — `tests::error_chain_terminates_on_cyclic_source` tourne et

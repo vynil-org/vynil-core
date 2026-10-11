@@ -231,6 +231,33 @@ impl<'a> HandleBars<'a> {
         HandleBars { engine }
     }
 
+    /// Create an engine like [`HandleBars::new`], minus the six helpers that touch the host.
+    ///
+    /// Removed: `read_to_str` (reads a file), `env_var` (reads the process environment),
+    /// `canonicalize` (resolves the filesystem) and `parent`, `file_name`, `extension` (they
+    /// canonicalize their input first, so they probe file existence). A template calling one of
+    /// them fails with [`Error::HbsRenderError`] (strict mode), and no host data is rendered.
+    ///
+    /// Intended for templates fed by untrusted third-party data. The restriction covers only
+    /// what this constructor removes: [`HandleBars::engine_mut`] and `register_helper_dir`
+    /// (feature `hbs-scripting`) let the caller register those helpers again.
+    #[must_use]
+    pub fn new_restricted() -> HandleBars<'static> {
+        const HOST_HELPERS: [&str; 6] = [
+            "read_to_str",
+            "env_var",
+            "canonicalize",
+            "parent",
+            "file_name",
+            "extension",
+        ];
+        let mut hbs = HandleBars::new();
+        for name in HOST_HELPERS {
+            hbs.engine.unregister_helper(name);
+        }
+        hbs
+    }
+
     /// Expose the inner [`Handlebars`] to register custom helpers or configuration.
     #[must_use]
     pub fn engine_mut(&mut self) -> &mut Handlebars<'a> {
@@ -927,6 +954,81 @@ mod composition_tests {
         for name in ["gen_password", "gen_password_alphanum"] {
             assert!(!CORE_HBS_HELPERS.contains(&name), "{name} off without password");
         }
+    }
+}
+
+/// Scénario « `new_restricted` retire les six helpers hôte » (`hbs.sdd`) : chacun des six
+/// helpers hôte échoue en `HbsRenderError` sous `new_restricted`, les quatre conservés
+/// répondent comme sous `new`, et le même template sous `new` lit fichier et variable (le
+/// contraste attribue le retrait au constructeur).
+#[cfg(test)]
+mod restricted_tests {
+    use super::HandleBars;
+    use crate::Error;
+    use serde_json::json;
+
+    /// Un appel par helper retiré, sur `p` (chemin réel) — `PATH` en dur pour `env_var`.
+    const HOST_CALLS: [&str; 6] = [
+        "{{ read_to_str p }}",
+        r#"{{ env_var "PATH" }}"#,
+        "{{ canonicalize p }}",
+        "{{ parent p }}",
+        "{{ file_name p }}",
+        "{{ extension p }}",
+    ];
+
+    /// Un fichier réel dont le contenu est unique, pour que `read_to_str` le prouve.
+    fn real_file() -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("probe.txt");
+        std::fs::write(&path, "CONTENU-SONDE-7f3a").expect("write probe file");
+        (dir, path.to_string_lossy().into_owned())
+    }
+
+    /// Contrat : chacun des six appels échoue en `HbsRenderError` sous `new_restricted`.
+    #[test]
+    fn restricted_host_helpers_fail_with_render_error() {
+        let (_dir, path) = real_file();
+        let data = json!({ "p": path });
+        for template in HOST_CALLS {
+            let mut hbs = HandleBars::new_restricted();
+            let err = hbs
+                .render(template, &data)
+                .expect_err("a retired host helper must not render");
+            assert!(
+                matches!(err, Error::HbsRenderError(_)),
+                "{template} must fail as HbsRenderError, got {err:?}"
+            );
+        }
+    }
+
+    /// Contrat : `to_upper_case`, `base64_encode`, `str_to_json` et `concat` rendent sous
+    /// `new_restricted` la même sortie que sous `new`.
+    #[test]
+    fn restricted_keeps_non_host_helpers_identical_to_new() {
+        let template = r#"{{ to_upper_case "abc" }}|{{ base64_encode "abc" }}|{{ json_to_str (str_to_json "{\"a\":1}") }}|{{ concat "x" "y" }}"#;
+        let data = json!({});
+        let expected = HandleBars::new()
+            .render(template, &data)
+            .expect("kept helpers render under new");
+        let restricted = HandleBars::new_restricted()
+            .render(template, &data)
+            .expect("kept helpers render under new_restricted");
+        assert_eq!(restricted, expected);
+        assert_eq!(restricted, r#"ABC|YWJj|{"a":1}|xy"#);
+    }
+
+    /// Contraste : le même template (lecture de fichier + variable d'environnement) sous `new`
+    /// réussit et rend le contenu du fichier et la valeur de `PATH`.
+    #[test]
+    fn new_reads_file_and_env_for_the_same_template() {
+        let (_dir, path) = real_file();
+        let data = json!({ "p": path });
+        let out = HandleBars::new()
+            .render(r#"{{ read_to_str p }}|{{ env_var "PATH" }}"#, &data)
+            .expect("host helpers render under new");
+        let path_env = std::env::var("PATH").expect("PATH is set in the test env");
+        assert_eq!(out, format!("CONTENU-SONDE-7f3a|{path_env}"));
     }
 }
 

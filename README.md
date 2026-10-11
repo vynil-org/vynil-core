@@ -39,15 +39,15 @@ releases. Each is independently optional for a consumer that only needs one — 
 
 ```toml
 # default: Rhai + Handlebars + HTTP + crypto helpers, same as previous releases
-vynil-core = "0.7"
+vynil-core = "0.8"
 
 # Kubernetes project
-vynil-core = { version = "0.7", features = ["k8s"] }
+vynil-core = { version = "0.8", features = ["k8s"] }
 
 # Handlebars only (e.g. rendering MCP tool output), no Rhai engine at all — and no rhai/smartstring
 # in the graph either, since "hbs" alone doesn't pull in "hbs-scripting" (e.g. safe to combine
 # with async-graphql, see the `hbs-scripting` row above)
-vynil-core = { version = "0.7", default-features = false, features = ["hbs", "crypto"] }
+vynil-core = { version = "0.8", default-features = false, features = ["hbs", "crypto"] }
 ```
 
 ## Client identity

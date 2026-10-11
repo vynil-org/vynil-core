@@ -138,6 +138,18 @@ Must:
     aucun consommateur ne les utilise) : le module privé `core_helpers` porte
     `#[allow(missing_docs)]` justifié, ses items sont `pub(crate)` et rien n'en est ré-exporté ;
     @crate::hbs::CORE_HBS_HELPERS reste la seule publication de leurs noms.
+  Offrir @crate::hbs::HandleBars::new_restricted (issue vynil-org/vynil-core#13) : le moteur
+    de @crate::hbs::HandleBars::new moins exactement les six helpers qui touchent l'hôte —
+    `read_to_str` (lit un fichier), `env_var` (lit l'environnement du processus),
+    `canonicalize` (résout le système de fichiers) et `parent`, `file_name`, `extension` (qui
+    canonicalisent leur entrée avant de la découper, mesuré sur handlebars_misc_helpers 0.17.0
+    path_helpers.rs : ce sont des sondes d'existence de fichier). Retrait par
+    @handlebars::Handlebars::unregister_helper APRÈS la composition de `new` : les deux
+    constructeurs ne divergent jamais sur les autres helpers. Un helper retiré n'est plus
+    résolu : l'appel d'un template échoue en @variant-Error::HbsRenderError (mode strict hérité).
+    @crate::hbs::CORE_HBS_HELPERS reste informatif et ne distingue pas les deux constructeurs.
+    La garantie porte sur le moteur tel que rendu : @crate::hbs::HandleBars::engine_mut et
+    `register_helper_dir` laissent l'appelant ré-enregistrer ce qu'il veut, à sa charge.
   @crate::hbs::HandleBars est @core::marker::Send et @core::marker::Sync, affirmé par une
     assertion de compilation dans les tests (décision actée : les consommateurs tournent sous
     tokio) ; il en va de même de @Script dans ./engine.sdd.
@@ -197,8 +209,9 @@ Exposes:
   Aucune struct de helper n'est exposée : les douze aides maison sont `pub(crate)`.
     @crate::hbs::HandleBars est réexporté à la racine de la crate comme @crate::HandleBars sous `hbs`.
   @crate::hbs::HandleBars — `pub struct` unitaire autour d'un @handlebars::Handlebars privé,
-    @core::clone::Clone et @core::fmt::Debug dérivés ; @core::marker::Send/Sync affirmés par test. Constructeur unique @crate::hbs::HandleBars::new — `#[must_use] pub fn` sans
-    argument rendant @crate::hbs::HandleBars<'static> — ; échec de construction impossible.
+    @core::clone::Clone et @core::fmt::Debug dérivés ; @core::marker::Send/Sync affirmés par test. Constructeurs @crate::hbs::HandleBars::new et
+    @crate::hbs::HandleBars::new_restricted — `#[must_use] pub fn` sans argument rendant
+    @crate::hbs::HandleBars<'static> — ; échec de construction impossible.
   @crate::hbs::HandleBars::engine_mut — `#[must_use]` emprunt mutable du moteur interne,
     seule voie de customisation (helpers, strict, escape).
   Rendu côté Rust : @crate::hbs::HandleBars::register_template (`name`, `template` str →
@@ -214,7 +227,7 @@ Exposes:
     @rhai::Map), @crate::hbs::HandleBars::rhai_render_named (deux @std::string::String +
     @rhai::Map) ; plus @crate::hbs::HandleBars::rhai_register_helper_dir sous
     `hbs-scripting`. Toutes renvoient @crate::RhaiRes.
-  Rien de plus : pas de `Default`, pas de builder, aucune fonction libre hors du block
+  Rien de plus : pas de `Default`, pas de builder (`new_restricted` n'est pas un builder : zéro réglage), aucune fonction libre hors du block
     d'implémentation et du wildcard des structs.
 
 Accepts:
@@ -278,6 +291,11 @@ Handles:
     erreur — deux politiques coexistent dans le même registre.
 
 Tasks:
+  [x] Implémenter @crate::hbs::HandleBars::new_restricted (issue #13) : `new()` puis
+    `unregister_helper` des six noms du `Must` ; rustdoc nommant les six helpers et la
+    réserve d'`engine_mut`. Tests d'abord depuis le `Scenario` « new_restricted retire les six
+    helpers hôte ». Tâche jumelle de ./docs.sdd (page ../docs/handlebars_helpers.md) — les
+    deux coches dans le même commit.
   [x] Convertir les Scenario en tests passants : ./hbs.rs ne compte à ce jour que trois
     verrous — les deux d'`argon_hash` et celui de `bcrypt_hash` sur la borne 71/72, tous trois
     en `mod tests` gating `crypto` — le reste de la face décrite ici est sans test. La voie
@@ -529,3 +547,14 @@ Scenario: les portes isolent hbs de rhai
   Given `hbs-scripting` (implique `hbs`+`rhai` par ./Cargo.toml)
   Then les deux méthodes `*.rhai` s'ajoutent seules à l'état précédent ; sans `hbs`, le module
     entier n'existe pas et @crate::HandleBars (racine) non plus
+
+Scenario: new_restricted retire les six helpers hôte
+  Given un @crate::hbs::HandleBars construit par @crate::hbs::HandleBars::new_restricted
+  When un template appelle tour à tour `read_to_str`, `env_var`, `canonicalize`, `parent`,
+    `file_name` et `extension` sur une valeur quelconque (un fichier réel pour `read_to_str`,
+    `PATH` pour `env_var`)
+  Then chaque rendu échoue en @variant-Error::HbsRenderError et aucune donnée de l'hôte n'est rendue
+  And les helpers conservés répondent comme sous `new` : `to_upper_case`, `base64_encode`,
+    `str_to_json` et `concat` rendent la même sortie
+  And le même template rendu par @crate::hbs::HandleBars::new lit bien le fichier et la variable
+    (le contraste prouve que le retrait est l'effet du constructeur, pas du template)
