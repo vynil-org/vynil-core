@@ -289,11 +289,14 @@ Tasks:
     actée : sécurité, pas de troncature silencieuse) ; adapter les Scenario bcrypt et
     signaler le changement de comportement pour les consommateurs (`72` octets et plus refusés,
     `71` accepté : la borne utile est `71`, mesurée sur bcrypt `0.19.3`, et non `72`).
-  [ ] Ouvrir l'issue consommateur du changement de comportement bcrypt : `bcrypt_hash`, son
+  [x] Ouvrir l'issue consommateur du changement de comportement bcrypt : `bcrypt_hash`, son
     collage Rhai et le helper Handlebars du même nom refusent `72` octets et plus (texte exact
     `Bcrypt hash error Expected 72 bytes or fewer; found <longueur + 1> bytes` côté Rust et
     Rhai, chaîne vide côté Handlebars, qui avale l'erreur après `warn`) alors qu'ils rendaient
     60 caractères. Destinataires : ../vynil, kuberest, kydah. Issue hors de ce dépôt.
+    Close 2026-10-11 : ouverte sur vynil-org/vynil#266 et vynil-org/kuberest#12 ; kydah n'en
+    reçoit pas (décision du développeur principal : la box suit vynil, pas de dépôt consommateur
+    direct).
 
 Scenario: la face Rust crc32 survit sans aucune feature
   Given la crate compilée par `cargo check --no-default-features`
