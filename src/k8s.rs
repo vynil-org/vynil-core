@@ -1447,8 +1447,14 @@ impl K8sDaemonSet {
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_deamonset(namespace: String, name: String) -> RhaiRes<K8sDaemonSet> {
         // Un seul `Api` construit (k8s.sdd `Must`, nettoyage) : le handle porté réutilise
-        // l'`Api` de la lecture.
-        let api: Api<DaemonSet> = Api::namespaced(CLIENT.clone(), &namespace);
+        // l'`Api` de la lecture. Le `ns` vide est TRAITÉ COMME ABSENT (k8s.sdd Scenario
+        // « workloads — ns/name obligatoires », l. 674-677, rendu à la tâche de conversion
+        // où verrou @tower-test et implémentation voyagent ensemble, Tasks l. 446-451) :
+        // aucune URL `/namespaces//…`, repli toutes namespaces comme chez le resolveur.
+        let api: Api<DaemonSet> = match normalize_ns(Some(namespace)) {
+            Some(ns) => Api::namespaced(CLIENT.clone(), &ns),
+            None => Api::all(CLIENT.clone()),
+        };
         let d = crate::rt::block_on(async { api.get(&name).await.map_err(Error::KubeError) })
             .and_then(|r| r)
             .map_err(rhai_err)?;
@@ -1538,8 +1544,12 @@ impl K8sStatefulSet {
     /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_sts(namespace: String, name: String) -> RhaiRes<K8sStatefulSet> {
-        // Un seul `Api` construit (k8s.sdd `Must`, nettoyage).
-        let api: Api<StatefulSet> = Api::namespaced(CLIENT.clone(), &namespace);
+        // Un seul `Api` construit (k8s.sdd `Must`, nettoyage) ; `ns` vide traité comme
+        // absent (Scenario « workloads », l. 674-677 — voir `get_deamonset`).
+        let api: Api<StatefulSet> = match normalize_ns(Some(namespace)) {
+            Some(ns) => Api::namespaced(CLIENT.clone(), &ns),
+            None => Api::all(CLIENT.clone()),
+        };
         let d = crate::rt::block_on(async { api.get(&name).await.map_err(Error::KubeError) })
             .and_then(|r| r)
             .map_err(rhai_err)?;
@@ -1630,8 +1640,12 @@ impl K8sDeploy {
     /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_deployment(namespace: String, name: String) -> RhaiRes<K8sDeploy> {
-        // Un seul `Api` construit (k8s.sdd `Must`, nettoyage).
-        let api: Api<Deployment> = Api::namespaced(CLIENT.clone(), &namespace);
+        // Un seul `Api` construit (k8s.sdd `Must`, nettoyage) ; `ns` vide traité comme
+        // absent (Scenario « workloads », l. 674-677 — voir `get_deamonset`).
+        let api: Api<Deployment> = match normalize_ns(Some(namespace)) {
+            Some(ns) => Api::namespaced(CLIENT.clone(), &ns),
+            None => Api::all(CLIENT.clone()),
+        };
         let d = crate::rt::block_on(async { api.get(&name).await.map_err(Error::KubeError) })
             .and_then(|r| r)
             .map_err(rhai_err)?;
@@ -1707,8 +1721,12 @@ impl K8sJob {
     /// Returns a Rhai error wrapping [`Error::KubeError`] if the API call fails.
     #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
     pub fn get_job(namespace: String, name: String) -> RhaiRes<K8sJob> {
-        // Un seul `Api` construit (k8s.sdd `Must`, nettoyage).
-        let api: Api<Job> = Api::namespaced(CLIENT.clone(), &namespace);
+        // Un seul `Api` construit (k8s.sdd `Must`, nettoyage) ; `ns` vide traité comme
+        // absent (Scenario « workloads », l. 674-677 — voir `get_deamonset`).
+        let api: Api<Job> = match normalize_ns(Some(namespace)) {
+            Some(ns) => Api::namespaced(CLIENT.clone(), &ns),
+            None => Api::all(CLIENT.clone()),
+        };
         let j = crate::rt::block_on(async { api.get(&name).await.map_err(Error::KubeError) })
             .and_then(|r| r)
             .map_err(rhai_err)?;
@@ -1929,6 +1947,39 @@ macro_rules! register_k8s_raw {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use tracing_subscriber::layer::SubscriberExt as _;
+
+    // Capture de warn partagée (patron ./hbs.rs `warn_tests`, repris des tests
+    // clos de k8s.sdd) : couche qui enregistre le seul champ `message` des events,
+    // subscriber confiné au fil courant par `tracing::subscriber::with_default`
+    // (jamais `set_global_default`).
+    #[derive(Clone)]
+    struct WarnSink(Arc<std::sync::Mutex<Vec<String>>>);
+
+    struct WarnMsg(Vec<String>);
+    impl tracing::field::Visit for WarnMsg {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.push(format!("{value:?}"));
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::layer::Layer<S> for WarnSink {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+            let mut v = WarnMsg(Vec::new());
+            event.record(&mut v);
+            self.0.lock().unwrap().extend(v.0);
+        }
+    }
+
+    /// Subscriber de capture + journal des messages (à vider après `with_default`).
+    fn warn_capture() -> (impl tracing::Subscriber, Arc<std::sync::Mutex<Vec<String>>>) {
+        let sink: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let sub = tracing_subscriber::registry::Registry::default().with(WarnSink(Arc::clone(&sink)));
+        (sub, sink)
+    }
 
     #[test]
     fn discovery_excludes_aggregated_keeps_local_apiservices() {
@@ -3030,6 +3081,1607 @@ mod tests {
         let out = dep.wait_available(1);
         responder.abort();
         assert!(out.is_ok(), "condition satisfaie dès la liste initiale : {out:?}");
+    }
+
+    // ══ Conversion des Scenario sans test (k8s.sdd Tasks, lot 2026-10-11) ═══════
+    // Deux seams, aucun cluster :
+    // - in-process : handles `K8sGeneric`/`K8sRaw`/workloads construits À LA MAIN sur
+    //   `tower_test::mock` (mêmes champs publics que `mocked_generic`) — les LazyLock
+    //   CLIENT/RAW_CLIENT/CACHE ne sont jamais touchés par ces tests ;
+    // - fils auto-ré-exécutés (patron ./oci.rs, marqueur + `current_exe` + `--exact`) :
+    //   tout ce qui requiert un état global frais (providers non posés, `CLIENT_NAME`
+    //   jamais posé) ou hydrate un LazyLock (CLIENT/RAW_CLIENT sur mock, CACHE peuplé
+    //   par une discovery servie par mock).
+
+    const CHILD_ASSERTED: &str = "VYVIL_K8S_CHILD_ASSERTED";
+
+    /// Ligne de requête capturée par le faux API server : `METHODE chemin?query`,
+    /// suffixée du `Content-Type` et du corps (utile aux verrous SSA/injection).
+    type Seen = Arc<std::sync::Mutex<Vec<String>>>;
+
+    /// Faux API server servant `responses` dans l'ordre (puis pendant), handle
+    /// `K8sGeneric` cœur v1/pods (namespacé `app` si `ns`, sinon toutes namespaces),
+    /// construit sur un runtime dédié — le handle de mock (`tower::Buffer`) se spawn À
+    /// la construction. L'appel part du fil de test SANS runtime (voie secours
+    /// `rt::block_on`, patron `get_outside_runtime…`).
+    fn generic_over_mock(
+        ns: Option<&str>,
+        responses: Vec<(u16, String)>,
+    ) -> (
+        K8sGeneric,
+        Seen,
+        tokio::runtime::Runtime,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let seen: Seen = Arc::default();
+        let (mock_service, handle) = tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+        let ar = ApiResource {
+            group: String::new(),
+            version: "v1".to_string(),
+            api_version: "v1".to_string(),
+            kind: "Pod".to_string(),
+            plural: "pods".to_string(),
+        };
+        let client = rt.block_on(async { kube::Client::new(mock_service, "ns") });
+        let api: Api<DynamicObject> = match ns {
+            Some(ns) => Api::namespaced_with(client, ns, &ar),
+            None => Api::all_with(client, &ar),
+        };
+        let generic = K8sGeneric {
+            api: Some(api),
+            ns: ns.map(str::to_string),
+            scope: if ns.is_none() {
+                Scope::Cluster
+            } else {
+                Scope::Namespaced
+            },
+            kind: "Pod".to_string(),
+        };
+        let seen2 = Arc::clone(&seen);
+        let responder = rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            let mut responses = std::collections::VecDeque::from(responses);
+            loop {
+                let Some((req, send)) = handle.next_request().await else {
+                    return;
+                };
+                let method = req.method().clone();
+                let path = req.uri().path().to_string();
+                let query = req.uri().query().map_or_else(String::new, |q| format!("?{q}"));
+                let ctype = req
+                    .headers()
+                    .get(http::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                let body = req.into_body().collect_bytes().await.unwrap_or_default();
+                let body_text = String::from_utf8_lossy(&body).into_owned();
+                seen2.lock().unwrap().extend(std::iter::once(format!(
+                    "{method} {path}{query}|{ctype}|{body_text}"
+                )));
+                let Some((status, body)) = responses.pop_front() else {
+                    loop {
+                        std::future::pending::<()>().await;
+                    }
+                };
+                send.send_response(http_json(status, &body));
+            }
+        });
+        (generic, seen, rt, responder)
+    }
+
+    fn seen_lines(seen: &Seen) -> Vec<String> {
+        seen.lock().unwrap().clone()
+    }
+
+    fn pod_body(name: &str) -> String {
+        format!(r#"{{"apiVersion":"v1","kind":"Pod","metadata":{{"name":"{name}","namespace":"app"}}}}"#)
+    }
+
+    fn pod_list(items: &[&str]) -> String {
+        let items: Vec<String> = items.iter().map(|n| pod_body(n)).collect();
+        format!(
+            r#"{{"apiVersion":"v1","kind":"PodList","metadata":{{"resourceVersion":"1"}},"items":[{}]}}"#,
+            items.join(",")
+        )
+    }
+
+    // ── Scenario « 404 est une erreur, exist est un ouï-dire du cache » ──────
+    // Les trois faces typées (`get`, `get_meta`, `delete`) rendent la chaîne
+    // « K8s error: … » (préfixe seul contracté) ; la face script (`rhai_get`) la
+    // porte aussi via `rhai_err`.
+    #[test]
+    fn get_get_meta_delete_404_render_the_kube_error_prefix() {
+        for call in 0..4 {
+            let (generic, _seen, rt, responder) =
+                generic_over_mock(Some("app"), vec![(404, status_body(404, "Not Found"))]);
+            let outcome = match call {
+                0 => generic.get("absent").map(|_| ()).map_err(|e| e.to_string()),
+                1 => generic.get_meta("absent").map(|_| ()).map_err(|e| e.to_string()),
+                2 => generic.delete("absent").map_err(|e| e.to_string()),
+                _ => {
+                    let mut g = generic;
+                    g.rhai_get("absent".to_string())
+                        .map(|_| ())
+                        .map_err(|e| e.to_string())
+                }
+            };
+            responder.abort();
+            drop(rt);
+            let err = outcome.expect_err("le 404 doit rendre une erreur");
+            if call < 3 {
+                assert!(
+                    err.starts_with("K8s error: "),
+                    "préfixe « K8s error: » attendu (face typée), obtenu : {err}"
+                );
+            } else {
+                assert!(
+                    err.contains("K8s error"),
+                    "le préfixe traverse la conversion Rhai (face script), obtenu : {err}"
+                );
+            }
+        }
+    }
+
+    // Scénario (l. 590) : `exist` regarde la RÉSOLUTION du handle, jamais le contenu
+    // du cluster — AUCUNE requête n'est émise (le mock sans réponse n'est jamais
+    // sollicité : `next_request` reste vide).
+    #[tokio::test(flavor = "current_thread")]
+    async fn exist_is_resolution_hearsay_and_never_calls_the_api() {
+        let (generic, mut handle) = mocked_generic();
+        assert!(
+            generic.exist(),
+            "handle résolu : exist vrai sans regarder d'objet"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), handle.next_request())
+                .await
+                .is_err(),
+            "exist ne doit émettre AUCUNE requête API"
+        );
+    }
+
+    // Handle non résolu (api: None) : `exist` rend faux SANS erreur (jamais
+    // `UnsupportedMethod`), l'usage des autres méthodes rend « Unsupported method ».
+    #[test]
+    fn unresolved_handle_renders_unsupported_method_at_use_not_construction() {
+        let unresolved = K8sGeneric {
+            api: None,
+            ns: None,
+            scope: Scope::Cluster,
+            kind: String::new(),
+        };
+        assert!(!unresolved.exist());
+        let mut g = unresolved;
+        assert!(
+            !g.rhai_exist()
+                .expect("exist ne doit jamais lever")
+                .as_bool()
+                .unwrap(),
+            "exist non résolu : faux, jamais UnsupportedMethod"
+        );
+        let errs: Vec<String> = vec![
+            g.get("x").map(|_| ()).unwrap_err().to_string(),
+            g.list().map(|_| ()).unwrap_err().to_string(),
+            g.get_meta("x").map(|_| ()).unwrap_err().to_string(),
+            g.list_meta().map(|_| ()).unwrap_err().to_string(),
+            g.delete("x").unwrap_err().to_string(),
+            g.create(serde_json::Map::new())
+                .map(|_| ())
+                .unwrap_err()
+                .to_string(),
+            g.replace("x", serde_json::Map::new())
+                .map(|_| ())
+                .unwrap_err()
+                .to_string(),
+            g.patch("x", serde_json::Map::new())
+                .map(|_| ())
+                .unwrap_err()
+                .to_string(),
+            g.apply("x", serde_json::Map::new())
+                .map(|_| ())
+                .unwrap_err()
+                .to_string(),
+        ];
+        for e in errs {
+            assert!(
+                e.contains("Unsupported method"),
+                "« Unsupported method » attendu, obtenu : {e}"
+            );
+        }
+    }
+
+    // ── Scenario « new_global = toutes les namespaces » (face typée) ──────────
+    // Handle sans ns : `Api::all` → URL sans segment `namespaces`, couverture de
+    // toutes les namespaces ; le sélecteur de labels passe VERBATIM dans la query.
+    #[test]
+    fn list_on_all_namespaces_handle_omits_the_namespaces_segment() {
+        let (generic, seen, rt, responder) = generic_over_mock(None, vec![(200, pod_list(&["a", "b"]))]);
+        let out = generic.list().expect("la liste doit être servie");
+        responder.abort();
+        drop(rt);
+        assert_eq!(out.items.len(), 2, "les deux objets traversent");
+        let lines = seen_lines(&seen);
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].starts_with("GET /api/v1/pods") && !lines[0].contains("/namespaces/"),
+            "toutes namespaces = URL sans « /namespaces/ », obtenu : {}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn list_labels_passes_the_selector_verbatim_in_the_query() {
+        let (generic, seen, rt, responder) = generic_over_mock(Some("app"), vec![(200, pod_list(&[]))]);
+        generic
+            .list_labels("app=web".to_string())
+            .expect("la liste filtrée doit être servie");
+        responder.abort();
+        drop(rt);
+        let lines = seen_lines(&seen);
+        let query = lines[0].split('|').next().expect("segment méthode+URL");
+        assert!(
+            query.starts_with("GET /api/v1/namespaces/app/pods?")
+                && query.contains("labelSelector=app")
+                && query.contains("web"),
+            "le sélecteur passe verbatim dans la query, obtenu : {query}"
+        );
+    }
+
+    // ── Scenario « labels et ownerReferences injectés à chaque écriture » ─────
+    // Providers posés GLOBALEMENT (valeurs fixes, seule la face wire les lit en
+    // in-process — les tests `prepare_handle` passent leurs valeurs directes).
+    const PROVIDER_LABELS: &str = r#"{"app":"web","team":"platform"}"#;
+    const PROVIDER_OWNER_UID: &str = "owner-uid-1";
+
+    fn wire_providers_once() {
+        set_get_labels(Box::new(|| {
+            Some(serde_json::from_str(PROVIDER_LABELS).unwrap_or(serde_json::Value::Null))
+        }));
+        set_get_owner(Box::new(|| {
+            Some(serde_json::json!({
+                "apiVersion": "v1", "kind": "ConfigMap", "name": "owner-cm", "uid": PROVIDER_OWNER_UID
+            }))
+        }));
+        set_get_owner_ns(Box::new(|| Some("app".to_string())));
+    }
+
+    // create sur handle ns `app` (== ownerNs) : labels FUSIONNÉS (clés existantes
+    // gardées, absentes ajoutées), owner APPENDU en fin d'array — lu sur le corps
+    // réellement parti au serveur.
+    #[test]
+    fn create_sends_merged_labels_and_appended_owner_on_the_wire() {
+        wire_providers_once();
+        let (generic, seen, rt, responder) = generic_over_mock(Some("app"), vec![(201, pod_body("c1"))]);
+        let data: serde_json::Map<String, serde_json::Value> = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": { "name": "c1", "labels": { "app": "mine" } }
+        }))
+        .unwrap();
+        generic.create(data).expect("le create est servi");
+        responder.abort();
+        drop(rt);
+        let lines = seen_lines(&seen);
+        let body: serde_json::Value =
+            serde_json::from_str(lines[0].split('|').nth(2).expect("corps capturé")).expect("corps JSON");
+        assert_eq!(body["metadata"]["labels"]["app"], "mine", "clé existante GARDÉE");
+        assert_eq!(
+            body["metadata"]["labels"]["team"], "platform",
+            "clé absente AJOUTÉE depuis le provider"
+        );
+        let owners = body["metadata"]["ownerReferences"]
+            .as_array()
+            .expect("ownerReferences présente");
+        assert_eq!(owners.last().expect("appendu EN FIN")["uid"], PROVIDER_OWNER_UID);
+        assert!(lines[0].starts_with("POST /api/v1/namespaces/app/pods"));
+    }
+
+    // FACE SCRIPT (Tasks k8s.sdd : « injection labels/owner EN SCRIPT ») — même
+    // `prepare_handle` partagé, joué ici par `create` enregistré sur l'engine.
+    #[test]
+    fn rhai_script_injects_merged_labels_and_appended_owner_on_the_wire() {
+        wire_providers_once();
+        let (generic, seen, rt, responder) = generic_over_mock(Some("app"), vec![(201, pod_body("c1"))]);
+        let mut engine = Engine::new();
+        k8sgeneric_rhai_register(&mut engine);
+        let mut scope = rhai::Scope::new();
+        scope.push("h", generic);
+        let _ = engine
+            .eval_with_scope::<Dynamic>(
+                &mut scope,
+                r#"h.create(#{
+                    apiVersion: "v1", kind: "ConfigMap",
+                    metadata: #{ name: "c1", labels: #{ app: "mine" } }
+                })"#,
+            )
+            .expect("le create du script est servi");
+        responder.abort();
+        drop(rt);
+        let lines = seen_lines(&seen);
+        let body: serde_json::Value =
+            serde_json::from_str(lines[0].split('|').nth(2).expect("corps capturé")).expect("corps JSON");
+        assert_eq!(
+            body["metadata"]["labels"]["app"], "mine",
+            "clé existante GARDÉE (script)"
+        );
+        assert_eq!(
+            body["metadata"]["labels"]["team"], "platform",
+            "clé absente AJOUTÉE depuis le provider (script)"
+        );
+        assert_eq!(
+            body["metadata"]["ownerReferences"]
+                .as_array()
+                .expect("ownerReferences présente (script)")
+                .last()
+                .expect("appendu EN FIN")["uid"],
+            PROVIDER_OWNER_UID
+        );
+    }
+
+    // Les `rhai_*` lecture rendent le DOCOBJET COMPLET / la LISTE ENTIÈRE (apiVersion/
+    // kind/metadata/items inclus) — jamais le `data` nu (k8s.sdd `Returns`).
+    #[test]
+    fn rhai_get_and_list_return_the_complete_docobjects_not_bare_data() {
+        let (generic, _seen, rt, responder) =
+            generic_over_mock(Some("app"), vec![(200, pod_list(&["a", "b"]))]);
+        let mut engine = Engine::new();
+        k8sgeneric_rhai_register(&mut engine);
+        let mut scope = rhai::Scope::new();
+        scope.push("h", generic);
+        let listed = engine
+            .eval_with_scope::<Dynamic>(&mut scope, "h.list()")
+            .expect("la liste du script est servie");
+        let lv = serde_json::to_value(&listed).expect("liste sérialisable");
+        assert_eq!(lv["apiVersion"], "v1", "la LISTE ENTIÈRE : apiVersion inclus");
+        assert_eq!(lv["kind"], "PodList", "la LISTE ENTIÈRE : kind inclus");
+        assert!(lv["metadata"].is_object(), "la LISTE ENTIÈRE : metadata incluse");
+        assert_eq!(lv["items"].as_array().expect("items").len(), 2);
+        responder.abort();
+        drop(rt);
+    }
+
+    // ownerNs ≠ ns du handle : ownerReferences ABSENT — silent ; labels TOUJOURS.
+    #[test]
+    fn owner_namespace_mismatch_drops_the_owner_and_keeps_labels() {
+        wire_providers_once();
+        let (generic, seen, rt, responder) = generic_over_mock(Some("other"), vec![(201, pod_body("c1"))]);
+        let data: serde_json::Map<String, serde_json::Value> = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1", "kind": "ConfigMap", "metadata": { "name": "c1" }
+        }))
+        .unwrap();
+        generic.create(data).expect("le create est servi");
+        responder.abort();
+        drop(rt);
+        let body: serde_json::Value =
+            serde_json::from_str(seen_lines(&seen)[0].split('|').nth(2).expect("corps")).unwrap();
+        assert!(
+            body["metadata"].get("ownerReferences").is_none(),
+            "ownerNs ({}) ≠ ns du handle (other) : ownerReferences ABSENT",
+            "app"
+        );
+        assert_eq!(body["metadata"]["labels"]["team"], "platform", "labels TOUJOURS");
+    }
+
+    // ── Scenario « patch et apply = SSA forcé fieldManager client_name » ──────
+    // La valeur exacte posée par le consumer (« my-app.example.com ») et la PANIC
+    // client_name jamais posé voyagent au FILS `field_manager…` (État global frais).
+    // In-process : forme des params (force, content-type SSA, PUT nu, 409 nu).
+    #[test]
+    fn patch_is_forced_ssa_apply_with_the_client_name_as_manager() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let manager = crate::get_client_name();
+        let (generic, seen, rt, responder) = generic_over_mock(Some("app"), vec![(200, pod_body("n1"))]);
+        let data: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_value(serde_json::json!({"apiVersion":"v1","kind":"Pod"})).unwrap();
+        generic.patch("n1", data).expect("le patch SSA est servi");
+        responder.abort();
+        drop(rt);
+        let line = seen_lines(&seen).remove(0);
+        let head = line.split('|').next().expect("méthode+URL");
+        assert!(
+            head.starts_with("PATCH "),
+            "jamais MergePatch/JSONPatch : PATCH attendu : {head}"
+        );
+        assert!(head.contains("force=true"), "force posé : {head}");
+        assert!(
+            head.contains(&format!("fieldManager={manager}")),
+            "fieldManager = client_name ({manager}) : {head}"
+        );
+        assert!(
+            line.contains("application/apply-patch+yaml"),
+            "content-type SSA Apply : {line}"
+        );
+    }
+
+    // replace = PUT nu : aucun param SSA, et le 409 d'un objet concurrent (sans
+    // resourceVersion) remonte NU — AUCUNE prélecture (une seule requête vue).
+    #[test]
+    fn replace_is_a_plain_put_and_the_409_is_bare_without_preread() {
+        let (generic, seen, rt, responder) =
+            generic_over_mock(Some("app"), vec![(409, status_body(409, "Conflict"))]);
+        let data: serde_json::Map<String, serde_json::Value> = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1", "kind": "Pod", "metadata": { "name": "n1" }
+        }))
+        .unwrap();
+        let err = generic
+            .replace("n1", data)
+            .expect_err("le 409 sans resourceVersion doit remonter");
+        responder.abort();
+        drop(rt);
+        assert!(err.to_string().starts_with("K8s error: "), "conflit nu : {err}");
+        let lines = seen_lines(&seen);
+        assert_eq!(lines.len(), 1, "aucune prélecture, aucun retry");
+        let head = lines[0].split('|').next().expect("tête");
+        assert!(head.starts_with("PUT "), "PUT attendu : {head}");
+        assert!(
+            !head.contains("fieldManager") && !head.contains("force="),
+            "PUT nu, jamais de params SSA : {head}"
+        );
+    }
+
+    // ── Scenario « apply replie un Job immuable déjà complet, pas un autre » ──
+    // Faux serveur « jobs » : le PATCH (apply) rate toujours sur « immutable » ; le
+    // GET de repli sert `served_job`. La décision (repli ou erreur) est rendue par
+    // `job_is_completed` sur ce GET.
+    fn jobs_over_mock(
+        served_job: &'static str,
+    ) -> (
+        K8sGeneric,
+        Seen,
+        tokio::runtime::Runtime,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let seen: Seen = Arc::default();
+        let (mock_service, handle) = tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+        let ar = ApiResource {
+            group: "batch".to_string(),
+            version: "v1".to_string(),
+            api_version: "batch/v1".to_string(),
+            kind: "Job".to_string(),
+            plural: "jobs".to_string(),
+        };
+        let client = rt.block_on(async { kube::Client::new(mock_service, "ns") });
+        let api: Api<DynamicObject> = Api::namespaced_with(client, "app", &ar);
+        let generic = K8sGeneric {
+            api: Some(api),
+            ns: Some("app".to_string()),
+            scope: Scope::Namespaced,
+            kind: "Job".to_string(),
+        };
+        let seen2 = Arc::clone(&seen);
+        let responder = rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            loop {
+                let Some((req, send)) = handle.next_request().await else {
+                    return;
+                };
+                let method = req.method().clone();
+                let path = req.uri().path().to_string();
+                seen2
+                    .lock()
+                    .unwrap()
+                    .extend(std::iter::once(format!("{method} {path}")));
+                if method == http::Method::PATCH {
+                    send.send_response(http_json(
+                        422,
+                        r#"{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Job.batch \"j1\" is invalid: field spec.template: Invalid value: field spec.template is immutable","reason":"Invalid","code":422}"#,
+                    ));
+                } else {
+                    send.send_response(http_json(200, served_job));
+                }
+            }
+        });
+        (generic, seen, rt, responder)
+    }
+
+    fn job_data(kind: &str) -> serde_json::Map<String, serde_json::Value> {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "batch/v1", "kind": kind, "metadata": { "name": "j1" },
+            "spec": { "template": { "spec": {
+                "containers": [{ "name": "c", "image": "i" }], "restartPolicy": "Never"
+            } } }
+        }))
+        .unwrap()
+    }
+
+    const JOB_COMPLETED: &str = r#"{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"j1"},"status":{"completionTime":"2026-01-01T00:00:00Z"}}"#;
+    const JOB_SUCCEEDED_ALONE: &str = r#"{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"j1"},"status":{"succeeded":1,"completions":3}}"#;
+    const JOB_NOT_COMPLETED: &str = r#"{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"j1"},"status":{"conditions":[{"type":"Complete","status":"False"}]}}"#;
+
+    // Repli : l'apply rate sur « immutable » ET le GET actuel est complété → RETOUR
+    // Ok de l'objet GET (avec completionTime), pas de la version envoyée (sans status).
+    #[test]
+    fn apply_falls_back_to_the_current_object_on_a_completed_immutable_job() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let (generic, seen, rt, responder) = jobs_over_mock(JOB_COMPLETED);
+        let out = generic
+            .apply("j1", job_data("Job"))
+            .expect("le Job déjà complet ne doit pas faire échouer l'apply");
+        responder.abort();
+        drop(rt);
+        assert_eq!(
+            out.data["status"]["completionTime"],
+            serde_json::json!("2026-01-01T00:00:00Z"),
+            "c'est l'objet GET actuel qui est rendu (pas la version envoyée)"
+        );
+        let lines = seen_lines(&seen);
+        assert_eq!(lines, vec![
+            "PATCH /apis/batch/v1/namespaces/app/jobs/j1",
+            "GET /apis/batch/v1/namespaces/app/jobs/j1"
+        ]);
+    }
+
+    // `succeeded > 0` seul ne suffit plus à masquer l'erreur (décision actée), et
+    // `Complete=False` sans completionTime non plus.
+    #[test]
+    fn apply_keeps_the_error_when_completion_is_not_proven() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        for served in [JOB_SUCCEEDED_ALONE, JOB_NOT_COMPLETED] {
+            let (generic, _seen, rt, responder) = jobs_over_mock(served);
+            let err = generic
+                .apply("j1", job_data("Job"))
+                .expect_err("la complétude n'est pas prouvée : l'erreur reste");
+            responder.abort();
+            drop(rt);
+            let text = err.to_string();
+            assert!(
+                text.contains("K8s error") && text.contains("immutable"),
+                "l'erreur KubeError d'origine est rendue telle quelle, obtenu : {text}"
+            );
+        }
+    }
+
+    // Comparaison du `kind` EXACTE, sensible à la casse : `kind: job` minuscule ne
+    // déclenche AUCUN repli (le GET de repli, même complet, ne doit pas être lu).
+    #[test]
+    fn apply_lowercase_job_kind_gets_no_fallback() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let (generic, _seen, rt, responder) = jobs_over_mock(JOB_COMPLETED);
+        let err = generic
+            .apply("j1", job_data("job"))
+            .expect_err("le repli compare le kind en exact");
+        responder.abort();
+        drop(rt);
+        assert!(err.to_string().contains("immutable"), "erreur conservée : {err}");
+    }
+
+    // ══ Fils ════════════════════════════════════════════════════════════════════
+    // État global frais exigé (providers/`CLIENT_NAME` jamais posés, LazyLock à
+    // hydrater sur mock) : patron ./oci.rs.
+
+    fn spawn_k8s_child(marker: &'static str, test_path: &str) -> String {
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg(test_path)
+            .arg("--exact")
+            .arg("--nocapture")
+            .env_clear()
+            .env(marker, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert!(
+            out.status.success() && stdout.contains(CHILD_ASSERTED),
+            "le fils {test_path} doit avoir passé ses assertions : statut {:?}\n--- stdout ---{stdout}\n--- stderr ---{stderr}",
+            out.status
+        );
+        stdout
+    }
+
+    // ── Scenario « provider premier gagne, context_is_wired complet seul suffit »
+    // + « sans provider, chaque premier touch panique avec son message » (CLIENT).
+    #[test]
+    fn unwired_context_and_provider_first_wins_lock_in_a_fresh_process() {
+        const MARKER: &str = "VYVIL_K8S_UNWIRED_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            assert!(!context_is_wired(), "processus frais : rien de câblé");
+            let boom = std::panic::catch_unwind(|| {
+                let _ = &*CLIENT;
+            });
+            let payload = boom.expect_err("touch de CLIENT sans provider : panic contractée");
+            let msg = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap_or_default();
+            assert!(
+                msg.contains("k8s context not initialized"),
+                "message de panic attendu, obtenu : {msg}"
+            );
+            let f: Box<dyn Fn() -> Client + Send + Sync> =
+                Box::new(|| unreachable!("le provider posé ne doit jamais être lu ici"));
+            set_get_client(f);
+            // Premier gagne, second SILENCIEUSEMENT ignoré (`OnceLock::set().ok()`).
+            set_get_client(Box::new(|| {
+                unreachable!("le second provider ne doit jamais être lu")
+            }));
+            set_get_labels(Box::new(|| None));
+            set_get_owner(Box::new(|| None));
+            set_get_owner_ns(Box::new(|| None));
+            assert!(
+                !context_is_wired(),
+                "les 4 providers sans client_name ne suffisent PAS (un seul manque → faux)"
+            );
+            crate::set_client_name(|| "child.example.com".to_string());
+            assert!(context_is_wired(), "les cinq posés : vrai");
+            println!("{CHILD_ASSERTED}");
+            return;
+        }
+        spawn_k8s_child(
+            MARKER,
+            "k8s::tests::unwired_context_and_provider_first_wins_lock_in_a_fresh_process",
+        );
+    }
+
+    // ── Scenario « sans provider… CACHE » + garde de cache de `update_cache`.
+    // Le timeout 60 s (`E_DISCOVERY_TIMEOUT`) n'est PAS verrouillable ici : la
+    // constante `from_mins(1)` est codée et `tokio/time` sans `test-util` (pas
+    // d'horloge figée) — mesuré, consigné au rapport. La voie échec (ancien cache
+    // gardé, aucune panic, CACHE jamais peuplé par un update raté) est verrouillée.
+    #[test]
+    fn cache_panic_is_final_and_update_cache_keeps_the_cache_in_a_fresh_process() {
+        const MARKER: &str = "VYVIL_K8S_CACHE_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            // Discovery TOUJOURS entravée : /apis répond 500 (après le 403 du
+            // listage APIService, voie douce déjà verrouillée in-process).
+            let (mock_service, handle) =
+                tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+            let factory: Box<dyn Fn() -> Client + Send + Sync> = {
+                let svc = mock_service.clone();
+                Box::new(move || kube::Client::new(svc.clone(), "ns"))
+            };
+            set_get_client(factory);
+            set_get_labels(Box::new(|| None));
+            set_get_owner(Box::new(|| None));
+            set_get_owner_ns(Box::new(|| None));
+            crate::set_client_name(|| "child.example.com".to_string());
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let responder = rt.spawn(async move {
+                let mut handle = std::pin::pin!(handle);
+                loop {
+                    let Some((req, send)) = handle.next_request().await else {
+                        return;
+                    };
+                    let path = req.uri().path().to_string();
+                    if path == "/apis" {
+                        send.send_response(http_json(500, &status_body(500, "InternalFailure")));
+                    } else {
+                        send.send_response(http_json(403, &status_body(403, "Forbidden")));
+                    }
+                }
+            });
+            let boom1 = rt
+                .block_on(rt.spawn(async {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let _ = &*CACHE;
+                    }))
+                }))
+                .unwrap();
+            let p1 = boom1.expect_err("CACHE sans discovery : panic contractée");
+            let m1 = p1
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| p1.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap_or_default();
+            assert!(
+                m1.contains("create discovery (excluding api-services)"),
+                "message de la panic d'infrastructure, obtenu : {m1}"
+            );
+            // `update_cache` sur le pont jouable (worker multi-thread) : discovery
+            // rate → warn famille E_DISCOVERY_WARN « keeping old cache », AUCUNE
+            // panic, CACHE jamais écrit.
+            let (warn_sub, captured) = warn_capture();
+            rt.block_on(rt.spawn(async move {
+                tracing::subscriber::with_default(warn_sub, || {
+                    update_cache();
+                });
+            }))
+            .unwrap();
+            let warns = captured.lock().unwrap().clone();
+            assert!(
+                warns
+                    .iter()
+                    .any(|w| w.contains("E_DISCOVERY_WARN: update_k8s_crd_cache failed")
+                        && w.contains("keeping old cache")),
+                "le warn de l'échec (garde de l'ancien cache) est attendu, capturés : {warns:?}"
+            );
+            // La garde est Observable : CACHE n'a jamais été peuplé (un update raté
+            // n'y écrit pas) — le prochain touch panique à nouveau, sur le poison
+            // définitif du LazyLock (« previously poisoned »), seconde preuve que
+            // rien n'a été écrit dans le cache.
+            let boom2 = rt
+                .block_on(rt.spawn(async {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let _ = &*CACHE;
+                    }))
+                }))
+                .unwrap();
+            let p2 = boom2.expect_err("la panique CACHE est définitive");
+            let m2 = p2
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| p2.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap_or_default();
+            assert!(
+                m2.contains("LazyLock") && m2.contains("poisoned"),
+                "seconde panique : poison définitif du LazyLock attendu, obtenu : {m2}"
+            );
+            responder.abort();
+            drop(rt);
+            println!("{CHILD_ASSERTED}");
+            return;
+        }
+        spawn_k8s_child(
+            MARKER,
+            "k8s::tests::cache_panic_is_final_and_update_cache_keeps_the_cache_in_a_fresh_process",
+        );
+    }
+
+    // ── Scenarios « discovery survit au listage APIService » (voie échec, en
+    // in-process impossible sans hydrater CLIENT globalement : fils dédié qui la
+    // joue AVANT tout CACHE) + « new_ns insensible et pluriel, min-lexicographique
+    // tranche, zéro appel » + « new_global = toutes les namespaces » face CACHE +
+    // l'usage du handle non résolu en script.
+
+    /// Faux API server du fils résolution : listage `APIService` RATE (403, voie
+    /// douce), `/apis` sert le groupe `acme.io`, `/api/v1` le cœur (pods/Pod
+    /// namespaced, nodes/Node cluster, mods/Mod namespaced), `/apis/acme.io/v1`
+    /// le CRD `Pod`/`pods` ; tout le reste est un List vide.
+    fn spawn_cache_child_api(
+        rt: &tokio::runtime::Runtime,
+        handle: tower_test::mock::Handle<http::Request<Body>, http::Response<Body>>,
+        seen: Seen,
+    ) -> tokio::task::JoinHandle<()> {
+        rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            loop {
+                let Some((req, send)) = handle.next_request().await else { return };
+                let path = req.uri().path().to_string();
+                seen.lock()
+                    .unwrap()
+                    .extend(std::iter::once(format!("GET {path}")));
+                let body: (&str, u16) = match path.as_str() {
+                    "/apis/apiregistration.k8s.io/v1/apiservices" => {
+                        (&status_body(403, "Forbidden"), 403)
+                    }
+                    "/apis" => (
+                        r#"{"kind":"APIGroupList","apiVersion":"v1","groups":[{"name":"acme.io","versions":[{"groupVersion":"acme.io/v1","version":"v1"}],"preferredVersion":{"groupVersion":"acme.io/v1","version":"v1"}}]}"#,
+                        200,
+                    ),
+                    "/apis/acme.io/v1" => (
+                        r#"{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"acme.io/v1","resources":[{"name":"pods","singularName":"","namespaced":true,"kind":"Pod","verbs":["get","list"]}]}"#,
+                        200,
+                    ),
+                    "/api" => (r#"{"kind":"APIVersions","versions":["v1"],"serverAddressByClientCIDRs":[]}"#, 200),
+                    "/api/v1" => (
+                        r#"{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"v1","resources":[{"name":"pods","singularName":"","namespaced":true,"kind":"Pod","verbs":["get","list"]},{"name":"nodes","singularName":"","namespaced":false,"kind":"Node","verbs":["get","list"]},{"name":"mods","singularName":"","namespaced":true,"kind":"Mod","verbs":["get","list"]}]}"#,
+                        200,
+                    ),
+                    _ => (
+                        r#"{"apiVersion":"v1","kind":"List","metadata":{"resourceVersion":"9"},"items":[]}"#,
+                        200,
+                    ),
+                };
+                send.send_response(http_json(body.1, body.0));
+            }
+        })
+    }
+
+    /// Phase 1 du fils résolution : les faces CACHE jouent par l'engine sur un
+    /// worker (unique pont jouable sans cluster, le CACHE s'hydrate là).
+    fn run_cache_child_script_faces(rt: &tokio::runtime::Runtime) {
+        rt.block_on(rt.spawn(async {
+            let mut engine = Engine::new();
+            k8sgeneric_rhai_register(&mut engine);
+            // l. 571-575 : PODS/Pod/pods, ns app → TOUS le cœur min-lex.
+            for name in ["PODS", "Pod", "pods"] {
+                let _ = engine
+                    .eval::<Dynamic>(&format!("let g = k8s_resource(\"{name}\", \"app\"); g.list();"))
+                    .unwrap_or_else(|e| panic!("résolution {name} : {e}"));
+            }
+            // scope de la RESOURCE, et `nodes` cluster-wide :
+            assert_eq!(
+                engine
+                    .eval::<String>(r#"k8s_resource("PODS","app").scope"#)
+                    .unwrap(),
+                "namespace"
+            );
+            let _ = engine.eval::<Dynamic>(r#"k8s_resource("nodes").list()"#).unwrap();
+            // l. 580-588 : global = toutes namespaces ; ns vide = sans ns ;
+            // « v1 » sans `/` résout simple (mod → cœur) ; groupe/version
+            // explicite → URL du groupe.
+            let _ = engine.eval::<Dynamic>(r#"k8s_resource("pods").list()"#).unwrap();
+            let _ = engine
+                .eval::<Dynamic>(r#"k8s_resource("pods", "").list()"#)
+                .unwrap();
+            let _ = engine
+                .eval::<Dynamic>(r#"k8s_resource("v1", "mod", "app").list()"#)
+                .unwrap();
+            let _ = engine
+                .eval::<Dynamic>(r#"k8s_resource("acme.io/v1", "Pod", "app").list()"#)
+                .unwrap();
+            // l. 576-578 : handle non résolu — construction OK, `get` rate
+            // À L'USAGE en « Unsupported method », `exist` rend faux.
+            assert!(
+                !engine
+                    .eval::<bool>(r#"k8s_resource("nope","app").exist()"#)
+                    .unwrap(),
+                "non résolu : exist faux SANS erreur"
+            );
+            let err = engine
+                .eval::<()>(r#"k8s_resource("nope","app").get("x")"#)
+                .expect_err("l'usage du non résolu rate à l'usage");
+            assert!(
+                err.to_string().contains("Unsupported method"),
+                " Unsupported method attendu à l'usage, obtenu : {err}"
+            );
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn cache_resolution_ambiguity_and_scripts_lock_in_a_fresh_process() {
+        const MARKER: &str = "VYVIL_K8S_RESOLVE_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            // CACHE artificiel servi par faux API server (table dans
+            // `spawn_cache_child_api`). Le listage APIService RATE (403) : la
+            // voie douce « warn + sans exclusions » est verrouillée en phase 0.
+            let (mock_service, handle) =
+                tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+            let factory: Box<dyn Fn() -> Client + Send + Sync> = {
+                let svc = mock_service.clone();
+                Box::new(move || kube::Client::new(svc.clone(), "ns"))
+            };
+            set_get_client(factory);
+            set_get_labels(Box::new(|| None));
+            set_get_owner(Box::new(|| None));
+            set_get_owner_ns(Box::new(|| None));
+            crate::set_client_name(|| "child.example.com".to_string());
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let seen: Seen = Arc::default();
+            let responder = spawn_cache_child_api(&rt, handle, Arc::clone(&seen));
+            // Phase 0 — voie douce du listage APIService (SCENARIO l. 562-564) :
+            // `async_populate_cache` directement (CACHE jamais touché) : UN warn
+            // « cannot list APIServices », discovery SANS exclusions, sans échec.
+            // Le pont de `build_client` exige un worker multi-thread (le runtime
+            // temporaire de `rt::block_on` est `current_thread` et le refuserait) :
+            // la phase 0 se joue donc sur le worker, comme la phase 1.
+            let (warn_sub, captured) = warn_capture();
+            let disco = rt
+                .block_on(rt.spawn(async move {
+                    tracing::subscriber::with_default(warn_sub, || {
+                        crate::rt::block_on(async_populate_cache())
+                            .expect("le pont sert sur le worker")
+                            .expect("la discovery réussit SANS exclusions malgré le listage raté")
+                    })
+                }))
+                .unwrap();
+            let warns = captured.lock().unwrap().clone();
+            assert!(
+                warns
+                    .iter()
+                    .any(|w| w.contains("E_DISCOVERY_WARN: cannot list APIServices")),
+                "le warn de survie est attendu, capturés : {warns:?}"
+            );
+            assert!(
+                disco.groups().any(|g| g.name() == "acme.io"),
+                "le listage raté n'exclut RIEN : acme.io reste présent"
+            );
+            // Phase 1 — résolution par CACHE, AUCUN appel hors discovery/listes
+            // verrouillées ci-dessous.
+            run_cache_child_script_faces(&rt);
+            responder.abort();
+            let lines = seen.lock().unwrap().clone();
+            let lists: Vec<&String> = lines
+                .iter()
+                .filter(|l| {
+                    l.starts_with("GET /api/v1/namespaces/app/pods")
+                        || l.starts_with("GET /apis/acme.io/v1/namespaces/app/pods")
+                        || l.starts_with("GET /api/v1/pods")
+                        || l.starts_with("GET /api/v1/nodes")
+                        || l.starts_with("GET /api/v1/namespaces/app/mods")
+                })
+                .collect();
+            assert_eq!(
+                lists
+                    .iter()
+                    .filter(|l| l.as_str() == "GET /api/v1/namespaces/app/pods")
+                    .count(),
+                3,
+                "PODS/Pod/pods résolvent au CŒUR (min-lexicographique cœur=\"\"), lignes : {lists:?}"
+            );
+            assert!(
+                lists.iter().any(|l| l.as_str() == "GET /api/v1/nodes"),
+                "nodes (cluster) : URL sans namespace, lignes : {lists:?}"
+            );
+            assert!(
+                lists.iter().filter(|l| l.as_str() == "GET /api/v1/pods").count() >= 2,
+                "global et ns vide = toutes namespaces (deux listes sans segment), lignes : {lists:?}"
+            );
+            assert!(
+                lists
+                    .iter()
+                    .any(|l| l.as_str() == "GET /api/v1/namespaces/app/mods"),
+                "« v1 » sans `/` : résolution simple cœur, lignes : {lists:?}"
+            );
+            assert!(
+                lists
+                    .iter()
+                    .any(|l| l.as_str() == "GET /apis/acme.io/v1/namespaces/app/pods"),
+                "groupe explicite acme.io servi, lignes : {lists:?}"
+            );
+            drop(rt);
+            println!("{CHILD_ASSERTED}");
+            return;
+        }
+        spawn_k8s_child(
+            MARKER,
+            "k8s::tests::cache_resolution_ambiguity_and_scripts_lock_in_a_fresh_process",
+        );
+    }
+
+    // ── Scenario « patch et apply = SSA forcé fieldManager client_name » — faces
+    // globales fraîches : valeur posée « my-app.example.com » et PANIC jamais posé
+    // traversant l'engine (non convertie en erreur Rhai).
+    #[test]
+    fn field_manager_comes_from_client_name_and_its_absence_panics_in_a_fresh_process() {
+        const MARKER: &str = "VYVIL_K8S_FM_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            let (generic, seen, rt, responder) = generic_over_mock(Some("app"), vec![(200, pod_body("n1"))]);
+            let mut engine = Engine::new();
+            k8sgeneric_rhai_register(&mut engine);
+            let data = {
+                let e = Engine::new();
+                e.eval::<rhai::Dynamic>("#{ a: 1 }").unwrap()
+            };
+            // Phase A — client_name JAMAIS appelé : la panic client_name.rs
+            // traverse l'engine (le script joue la méthode enregistrée) —
+            // catch_unwind la capture, elle n'est PAS une erreur Rhai.
+            let boom = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut scope = rhai::Scope::new();
+                scope.push("h", generic.clone());
+                scope.push("data", data.clone());
+                let _ = engine
+                    .eval_with_scope::<Dynamic>(&mut scope, r#"h.patch("n1", data)"#)
+                    .expect("aucune erreur Rhai attendue : c'est la PANIC qui traverse");
+            }));
+            let payload = boom.expect_err("la panic du client name traverse l'engine");
+            let msg = payload
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                .unwrap_or_default();
+            assert!(
+                msg.contains("client name not configured"),
+                "la panic contractuelle de client_name.rs, obtenue : {msg}"
+            );
+            // Phase B — valeur posée : fieldManager exact + force + SSA content-type.
+            crate::set_client_name(|| "my-app.example.com".to_string());
+            let mut scope = rhai::Scope::new();
+            scope.push("h", generic);
+            scope.push("data", data);
+            let _ = engine
+                .eval_with_scope::<Dynamic>(&mut scope, r#"h.patch("n1", data)"#)
+                .expect("le patch SSA passe une fois le client name posé");
+            responder.abort();
+            drop(rt);
+            let lines = seen_lines(&seen);
+            let head = lines[0].split('|').next().expect("tête");
+            assert!(
+                head.starts_with("PATCH ")
+                    && head.contains("fieldManager=my-app.example.com")
+                    && head.contains("force=true"),
+                "fieldManager posé + force, obtenu : {head}"
+            );
+            assert!(
+                lines[0].contains("application/apply-patch+yaml"),
+                "SSA Apply : {}",
+                lines[0]
+            );
+            println!("{CHILD_ASSERTED}");
+            return;
+        }
+        spawn_k8s_child(
+            MARKER,
+            "k8s::tests::field_manager_comes_from_client_name_and_its_absence_panics_in_a_fresh_process",
+        );
+    }
+
+    // ── Scenario « workloads — ns/name obligatoires, typo get_deamonset » : face
+    // typée des quatre constructeurs — `ns` vide traité comme absent (toutes
+    // namespaces), AUCUN segment `default` ; et K8sRaw en script par le renommé
+    // `get_cluster_version` sur le RAW_CLIENT hydraté de mock (CLIENT/RAW_CLIENT
+    // LazyLock : fils, état frais).
+    /// Faux API server du fils workloads : GET d'un workload par nom (Deploy/Job/
+    /// Sts/Ds selon le segment d'URL), `/version` pour le raw, 404 ailleurs.
+    fn spawn_workload_child_api(
+        rt: &tokio::runtime::Runtime,
+        handle: tower_test::mock::Handle<http::Request<Body>, http::Response<Body>>,
+        seen: Seen,
+    ) -> tokio::task::JoinHandle<()> {
+        rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            loop {
+                let Some((req, send)) = handle.next_request().await else {
+                    return;
+                };
+                let path = req.uri().path().to_string();
+                seen.lock()
+                    .unwrap()
+                    .extend(std::iter::once(format!("GET {path}")));
+                let kind = if path.contains("deployments") {
+                    "Deployment"
+                } else if path.contains("jobs") {
+                    "Job"
+                } else if path.contains("statefulsets") {
+                    "StatefulSet"
+                } else if path.contains("daemonsets") {
+                    "DaemonSet"
+                } else if path == "/version" {
+                    send.send_response(http_json(
+                        200,
+                        r#"{"major":"1","minor":"31","gitVersion":"v1.31.0"}"#,
+                    ));
+                    continue;
+                } else {
+                    send.send_response(http_json(404, &status_body(404, "Not Found")));
+                    continue;
+                };
+                let name = path.rsplit('/').next().unwrap_or("?").to_string();
+                let api_version = if kind == "Job" { "batch/v1" } else { "apps/v1" };
+                send.send_response(http_json(
+                    200,
+                    &format!(
+                        r#"{{"apiVersion":"{api_version}","kind":"{kind}","metadata":{{"name":"{name}"}}}}"#
+                    ),
+                ));
+            }
+        })
+    }
+
+    #[test]
+    fn workload_empty_namespace_and_raw_script_lock_in_a_fresh_process() {
+        const MARKER: &str = "VYVIL_K8S_WORKLOAD_CHILD";
+        if std::env::var_os(MARKER).is_some() {
+            let (mock_service, handle) =
+                tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+            let factory: Box<dyn Fn() -> Client + Send + Sync> = {
+                let svc = mock_service.clone();
+                Box::new(move || kube::Client::new(svc.clone(), "ns"))
+            };
+            set_get_client(factory);
+            set_get_labels(Box::new(|| None));
+            set_get_owner(Box::new(|| None));
+            set_get_owner_ns(Box::new(|| None));
+            crate::set_client_name(|| "child.example.com".to_string());
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let seen: Seen = Arc::default();
+            let responder = spawn_workload_child_api(&rt, handle, Arc::clone(&seen));
+            // Hydratation des LazyLock SUR le worker (le `tower::Buffer` de
+            // `Client::new` se spawn à la construction, il doit vivre sur `rt`).
+            rt.block_on(rt.spawn(async {
+                let _a = &*CLIENT;
+                let _b = &*RAW_CLIENT;
+            }))
+            .unwrap();
+            // Face ns renseignée (contrôle) : URL namespacée.
+            K8sDeploy::get_deployment("app".to_string(), "web".to_string()).expect("deploy ns app");
+            // Face typée `ns` vide → TRAITÉE COMME ABSENTE (toutes namespaces,
+            // aucun `default`) — l. 674-677, verrou voyageant avec l'implémentation
+            // (Tasks k8s.sdd : aucun rouge d'abord possible sans seam).
+            K8sDeploy::get_deployment(String::new(), "web".to_string()).expect("deploy ns vide");
+            K8sJob::get_job(String::new(), "j1".to_string()).expect("job ns vide");
+            K8sStatefulSet::get_sts(String::new(), "db".to_string()).expect("sts ns vide");
+            K8sDaemonSet::get_deamonset(String::new(), "d".to_string()).expect("ds ns vide");
+            // K8sRaw en script par le NOM RENOMMÉ `get_cluster_version` (l. 662-667).
+            let mut engine = Engine::new();
+            k8sraw_rhai_register(&mut engine);
+            let major = engine
+                .eval::<String>(r"let r = new_k8s_raw(); r.get_cluster_version().major")
+                .expect("get_cluster_version en script");
+            assert_eq!(major, "1", "le corps JSON seul traverse le renommé");
+            responder.abort();
+            drop(rt);
+            let lines = seen_lines(&seen);
+            for want in [
+                "GET /apis/apps/v1/namespaces/app/deployments/web",
+                "GET /apis/apps/v1/deployments/web",
+                "GET /apis/batch/v1/jobs/j1",
+                "GET /apis/apps/v1/statefulsets/db",
+                "GET /apis/apps/v1/daemonsets/d",
+                "GET /version",
+            ] {
+                assert!(
+                    lines.iter().any(|l| l == want),
+                    "URL attendue {want} absente, vues : {lines:?}"
+                );
+            }
+            assert!(
+                !lines
+                    .iter()
+                    .any(|l| l.contains("namespaces//") || l.contains("/default/")),
+                "ns vide : aucun segment vide ni `default`, vues : {lines:?}"
+            );
+            println!("{CHILD_ASSERTED}");
+            return;
+        }
+        spawn_k8s_child(
+            MARKER,
+            "k8s::tests::workload_empty_namespace_and_raw_script_lock_in_a_fresh_process",
+        );
+    }
+
+    // ── Scenario « K8sRaw passe l'URL verbatim et ne rend que le corps JSON » —
+    // faces d'erreur sur seam dédiée : le Status 404 porte message/raison/code dans
+    // le texte ; un corps texte CASSE @serde_json (jamais rendu comme chaîne).
+    #[test]
+    fn raw_404_carries_the_status_text_and_a_text_body_breaks_serde() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut raw, handle) = rt.block_on(async { mocked_raw() });
+        let responder = rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            let Some((_req, send)) = handle.next_request().await else {
+                return;
+            };
+            send.send_response(http_json(404, &status_body(404, "Not Found")));
+            std::future::pending::<()>().await;
+        });
+        let err = raw
+            .rhai_get_url("/nope".to_string())
+            .expect_err("le 404 rend une erreur");
+        responder.abort();
+        drop(rt);
+        let text = err.to_string();
+        assert!(
+            text.contains("(404)") || text.contains("404"),
+            "le texte porte le code du Status : {text}"
+        );
+        assert!(
+            text.contains("Not Found"),
+            "message/raison du Status portés : {text}"
+        );
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut raw, handle) = rt.block_on(async { mocked_raw() });
+        let responder = rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            let Some((_req, send)) = handle.next_request().await else {
+                return;
+            };
+            send.send_response(
+                http::Response::builder()
+                    .status(200)
+                    .header("Content-Type", "text/plain")
+                    .body(Body::from(b"this is not json".to_vec()))
+                    .unwrap(),
+            );
+            std::future::pending::<()>().await;
+        });
+        let out = raw.rhai_get_url("/text".to_string());
+        responder.abort();
+        drop(rt);
+        match out {
+            Err(e) => assert!(
+                !e.to_string().contains("this is not json"),
+                "le corps n'est JAMAIS rendu comme chaîne : {e}"
+            ),
+            Ok(v) => panic!("un corps texte ne doit pas passer la cassure serde_json : {v:?}"),
+        }
+    }
+
+    // Face script du renommé `get_cluster_version` : appel réel (0 argument, GET
+    // `/version` en dessous) sur moteur jouant `k8sraw_rhai_register`, K8sRaw
+    // construit à la main sur mock — aucun LazyLock, aucun runtime ambiant (le
+    // runtime dédié porte le `tower::Buffer`).
+    #[test]
+    fn raw_get_cluster_version_script_face_is_the_renamed_get_api_version() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (raw, handle) = rt.block_on(async { mocked_raw() });
+        let seen: Seen = Arc::default();
+        let seen2 = Arc::clone(&seen);
+        let responder = rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            while let Some((req, send)) = handle.next_request().await {
+                seen2
+                    .lock()
+                    .unwrap()
+                    .extend(std::iter::once(format!("GET {}", req.uri().path())));
+                send.send_response(http_json(
+                    200,
+                    r#"{"major":"1","minor":"31","gitVersion":"v1.31.0"}"#,
+                ));
+            }
+        });
+        let mut raw_engine = Engine::new();
+        k8sraw_rhai_register(&mut raw_engine);
+        let mut raw_scope = rhai::Scope::new();
+        raw_scope.push("r", raw);
+        assert_eq!(
+            raw_engine
+                .eval_with_scope::<String>(&mut raw_scope, r"r.get_cluster_version().major")
+                .expect("le renommé est la face script de get_api_version"),
+            "1"
+        );
+        responder.abort();
+        drop(rt);
+        assert_eq!(
+            seen_lines(&seen),
+            vec!["GET /version"],
+            "le renommé joue le GET /version"
+        );
+    }
+
+    // Scenario « K8sRaw passe l'URL verbatim » (face `get_url` elle-même) : la
+    // relative part TALE QUELLE (méthode GET seule, chemin et query non réécrits).
+    #[test]
+    fn raw_get_url_passes_the_url_verbatim_on_the_wire() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut raw, handle) = rt.block_on(async { mocked_raw() });
+        let seen: Seen = Arc::default();
+        let seen2 = Arc::clone(&seen);
+        let responder = rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            for _ in 0..2 {
+                let Some((req, send)) = handle.next_request().await else {
+                    return;
+                };
+                seen2
+                    .lock()
+                    .unwrap()
+                    .extend(std::iter::once(format!("{} {}", req.method(), req.uri())));
+                send.send_response(http_json(200, "{}"));
+            }
+            std::future::pending::<()>().await;
+        });
+        let _ = raw
+            .rhai_get_url("/api/v1/namespaces/app/pods?labelSelector=app%3Dweb".to_string())
+            .expect("la relative est servie");
+        let _ = raw
+            .rhai_get_url("http://localhost:9999/version".to_string())
+            .expect("l'absolue est acceptée telle quelle");
+        responder.abort();
+        drop(rt);
+        assert_eq!(
+            seen_lines(&seen),
+            vec![
+                "GET /api/v1/namespaces/app/pods?labelSelector=app%3Dweb",
+                // l'absolue passe VERBATIM au client tower (le mock voit l'URI
+                // absolue telle quelle : rien n'est réécrit ni rejeté).
+                "GET http://localhost:9999/version",
+            ],
+            "URL verbatim (GET seul, relatives et absolues non réécrites)"
+        );
+    }
+
+    // `get_api_resources` = GET de `/apis` BRUT avec l'en-tête Discovery (les DEUX
+    // versions apidiscovery v2+v2beta1), le CACHE n'est PAS consulté (handle construit
+    // à la main : tout touch de CACHE paniquerait ici — `k8s context not initialized`).
+    #[test]
+    fn raw_get_api_resources_is_a_bare_apis_get_with_the_discovery_header() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (mut raw, handle) = rt.block_on(async { mocked_raw() });
+        let seen: Seen = Arc::default();
+        let seen2 = Arc::clone(&seen);
+        let responder = rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            let Some((req, send)) = handle.next_request().await else {
+                return;
+            };
+            let accept = req
+                .headers()
+                .get("Accept")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            seen2.lock().unwrap().extend(std::iter::once(format!(
+                "{} {}|{}",
+                req.method(),
+                req.uri(),
+                accept
+            )));
+            send.send_response(http_json(
+                200,
+                r#"{"kind":"APIGroupDiscoveryList","apiVersion":"apidiscovery.k8s.io/v2","items":[]}"#,
+            ));
+            std::future::pending::<()>().await;
+        });
+        let _ = raw.rhai_get_api_resources().expect("le /apis brut est servi");
+        responder.abort();
+        drop(rt);
+        let line = &seen_lines(&seen)[0];
+        assert!(
+            line.starts_with("GET /apis|"),
+            "GET BRUT de /apis, obtenu : {line}"
+        );
+        assert!(
+            line.contains("apidiscovery.k8s.io;v=v2;as=APIGroupDiscoveryList") && line.contains("v=v2beta1"),
+            "les DEUX versions Discovery dans l'Accept, obtenu : {line}"
+        );
+    }
+
+    // ── Scenario « workloads — spec/status absents UNIT » + verdict StatefulSet
+    // (replicas absent compte 1, défaut Kubernetes) et `wait_available(0)` →
+    // Elapsed immédiat.
+    #[test]
+    fn typed_workload_absent_status_is_unit_and_sts_replicas_default_counts_one() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (client, _handle) = rt.block_on(async {
+            let (svc, h) = tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+            (kube::Client::new(svc, "ns"), h)
+        });
+        let job_api: Api<Job> = Api::namespaced(client.clone(), "app");
+        let mut kjob = K8sJob {
+            api: job_api,
+            obj: serde_json::from_value(serde_json::json!({
+                "apiVersion": "batch/v1", "kind": "Job", "metadata": { "name": "j1" }
+            }))
+            .unwrap(),
+        };
+        let status = kjob.get_status().expect("get_status ne rate pas sans status");
+        assert!(
+            status.is_unit(),
+            "status absent → Dynamic::UNIT, obtenu : {status:?}"
+        );
+        let mut kjob2 = K8sJob {
+            api: Api::namespaced(client.clone(), "app"),
+            obj: serde_json::from_value(serde_json::json!({
+                "apiVersion": "batch/v1", "kind": "Job", "metadata": { "name": "j2" },
+                "spec": { "template": { "spec": {
+                    "containers": [{ "name": "c", "image": "i" }], "restartPolicy": "Never"
+                } } }
+            }))
+            .unwrap(),
+        };
+        let spec = kjob2.get_spec().expect("get_spec sert le round-trip");
+        assert!(spec.is_map(), "spec présent : map rendue, obtenu : {spec:?}");
+        let spec_map = spec.try_cast::<rhai::Map>().expect("map");
+        assert!(spec_map.contains_key("template"));
+        drop(kjob2);
+        drop(rt);
+        // Verdict unitaire de la condition StatefulSet (l. 682-684 : replicas
+        // absent = 1, défaut Kubernetes).
+        let sts = |v: serde_json::Value| {
+            serde_json::from_value::<k8s_openapi::api::apps::v1::StatefulSet>(v).unwrap()
+        };
+        let no_spec = sts(serde_json::json!({
+            "apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"db"}
+        }));
+        let abs = sts(serde_json::json!({
+            "apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"db"},
+            "spec": { "serviceName": "s" },
+            "status": { "availableReplicas": 0 }
+        }));
+        let match2 = sts(serde_json::json!({
+            "apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"db"},
+            "spec": { "serviceName": "s", "replicas": 2 },
+            "status": { "availableReplicas": 2 }
+        }));
+        assert!(!K8sStatefulSet::is_sts_available().matches_object(Some(&no_spec)));
+        assert!(
+            !K8sStatefulSet::is_sts_available().matches_object(Some(&abs)),
+            "replicas absent compte 1 (défaut Kubernetes) ≠ available 0 : FAUX"
+        );
+        assert!(K8sStatefulSet::is_sts_available().matches_object(Some(&match2)));
+    }
+
+    #[test]
+    fn statefulset_wait_available_zero_is_immediate_elapsed() {
+        let (mock_service, handle) = tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = rt.block_on(async { kube::Client::new(mock_service, "ns") });
+        // Aucune réponse jamais servie (recette `negative_timeout_is_immediate_elapsed`) :
+        // le timeout 0 tranche avant toute liste, en Elapsed immédiat.
+        let responder = rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            while handle.next_request().await.is_some() {
+                std::future::pending::<()>().await;
+            }
+        });
+        let api: Api<k8s_openapi::api::apps::v1::StatefulSet> = Api::namespaced(client, "app");
+        let mut sts = K8sStatefulSet {
+            api,
+            obj: serde_json::from_value(serde_json::json!({
+                "apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"db"},
+                "spec": { "serviceName": "s" },
+                "status": { "availableReplicas": 0 }
+            }))
+            .unwrap(),
+        };
+        let out = sts.wait_available(0);
+        responder.abort();
+        drop(rt);
+        let err = out.expect_err("l'objet jamais prêt à timeout 0 doit échouer");
+        assert!(
+            err.to_string().contains("Elapsed wait error"),
+            "timeout 0 → Elapsed immédiat (replicas absent = 1 ≠ available 0), obtenu : {err}"
+        );
+    }
+
+    // ── Scenario « les trois registres, surface verrouillée par macro » —
+    // positifs par appel sur handle CONSTRUIT À LA MAIN (aucune LazyLock jouée),
+    // négatifs par `Function not found` (le nom jamais résolu n'est jamais appelé),
+    // constructeurs workload par leur panic de pont (résolution de nom prouvée :
+    // on ENTRE dans la fonction avant la panique contractée). Sous
+    // `current_thread`, `update_k8s_crd_cache` joue la voie douce du pont (warn,
+    // CACHE et CLIENT jamais touchés — même preuve que le verrou warn existant).
+
+    /// Sonde négative de registre : le nom n'a jamais été résolu — l'erreur rendue
+    /// est « Function not found » (jamais une erreur de fond, jamais un succès).
+    fn expect_function_not_found(out: crate::RhaiRes<Dynamic>, script: &str) {
+        let err = out.expect_err(&format!("{script} doit être inconnu du registre"));
+        assert!(
+            err.to_string().contains("Function not found"),
+            "Function not found attendu pour {script}, obtenu : {err}"
+        );
+    }
+
+    /// Les quatre constructeurs workload sont RÉSOLOS par le registre : sous
+    /// `current_thread` sans provider, ils ENTRENT dans la fonction (leur panique
+    /// d'infrastructure CLIENT, première fois ou poison des sondes suivantes) —
+    /// `Function not found` aurait rendu `Ok(Err)`, jamais paniqué.
+    fn assert_workload_constructors_resolve(engine: &mut Engine) {
+        for ctor in [
+            r#"get_deployment("app","web")"#,
+            r#"get_deamonset("app","d")"#,
+            r#"get_statefulset("app","db")"#,
+            r#"get_job("app","j1")"#,
+        ] {
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.eval::<Dynamic>(ctor)));
+            match outcome {
+                Err(_) => {}
+                Ok(r) => panic!("{ctor} devait paniquer au pont sous current_thread, rendu : {r:?}"),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_three_registers_lock_the_script_surface() {
+        let unresolved = K8sGeneric {
+            api: None,
+            ns: None,
+            scope: Scope::Cluster,
+            kind: String::new(),
+        };
+        let mut engine = Engine::new();
+        k8sgeneric_rhai_register(&mut engine);
+        let mut scope = rhai::Scope::new();
+        scope.push("g", unresolved.clone());
+        // méthodes présentes : l'usage du non-résolu répond « Unsupported method »
+        // (jamais atteint pour un nom absent, qui répond « Function not found »).
+        for (script, want) in [
+            (r#"g.get("x")"#, "Unsupported method"),
+            (r#"g.get_meta("x")"#, "Unsupported method"),
+            (r#"g.get_obj("x")"#, "Unsupported method"),
+            (r"g.list()", "Unsupported method"),
+            (r#"g.list("app=web")"#, "Unsupported method"),
+            (r"g.list_meta()", "Unsupported method"),
+            (r#"g.delete("x")"#, "Unsupported method"),
+            (
+                r#"g.create(#{ apiVersion: "v1", kind: "ConfigMap" })"#,
+                "Unsupported method",
+            ),
+            (
+                r#"g.replace("x", #{ apiVersion: "v1", kind: "ConfigMap" })"#,
+                "Unsupported method",
+            ),
+            (r#"g.patch("x", #{ a: 1 })"#, "Unsupported method"),
+            (r#"g.apply("x", #{ a: 1 })"#, "Unsupported method"),
+            (r#"k8s_resource("pods")"#, "requires a multi-thread tokio runtime"),
+        ] {
+            let err = engine
+                .eval_with_scope::<Dynamic>(&mut scope, script)
+                .expect_err(&format!("{script} doit rendre une erreur"));
+            assert!(
+                err.to_string().contains(want),
+                "« {want} » attendu pour {script}, obtenu : {err}"
+            );
+        }
+        assert!(
+            !engine
+                .eval_with_scope::<bool>(&mut scope, "g.exist()")
+                .expect("exist ne rate jamais sur un non-résolu"),
+            "exist non résolu : faux, présent au registre"
+        );
+        // `update_k8s_crd_cache` présent et branché sur l'update_cache réel : sous
+        // current_thread il joue la voie douce (warn du pont), sans panic ni CACHE.
+        let (sub, captured) = warn_capture();
+        tracing::subscriber::with_default(sub, || {
+            engine
+                .eval_with_scope::<()>(&mut scope, "update_k8s_crd_cache();")
+                .expect("update_k8s_crd_cache est enregistré : le script passe");
+        });
+        let warns = captured.lock().unwrap().clone();
+        assert!(
+            warns
+                .iter()
+                .any(|w| w.contains("E_DISCOVERY_WARN: update_k8s_crd_cache")),
+            "le warn prouve la présence ET le branchement réel : {warns:?}"
+        );
+        // absents du registre generic seul.
+        for absent in [
+            "new_k8s_raw()",
+            r"get_cluster_version()",
+            r#"get_deployment("app","d")"#,
+            r#"get_deamonset("app","d")"#,
+            r#"is_condition("Ready")"#,
+        ] {
+            expect_function_not_found(engine.eval_with_scope::<Dynamic>(&mut scope, absent), absent);
+        }
+        // registre raw : seul le RENOMMÉ `get_cluster_version` est en script,
+        // l'ancien nom n'existe pas (négatif sans moteur plein ; le positif par
+        // appel joue `raw_get_cluster_version_script_face`, test séparé sans
+        // runtime ambiant — le multi-thread dédié de `Client::new` ne se construit
+        // pas sous un `current_thread`).
+        let mut raw_engine = Engine::new();
+        k8sraw_rhai_register(&mut raw_engine);
+        // aucun alias de l'ancien nom en script
+        expect_function_not_found(
+            raw_engine.eval::<Dynamic>(r"get_api_version()"),
+            "get_api_version",
+        );
+        // registre workload : les quatre constructeurs (typo `get_deamonset` incluse)
+        // — sous current_thread sans provider, ils ENTRENT dans la fonction (leur
+        // panique contractée de pont prouve la résolution du nom).
+        set_get_client(Box::new(|| unreachable!("la fabrique ne doit jamais être jouée")));
+        let mut wl_engine = Engine::new();
+        k8sworkload_rhai_register(&mut wl_engine);
+        assert_workload_constructors_resolve(&mut wl_engine);
+        // `is_condition` JAMAIS en script
+        expect_function_not_found(
+            wl_engine.eval::<Dynamic>(r#"is_condition("Ready")"#),
+            "is_condition",
+        );
+        // cumulable : generic + raw + workload sur un même moteur.
+        let mut all = Engine::new();
+        k8sgeneric_rhai_register(&mut all);
+        k8sraw_rhai_register(&mut all);
+        k8sworkload_rhai_register(&mut all);
+        let mut all_scope = rhai::Scope::new();
+        all_scope.push("g", unresolved);
+        assert!(
+            all.eval_with_scope::<Dynamic>(&mut all_scope, r"g.list()")
+                .expect_err("le cumul garde le generic")
+                .to_string()
+                .contains("Unsupported method")
+        );
     }
 }
 

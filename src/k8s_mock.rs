@@ -999,4 +999,345 @@ mod tests {
             new_group_ns
         );
     }
+
+    // ══ Conversion des Scenario mock sans test (k8s.sdd Tasks l. 449-451, lot
+    // 2026-10-11) — fixtures directs (constructeurs publics), aucun engine requis
+    // sauf pour les verrous de surface. Aucun provider, aucun runtime : le mock
+    // est callable du fil nu (Scenario l. 694-697 « sans @tokio »).
+
+    fn dyn_json(v: serde_json::Value) -> Dynamic {
+        to_dynamic(v).expect("fixture convertie")
+    }
+
+    fn fixture_pod(name: &str, ns: &str) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "v1", "kind": "pods",
+            "metadata": { "name": name, "namespace": ns },
+            "spec": { "containers": [{ "name": "c", "image": "i" }] },
+            "status": { "phase": "Running" }
+        })
+    }
+
+    // Arc partagé unique entre tests : mocks et `created` sont deux listes de
+    // Dynamic derrière Arc<Mutex> (définition nommée pour `pair_arcs`, la tuple
+    // nue étant trop complexe pour le harnais pedantic).
+    type MockArcs = (Arc<Mutex<Vec<Dynamic>>>, Arc<Mutex<Vec<Dynamic>>>);
+
+    fn pair_arcs() -> MockArcs {
+        (Arc::new(Mutex::new(vec![])), Arc::new(Mutex::new(vec![])))
+    }
+
+    // Scenario « mock 1:1 » (l. 703-705) : `get_meta` rend l'OBJET COMPLET (différence
+    // documentée avec le vrai, qui ne rend que les métadonnées).
+    #[test]
+    fn mock_get_meta_renders_the_full_object() {
+        let (mocks, created) = pair_arcs();
+        mocks.lock().unwrap().push(dyn_json(fixture_pod("a", "app")));
+        let mut h = K8sGenericMock::new(mocks, "pods", None, created);
+        let meta = h.rhai_get_meta("a".to_string()).expect("trouvé");
+        let v = serde_json::to_value(&meta).expect("sérialisable");
+        assert_eq!(v["metadata"]["name"], "a");
+        assert!(
+            v.get("spec").is_some() && v["status"]["phase"] == "Running",
+            "get_meta du mock rend l'objet COMPLET (spec et status présents) : {v}"
+        );
+    }
+
+    // Scenario « mock 1:1 » (l. 698-701) : le snapshot filtre `kind` EXACT, SENSIBLE
+    // À LA CASSE — le vrai aurait accepté pods/Pod/POD ; la différence est documentée.
+    #[test]
+    fn mock_list_snapshot_filters_kind_case_exactly() {
+        let (mocks, created) = pair_arcs();
+        mocks.lock().unwrap().push(dyn_json(fixture_pod("a", "app")));
+        let mut exact = K8sGenericMock::new(
+            Arc::clone(&mocks),
+            "pods",
+            Some("app".to_string()),
+            Arc::clone(&created),
+        );
+        let items = serde_json::to_value(exact.rhai_list().expect("list")).expect("items")["items"]
+            .as_array()
+            .cloned()
+            .expect("tableau");
+        assert_eq!(items.len(), 1, "kind exact « pods » : un item");
+        let mut other_case = K8sGenericMock::new(mocks, "Pod", Some("app".to_string()), created);
+        assert_eq!(
+            serde_json::to_value(other_case.rhai_list().expect("list")).expect("v")["items"]
+                .as_array()
+                .expect("tableau")
+                .len(),
+            0,
+            "handle « Pod » (casse différente) : snapshot VIDE — filtre exact, documenté"
+        );
+    }
+
+    // Scenario « mock 1:1 » (l. 702-705) : `list()` est le SNAPSHOT figé (le create
+    // n'y entre pas) ; `get` trouve aussi la base vivante ; `created` porte la vue.
+    #[test]
+    fn mock_list_is_a_frozen_snapshot_while_get_also_reads_the_live_base() {
+        let (mocks, created) = pair_arcs();
+        mocks.lock().unwrap().push(dyn_json(fixture_pod("a", "app")));
+        let mut h = K8sGenericMock::new(
+            Arc::clone(&mocks),
+            "pods",
+            Some("app".to_string()),
+            Arc::clone(&created),
+        );
+        let _ = h
+            .rhai_create(dyn_json(fixture_pod("b", "app")))
+            .expect("create du mock passe");
+        let listed: Vec<String> = serde_json::to_value(h.rhai_list().expect("list")).expect("v")["items"]
+            .as_array()
+            .expect("tableau")
+            .iter()
+            .map(|i| i["metadata"]["name"].as_str().unwrap_or("?").to_string())
+            .collect();
+        assert_eq!(listed, vec!["a".to_string()], "le snapshot ne voit PAS le create");
+        let _ = h
+            .rhai_get("b".to_string())
+            .expect("get trouve la base VIVANTE (le create)");
+        let created_view = created.lock().expect("created").clone();
+        assert_eq!(created_view.len(), 1, "created porte le create");
+    }
+
+    // Scenario « mock 1:1 » (l. 704-705) : un `patch()` N'ÉCRIT PAS dans `created`
+    // (contrairement à create/replace/apply) — traîtrise verrouillée.
+    #[test]
+    fn mock_patch_updates_mocks_but_never_writes_created() {
+        let (mocks, created) = pair_arcs();
+        mocks.lock().unwrap().push(dyn_json(fixture_pod("a", "app")));
+        let mut h = K8sGenericMock::new(Arc::clone(&mocks), "pods", None, Arc::clone(&created));
+        let mut patch = fixture_pod("a", "app");
+        patch["status"]["phase"] = serde_json::json!("Succeeded");
+        let _ = h
+            .rhai_patch("a".to_string(), dyn_json(patch))
+            .expect("patch du mock passe");
+        assert!(
+            created.lock().unwrap().is_empty(),
+            "patch N'ÉCRIT PAS dans created"
+        );
+        // Le `get` du handle trouve d'abord le SNAPSHOT de construction (contrat :
+        // « get trouve (snapshot OU base vivante) ») — la preuve du deep-merge du
+        // patch se lit donc dans la base partagée `mocks`, pas derrière le snapshot.
+        let base = serde_json::to_value(&*mocks.lock().unwrap()).expect("base");
+        assert_eq!(
+            base[0]["status"]["phase"], "Succeeded",
+            "mocks bien mis à jour (deep-merge du patch) : {base}"
+        );
+        let _ = h
+            .rhai_get("a".to_string())
+            .expect("get trouve (snapshot OU base vivante)");
+    }
+
+    // Tasks l. 451 : ns backfill = apply SEUL (replace/patch/create ne remplissent
+    // que le `kind`).
+    #[test]
+    fn mock_namespace_backfill_is_apply_only_kind_elsewhere() {
+        let (mocks, created) = pair_arcs();
+        let mut h = K8sGenericMock::new(mocks, "pods", Some("app".to_string()), created);
+        let bare = |name: &str| serde_json::json!({ "metadata": { "name": name } });
+        let applied = h.rhai_apply("x".to_string(), dyn_json(bare("x"))).expect("apply");
+        let av = serde_json::to_value(&applied).expect("v");
+        assert_eq!(av["metadata"]["namespace"], "app", "apply backfill le ns");
+        assert_eq!(av["kind"], "pods", "apply remplit le kind");
+        for (name, call) in [
+            ("r", h.rhai_replace("r".to_string(), dyn_json(bare("r")))),
+            ("p", h.rhai_patch("p".to_string(), dyn_json(bare("p")))),
+            ("c", h.rhai_create(dyn_json(bare("c")))),
+        ] {
+            let v = serde_json::to_value(call.expect("rendu")).expect("v");
+            assert_eq!(v["kind"], "pods", "{name} : kind rempli");
+            assert!(
+                v["metadata"].get("namespace").is_none(),
+                "{name} : JAMAIS de backfill ns hors apply : {v}"
+            );
+        }
+    }
+
+    // Tasks l. 450 : `created` porte la VUE FUSIONNÉE (merge profond de l'entrée
+    // existante) — pas la version nue envoyée.
+    #[test]
+    fn mock_created_carries_the_deep_merged_view() {
+        let (mocks, created) = pair_arcs();
+        mocks.lock().unwrap().push(dyn_json(serde_json::json!({
+            "kind": "pods", "metadata": { "name": "a", "namespace": "app", "labels": { "x": "1" } }
+        })));
+        let mut h = K8sGenericMock::new(Arc::clone(&mocks), "pods", None, Arc::clone(&created));
+        let _ = h
+            .rhai_create(dyn_json(serde_json::json!({
+                "kind": "pods", "metadata": { "name": "a", "namespace": "app", "labels": { "y": "2" } }
+            })))
+            .expect("create");
+        let view = serde_json::to_value(&created.lock().unwrap()[0]).expect("v");
+        assert_eq!(view["metadata"]["labels"]["x"], "1", "clé existante fusionnée");
+        assert_eq!(view["metadata"]["labels"]["y"], "2", "clé nouvelle fusionnée");
+    }
+
+    // Tasks l. 451 : `PoisonError` — toutes les faces verrouillent avec
+    // `unwrap_or_else(PoisonError::into_inner)` et survivent à un verrou empoisonné.
+    #[test]
+    fn mock_survives_poisoned_locks() {
+        let (mocks, created) = pair_arcs();
+        let poison = Arc::clone(&mocks);
+        let h = std::thread::spawn(move || {
+            let _g = poison.lock().unwrap();
+            panic!("empoisonne le verrou des mocks");
+        });
+        assert!(h.join().is_err(), "le fil a bien empoisonné le verrou");
+        // Toute la face doit jouer sans panic malgré le poison.
+        let mut g = K8sGenericMock::new(mocks, "pods", None, Arc::clone(&created));
+        assert!(
+            serde_json::to_value(g.rhai_list().expect("list empoisonné")).is_ok(),
+            "list survit au poison"
+        );
+        let _ = g
+            .rhai_create(dyn_json(fixture_pod("z", "app")))
+            .expect("create survit au poison");
+        let c = Arc::clone(&created);
+        let poison2 = {
+            let c2 = Arc::clone(&c);
+            std::thread::spawn(move || {
+                let _g = c2.lock().unwrap();
+                panic!("empoisonne le verrou de created");
+            })
+        };
+        assert!(poison2.join().is_err());
+        let mut g2 = K8sGenericMock::new(Arc::new(Mutex::new(Vec::new())), "pods", None, c);
+        let _ = g2
+            .rhai_get_meta("nope".to_string())
+            .expect_err("get_meta inconnu rend une erreur, jamais une panique");
+        let _ = g2
+            .rhai_create(dyn_json(fixture_pod("w", "app")))
+            .expect("create survit au poison de created");
+    }
+
+    // Scenario l. 713-714 : `K8sRawMock` — les trois faces rendent une map VIDE figée.
+    #[test]
+    fn mock_raw_renders_three_frozen_empty_maps() {
+        let mut raw = K8sRawMock::new();
+        for out in [
+            raw.rhai_get_url("/anything".to_string()),
+            raw.rhai_get_api_version(),
+            raw.rhai_get_api_resources(),
+        ] {
+            let v = serde_json::to_value(out.expect("rendu")).expect("v");
+            assert_eq!(v, serde_json::json!({}), "map vide figée attendue");
+        }
+    }
+
+    // Scenario « mock waits exist et no-op updates » (l. 707-711) : exist TOUJOURS
+    // vrai, scope TOUJOURS `namespace`, waits = Ok immédiat sans predicate ni watch,
+    // `delete(name)` no-op Ok.
+    #[test]
+    fn mock_waits_exist_and_scope_are_immediate_noops() {
+        let (mocks, created) = pair_arcs();
+        let mut g = K8sGenericMock::new(mocks, "pods", None, Arc::clone(&created));
+        assert!(
+            g.rhai_exist().expect("exist").as_bool().unwrap(),
+            "exist TOUJOURS vrai"
+        );
+        assert_eq!(g.rhai_get_scope(), "namespace", "scope TOUJOURS namespace");
+        assert!(
+            g.rhai_delete("whatever".to_string()).is_ok(),
+            "delete(name) no-op Ok"
+        );
+        let mut obj = K8sObjectMock {
+            obj: dyn_json(fixture_pod("a", "app")),
+            kind: "pods".to_string(),
+        };
+        assert!(obj.rhai_delete().is_ok());
+        assert!(obj.rhai_wait_deleted(1).is_ok());
+        assert!(obj.wait_condition("Ready".to_string(), 1).is_ok());
+        assert!(obj.wait_status("phase".to_string(), 1).is_ok());
+        assert!(obj.wait_status_prop("phase".to_string(), 1).is_ok());
+        assert!(
+            obj.wait_status_string("phase".to_string(), "Whatever".to_string(), 1)
+                .is_ok(),
+            "wait_status_string du mock : Ok immédiat, sans predicate"
+        );
+    }
+
+    #[test]
+    fn mock_workload_waits_are_immediate_ok() {
+        let mut w = K8sWorkloadMock {
+            obj: dyn_json(fixture_pod("a", "app")),
+        };
+        assert!(
+            w.wait_available(1).is_ok(),
+            "wait_available du mock : Ok immédiat"
+        );
+        assert!(w.wait_done(1).is_ok(), "wait_done du mock : Ok immédiat");
+    }
+
+    // Scenario l. 694-697 : MÊME surface de noms que les trois registres vrais,
+    // « sans AUCUN trou », callable du fil nu SANS tokio (aucun provider touché).
+    // Sonde : chaque nom résout (l'erreur rendue est sémantique, jamais
+    // « Function not found »).
+    #[test]
+    fn mock_surface_has_no_holes_against_the_real_names() {
+        let (mocks, created) = pair_arcs();
+        mocks.lock().unwrap().push(dyn_json(fixture_pod("a", "app")));
+        let mut engine = rhai::Engine::new();
+        k8s_mock_rhai_register(&mut engine, Arc::clone(&mocks), Arc::clone(&created));
+        for script in [
+            r#"let h = k8s_resource("pods"); true"#,
+            r#"let h = k8s_resource("pods", "app"); true"#,
+            r#"let h = k8s_resource("v1", "pods", "app"); true"#,
+            r#"type_of(new_k8s_raw()) == "K8sRaw""#,
+            // `to_json_string` est un enregistrement de ./engine.rs (`Script::new_bare`),
+            // absent du `Engine::new()` nu : la map vide se sonde par sa taille.
+            r#"new_k8s_raw().get_url("/x").len() == 0"#,
+            r"new_k8s_raw().get_cluster_version().len() == 0",
+            r"new_k8s_raw().get_api_resources().len() == 0",
+            "update_k8s_crd_cache(); true",
+        ] {
+            engine
+                .eval::<bool>(script)
+                .unwrap_or_else(|e| panic!("surface mock : {script} ne résout pas : {e}"));
+        }
+        // noms sémantiques : méthode PRÉSENTe (succès ou erreur de fond — jamais
+        // « Function not found », qui serait le seul trou de surface).
+        let probe = |engine: &mut Engine, script: &str| {
+            if let Err(err) = engine.eval::<Dynamic>(script) {
+                assert!(
+                    !err.to_string().contains("Function not found"),
+                    "{script} : le nom doit être PRÉSENT dans le mock, rendu : {err}"
+                );
+            }
+        };
+        for script in [
+            r#"k8s_resource("pods").scope"#,
+            r#"k8s_resource("pods").list()"#,
+            r#"k8s_resource("pods").list("a=b")"#,
+            r#"k8s_resource("pods").list_meta()"#,
+            r#"k8s_resource("pods").get("absent")"#,
+            r#"k8s_resource("pods").get_meta("absent")"#,
+            r#"k8s_resource("pods").get_obj("absent")"#,
+            r#"k8s_resource("pods").delete("absent")"#,
+            r#"k8s_resource("pods").exist()"#,
+            r#"k8s_resource("pods").replace("a", #{})"#,
+            r#"k8s_resource("pods").patch("a", #{})"#,
+            r#"k8s_resource("pods").apply("a", #{})"#,
+            r#"get_deployment("app","absent")"#,
+            r#"get_deamonset("app","absent")"#,
+            r#"get_statefulset("app","absent")"#,
+            r#"get_job("app","absent")"#,
+        ] {
+            probe(&mut engine, script);
+        }
+        // face objet mock (get_obj sur l'existant puis ses méthodes) :
+        engine
+            .eval::<()>(
+                r#"
+                let o = k8s_resource("pods").get_obj("a");
+                o.wait_condition("Ready", 1);
+                o.wait_status("phase", 1);
+                o.wait_status_prop("phase", 1);
+                o.wait_status_string("phase", "x", 1);
+                o.wait_deleted(1);
+                o.delete();
+                "#,
+            )
+            .expect("les méthodes K8sObject du mock sont présentes");
+    }
 }
