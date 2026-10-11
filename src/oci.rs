@@ -1307,6 +1307,361 @@ mod tests {
         assert_eq!(name, "Registry", "le vrai type s'enregistre sous « Registry »");
     }
 
+    // ══════════════════════════════════════════════════════════════════════
+    // Conversion des Scenario restants de oci.sdd : « l'anonymat frappe à la
+    // première chaîne vide », « push d'un dossier absent », « hors runtime
+    // multi-thread » pour les trois méthodes pontées, « valide son seul
+    // chemin » (asymétrie des voies `with_tag`), les voies VIA engine côté
+    // VRAI client (`new_bare`, seam httpmock) et la voie `pull_image` du vrai
+    // client. La variante Stdio-vs-Other d'un spawn cosign échouant ni en
+    // NotFound ni en erreur chaîne reste SANS VERROU : `Default` pas
+    // fabricable sur cette machine (consigné, oci.sdd `Tasks`).
+    // ══════════════════════════════════════════════════════════════════════
+
+    use crate::engine::Script;
+
+    // Scenario « l'anonymat frappe à la première chaîne vide » : disjonction,
+    // pas conjonction (lignes 29-33 du `Must`).
+    #[test]
+    fn new_registry_is_anonymous_when_either_string_is_empty() {
+        for (user, pass) in [("", "p"), ("u", ""), ("", "")] {
+            let reg = Registry::new("r.io".to_string(), user.to_string(), pass.to_string());
+            assert!(
+                matches!(reg.auth, RegistryAuth::Anonymous),
+                "(\"{user}\", \"{pass}\") doit rendre Anonymous — la règle est une OR"
+            );
+        }
+        let reg = Registry::new("r.io".to_string(), "u".to_string(), "p".to_string());
+        assert!(
+            matches!(&reg.auth, RegistryAuth::Basic(u, p) if u == "u" && p == "p"),
+            "(\"u\", \"p\") doit rendre Basic(u, p)"
+        );
+    }
+
+    // Scenario « push d'un dossier absent échoue avant tout réseau » :
+    // précédence des étapes verrouillée — l'échec vient de `append_dir_all`
+    // (Stdio) et le POST d'ouverture de session blob n'est JAMAIS vu.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn push_image_from_missing_directory_fails_before_network() {
+        let server = MockServer::start_async().await;
+        let post = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/v2/repo/img/blobs/uploads/");
+                then.status(202).header("Location", BLOB_SESSION);
+            })
+            .await;
+        let mut reg = Registry::new(
+            format!("127.0.0.1:{}", server.port()),
+            String::new(),
+            String::new(),
+        );
+        let err = reg
+            .push_image(
+                "/nonexistent-src-dir-for-this-test".into(),
+                "repo/img".into(),
+                "1.0".into(),
+                Map::new(),
+            )
+            .expect_err("un `source_dir` inexistant doit échouer avant tout réseau");
+        let text = err.to_string();
+        assert!(
+            text.contains("Stdio error"),
+            "Error::Stdio attendu depuis `append_dir_all`, obtenu : {text}"
+        );
+        post.assert_hits_async(0).await;
+    }
+
+    // Scenario « hors runtime multi-thread, jamais de panique », bras
+    // `current_thread` des TROIS méthodes pontées (`pull_image` a son verrou
+    // propre plus haut) : @variant-Error::Other explicite de rt.sdd, sans panic.
+    #[tokio::test(flavor = "current_thread")]
+    async fn push_get_manifest_and_list_tags_on_current_thread_return_the_bridge_error() {
+        let dir = two_file_dir();
+        let mut reg = Registry::new("127.0.0.1:1".into(), String::new(), String::new());
+        let cases = [
+            (
+                "push_image",
+                reg.push_image(
+                    dir.path().to_string_lossy().into_owned(),
+                    "repo/img".into(),
+                    "1.0".into(),
+                    Map::new(),
+                )
+                .err(),
+            ),
+            (
+                "get_manifest",
+                reg.get_manifest("repo/img".into(), "1.0".into()).err(),
+            ),
+            ("rhai_list_tags", reg.rhai_list_tags("repo/img".into()).err()),
+        ];
+        for (name, err) in cases {
+            let text = err
+                .unwrap_or_else(|| panic!("{name} doit échouer sur un runtime current_thread"))
+                .to_string();
+            assert!(
+                text.contains("requires a multi-thread tokio runtime"),
+                "{name} : message explicite de rt.sdd attendu, obtenu : {text}"
+            );
+        }
+    }
+
+    // Même Scenario, bras « test ordinaire sans runtime » : le runtime
+    // temporaire sert, les trois méthodes rendent une erreur réseau vers un
+    // registre injoignable — aucun panic.
+    #[test]
+    fn push_get_manifest_and_list_tags_outside_any_runtime_do_not_panic() {
+        let dir = two_file_dir();
+        let mut reg = Registry::new("127.0.0.1:1".into(), String::new(), String::new());
+        assert!(
+            reg.push_image(
+                dir.path().to_string_lossy().into_owned(),
+                "repo/img".into(),
+                "1.0".into(),
+                Map::new()
+            )
+            .is_err(),
+            "registre injoignable : erreur attendue, pas de panique"
+        );
+        assert!(reg.get_manifest("repo/img".into(), "1.0".into()).is_err());
+        assert!(reg.rhai_list_tags("repo/img".into()).is_err());
+    }
+
+    // Scenario « list_tags … valide son seul chemin », second Given : la MÊME
+    // chaîne malformée passe les voies `with_tag` — leur échec n'est JAMAIS un
+    // OCIParseError (aucune validation à la construction de la référence).
+    #[test]
+    fn with_tag_paths_never_validate_the_reference_list_tags_refuses() {
+        let mut reg = Registry::new("bad registry".into(), String::new(), String::new());
+        let err = reg
+            .get_manifest("repo/img".into(), "1.0".into())
+            .expect_err("un hôte malformé sans port doit échouer côté requête");
+        let text = err.to_string();
+        assert!(
+            !text.contains("OCI parse error"),
+            "`with_tag` ne parse pas la référence : OCIParseError interdit ici, obtenu : {text}"
+        );
+    }
+
+    // ── Voies VIA engine du VRAI client (câblage `new_bare`, seam httpmock) ──
+    // ./oci_mock.rs verrouille le double ; ici les SIX noms de
+    // `oci_rhai_register` résolvent le vrai @crate::oci::Registry.
+
+    #[test]
+    fn push_image_via_new_bare_engine_returns_the_digest_slice() {
+        let dir = two_file_dir();
+        let server = MockServer::start();
+        let (_config_mock, manifest_mock) = serve_push_flow(
+            &server,
+            "/v2/repo/img/manifests/sha256:eeee",
+            manifest_locks_empty_annotations,
+        );
+        let mut script = Script::new_bare(vec![]);
+        let digest = script
+            .eval(&format!(
+                r#"let r = new_registry("127.0.0.1:{}", "", "");
+                   r.push_image("{}", "repo/img", "1.0", #{{}})"#,
+                server.port(),
+                dir.path().to_string_lossy()
+            ))
+            .expect("le nom `push_image` résout le vrai Registry via new_bare")
+            .into_string()
+            .expect("digest en chaîne");
+        assert_eq!(digest, "sha256:eeee", "la tranche du dernier porteur");
+        manifest_mock.assert();
+    }
+
+    #[test]
+    fn get_manifest_via_new_bare_engine_returns_the_whole_json_map() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v2/repo/img/manifests/1.0");
+            then.status(200).json_body(serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": manifest::OCI_IMAGE_MEDIA_TYPE,
+                "config": {
+                    "mediaType": manifest::IMAGE_CONFIG_MEDIA_TYPE,
+                    "digest": "sha256:cafe",
+                    "size": 1
+                },
+                "layers": [{
+                    "mediaType": manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE,
+                    "digest": "sha256:f00d",
+                    "size": 2
+                }]
+            }));
+        });
+        let mut script = Script::new_bare(vec![]);
+        let value = script
+            .eval(&format!(
+                r#"let m = new_registry("127.0.0.1:{}", "", "").get_manifest("repo/img", "1.0");
+                   m"#,
+                server.port()
+            ))
+            .expect("le nom `get_manifest` résout le vrai Registry via new_bare");
+        let map = value.try_cast::<Map>().expect("le manifeste en map");
+        for key in ["schemaVersion", "mediaType", "config", "layers"] {
+            assert!(map.contains_key(key), "la clé {key} doit traverser via engine");
+        }
+    }
+
+    #[test]
+    fn list_tags_via_new_bare_engine_returns_the_registry_order() {
+        let server = MockServer::start();
+        // 5 tags servis DESCENDANTS (`tag-00004` en tête) : l'ordre rendu est
+        // celui du registre, pas un tri local.
+        serve_tag_pages(&server, "repo/img", 5);
+        let mut script = Script::new_bare(vec![]);
+        let value = script
+            .eval(&format!(
+                r#"let tags = new_registry("127.0.0.1:{}", "", "").list_tags("repo/img");
+                   tags"#,
+                server.port()
+            ))
+            .expect("le nom `list_tags` résout `rhai_list_tags` via new_bare");
+        let tags = value.cast::<Vec<Dynamic>>();
+        assert_eq!(tags.len(), 5, "les 5 tags rendus via engine");
+        assert_eq!(
+            tags[0].clone().into_string().expect("chaîne"),
+            tag_name(4),
+            "premier = `tag-00004` : ordre servi descendant, pas un tri local"
+        );
+    }
+
+    #[test]
+    fn sign_image_via_new_bare_engine_with_empty_key_is_a_noop() {
+        // Clé vide = court-circuit sans spawn : la voie engine du nom
+        // `sign_image` se joue sans @cosign ni réseau.
+        let mut script = Script::new_bare(vec![]);
+        let done = script
+            .eval(r#"let r = new_registry("r.io", "u", "p"); r.sign_image("repo/img", "1.0.0", "sha256:abc", ""); true"#)
+            .expect("le nom `sign_image` résout le vrai Registry via new_bare");
+        assert_eq!(
+            done.try_cast::<bool>(),
+            Some(true),
+            "clé vide : unité réussie sans spawn"
+        );
+    }
+
+    #[test]
+    fn get_auth_from_file_via_new_bare_engine_reads_the_real_file() {
+        // La libre `get_auth_from_file` du VRAI monde lit le fichier (le mock,
+        // lui, rend sa constante — verrou ./oci_mock.rs).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        write_docker_config(&path, "docker.io", "dXNlcjpwYXNz");
+        let mut script = Script::new_bare(vec![]);
+        let out = script
+            .eval(&format!(
+                "let a = get_auth_from_file(\"{}\", \"docker.io\"); a.user + \":\" + a.pass",
+                path.to_string_lossy()
+            ))
+            .expect("la libre `get_auth_from_file` résout le vrai corps via new_bare")
+            .into_string()
+            .expect("chaîne");
+        assert_eq!(out, "user:pass");
+    }
+
+    // Exposes : NI `pull_image`, NI l'async `list_tags` sous une autre arité,
+    // NI `verify_tag_in_registry`, NI `resolve_registry_auth`, NI le nom Rust
+    // `rhai_list_tags` n'atteignent un script — fonction INCONNUE à l'appel.
+    #[test]
+    fn unregistered_faces_stay_unknown_names_in_scripts() {
+        let mut engine = Engine::new();
+        oci_rhai_register(&mut engine);
+        for (name, snippet) in [
+            (
+                "pull_image",
+                r#"let r = new_registry("reg", "u", "p"); r.pull_image("/tmp", "repo", "1.0")"#,
+            ),
+            (
+                "verify_tag_in_registry",
+                r#"verify_tag_in_registry("reg", "img", "1.0", 1)"#,
+            ),
+            (
+                "resolve_registry_auth",
+                r#"resolve_registry_auth("secret", "reg", 1, "ns")"#,
+            ),
+            (
+                "rhai_list_tags",
+                r#"let r = new_registry("reg", "u", "p"); r.rhai_list_tags("repo/img")"#,
+            ),
+        ] {
+            let err = engine
+                .eval::<Dynamic>(snippet)
+                .expect_err("`{name}` n'est aucun nom du script");
+            assert!(
+                err.to_string().contains(name),
+                "function-inconnue portant {name} attendue, obtenu : {err}"
+            );
+        }
+    }
+
+    // Voie `pull_image` du VRAI client (seam httpmock) : manifeste une-couche
+    // gzip + blobs vérifiés par @sha256 (`pull_blob` contrôle le digest),
+    // décompressés et dépaquetés dans `dest_dir`.
+    #[test]
+    fn pull_image_unpacks_a_digest_verified_gzip_layer_from_a_fake_registry() {
+        let server = MockServer::start();
+        let payload = b"hello from the layer";
+        let mut tar = Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_mode(0o644);
+        header.set_size(payload.len() as u64);
+        header.set_cksum();
+        tar.append_data(&mut header, "hello.txt", &payload[..]).unwrap();
+        let raw_tar = tar.into_inner().unwrap();
+        let mut gz = GzEncoder::new(Vec::new(), Compression::default());
+        std::io::copy(&mut raw_tar.as_slice(), &mut gz).unwrap();
+        let layer_blob = gz.finish().unwrap();
+        // Le faux registre doit servir des blobs dont le sha256 tombe pile :
+        // `pull_blob` vérifie le digest du descripteur avant d'accepter l'octet.
+        let layer_digest = format!("sha256:{}", sha256::digest(layer_blob.as_slice()));
+        let config_blob = br#"{"architecture":"none","os":"linux"}"#.to_vec();
+        let config_digest = format!("sha256:{}", sha256::digest(config_blob.as_slice()));
+        server.mock(|when, then| {
+            when.method(GET).path("/v2/repo/img/manifests/1.0");
+            then.status(200).json_body(serde_json::json!({
+                "schemaVersion": 2,
+                "mediaType": manifest::OCI_IMAGE_MEDIA_TYPE,
+                "config": {
+                    "mediaType": manifest::IMAGE_CONFIG_MEDIA_TYPE,
+                    "digest": config_digest,
+                    "size": config_blob.len()
+                },
+                "layers": [{
+                    "mediaType": manifest::IMAGE_LAYER_GZIP_MEDIA_TYPE,
+                    "digest": layer_digest,
+                    "size": layer_blob.len()
+                }]
+            }));
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/v2/repo/img/blobs/{config_digest}"));
+            then.status(200).body(config_blob);
+        });
+        server.mock(|when, then| {
+            when.method(GET)
+                .path(format!("/v2/repo/img/blobs/{layer_digest}"));
+            then.status(200).body(layer_blob);
+        });
+        let dest = tempfile::tempdir().unwrap();
+        let mut reg = Registry::new(
+            format!("127.0.0.1:{}", server.port()),
+            String::new(),
+            String::new(),
+        );
+        reg.pull_image(&dest.path().to_path_buf(), "repo/img".into(), "1.0".into())
+            .expect("le pull doit réussir contre le faux registre (runtime temporaire)");
+        assert_eq!(
+            std::fs::read(dest.path().join("hello.txt")).unwrap(),
+            payload,
+            "la couche gzip dépaquetée dans `dest_dir`"
+        );
+    }
+
     #[cfg(feature = "k8s")]
     mod k8s_tests {
         use super::*;
@@ -1461,6 +1816,104 @@ mod tests {
                     "texte exact du Must, rendu : {msg}"
                 ),
                 other => panic!("Error::Other attendu, rendu : {other:?}"),
+            }
+            spawned.await.unwrap();
+        }
+
+        // Faces annoncées par le Scenario « resolve_registry_auth sous oci+k8s —
+        // échelle anonyme et erreurs typées » que les quatre verrous d'avant ne
+        // jouaient pas : fetch kube en échec (KubeError), JSON interne invalide
+        // (SerializationError), `auth` b64 invalide (Base64DecodeError) et
+        // décodé non-UTF-8 (UTF8) — typées, JAMAIS avalées en repli, comme pour
+        // `get_auth_from_file` (harmonisation actée).
+        fn make_secret_with_raw_config(config: &str) -> Vec<u8> {
+            serde_json::to_vec(&serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "Secret",
+                "metadata": { "name": "my-secret", "namespace": "vynil-system" },
+                "type": "kubernetes.io/dockerconfigjson",
+                "data": {
+                    ".dockerconfigjson": base64::engine::general_purpose::STANDARD.encode(config)
+                }
+            }))
+            .unwrap()
+        }
+
+        fn kube_client_answering(
+            status: StatusCode,
+            body: Vec<u8>,
+        ) -> (KubeClient, tokio::task::JoinHandle<()>) {
+            let (mock_service, handle) = mock::pair::<Request<Body>, Response<Body>>();
+            let spawned = tokio::spawn(async move {
+                let mut handle = pin!(handle);
+                let (_req, send) = handle.next_request().await.expect("service not called");
+                send.send_response(
+                    Response::builder()
+                        .status(status)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                );
+            });
+            (KubeClient::new(mock_service, "vynil-system"), spawned)
+        }
+
+        #[tokio::test]
+        async fn test_resolve_registry_auth_kube_failure_is_a_typed_kube_error() {
+            // « un fetch kube qui échoue » : un 500 n'est JAMAIS un repli anonyme.
+            let body = serde_json::to_vec(&serde_json::json!({
+                "kind": "Status", "apiVersion": "v1", "status": "Failure",
+                "reason": "InternalError", "code": 500
+            }))
+            .unwrap();
+            let (client, spawned) = kube_client_answering(StatusCode::INTERNAL_SERVER_ERROR, body);
+            let result =
+                resolve_registry_auth("my-secret", "registry.example.com", client, "vynil-system").await;
+            match result {
+                Err(crate::Error::KubeError(_)) => {}
+                other => panic!("Error::KubeError attendue, rendu : {other:?}"),
+            }
+            spawned.await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_resolve_registry_auth_invalid_config_json_is_a_serialization_error() {
+            // « un JSON interne invalide » : le docker-config corrupt se signale.
+            let body = make_secret_with_raw_config("not json at all");
+            let (client, spawned) = kube_client_answering(StatusCode::OK, body);
+            let result =
+                resolve_registry_auth("my-secret", "registry.example.com", client, "vynil-system").await;
+            match result {
+                Err(crate::Error::SerializationError(_)) => {}
+                other => panic!("Error::SerializationError attendue, rendu : {other:?}"),
+            }
+            spawned.await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_resolve_registry_auth_invalid_base64_is_a_base64_error() {
+            // « un auth b64 invalide » : Base64DecodeError, pas Anonymous.
+            let body = make_secret_json("registry.example.com", "!!!not base64!!!");
+            let (client, spawned) = kube_client_answering(StatusCode::OK, body);
+            let result =
+                resolve_registry_auth("my-secret", "registry.example.com", client, "vynil-system").await;
+            match result {
+                Err(crate::Error::Base64DecodeError(_)) => {}
+                other => panic!("Error::Base64DecodeError attendue, rendu : {other:?}"),
+            }
+            spawned.await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn test_resolve_registry_auth_non_utf8_is_a_utf8_error() {
+            // « ou non-UTF-8 » : `//4=` décode les octets [0xff, 0xfe].
+            let body = make_secret_json("registry.example.com", "//4=");
+            let (client, spawned) = kube_client_answering(StatusCode::OK, body);
+            let result =
+                resolve_registry_auth("my-secret", "registry.example.com", client, "vynil-system").await;
+            match result {
+                Err(crate::Error::UTF8(_)) => {}
+                other => panic!("Error::UTF8 attendue, rendu : {other:?}"),
             }
             spawned.await.unwrap();
         }
