@@ -58,7 +58,9 @@ Must:
     `e.to_string()`. Sonde rejouée sur object_store 0.11.2 (mesure @validator, bin hors
     arbre, hors réseau) : bucket vide → build Ok dans les quatre formes testées, la sonde
     « Err (MissingBucketName) » qui circulait était FAUSSE — l'échec du bucket vide
-    appartient à la REQUÊTE (URL malformée `https://s3..amazonaws.com/`) ; region vide,
+    appartient à la REQUÊTE (sa forme textuelle dépend des credentials — sans credentials
+    explicites @object_store 0.11.2 sonde IMDS avant tout, mesure 2026-10-11 reprise à la
+    mesure : seule l'appartenance à la requête est contractuelle) ; region vide,
     aucune credential, access non vide + secret vide,
     endpoint http y compris sans allow_http → tous build Ok — les gardes credentials et
     schéma http_relaxé s'exercent à la requête, pas au build, bucket vide compris
@@ -238,13 +240,20 @@ Scenario: deux enregistrements successifs ne duppliquent pas
     l'enregistrement précédent, sans erreur ni empilement
 
 Scenario: bucket vide parle à la requête, pas au build
-  Given un runtime tokio multi-thread (le corps passe par @crate::rt::block_on)
+  Given un runtime tokio multi-thread (le corps passe par @crate::rt::block_on) et des
+    credentials explicites avec un endpoint refusé local (mesure 2026-10-11 : sans credentials
+    explicites @object_store 0.11.2 sonde d'abord IMDS `169.254.169.254` — 10 retries, ~13 s —
+    et une region non vide produit `https://s3.<region>.amazonaws.com/` résolvable en DNS,
+    jamais l'« URL malformée » `https://s3..amazonaws.com/` ; décision du développeur
+    principal : reprise à la mesure — la forme de l'échec dépend des credentials, seuls
+    build Ok et échec à la requête sont contractuels)
   When @crate::s3::s3_get_yaml est appelée avec `bucket=""` et le reste arbitraire, hors
     réseau réel requis
   Then le build interne rend Ok (re-mesure object_store 0.11.2 du validator : aucune
     failure de build sur bucket vide dans les quatre formes testées) et l'échec remonte de
-    la REQUÊTE via @crate::rhai_err portant @variant-Error::Other de @object_store — l'URL
-    construite `https://s3..amazonaws.com/` est malformée, trigger verrouillé, forme laissée
+    la REQUÊTE via @crate::rhai_err portant @variant-Error::Other de @object_store — le
+    trigger « l'échec vient de la requête, pas du build » est verrouillé, sa forme textuelle
+    (malformed vs transport vs IMDS) est un fait de dépendance laissée hors contrat
   When @crate::s3::s3_list_keys est appelée avec `bucket=""`
   Then le même échec de la requête survient, jamais un échec de build
 
