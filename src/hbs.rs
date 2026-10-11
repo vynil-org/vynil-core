@@ -781,3 +781,704 @@ mod dir_skip_tests {
         assert_eq!(out, "hi from rhai");
     }
 }
+
+/// Captureur de `warn` confiné au fil, partagé par les modules de tests ajoutés ici pour
+/// assertionner un warn LÀ OÙ `hbs.sdd` le nomme (précédents : `warn_tests` de ce fichier,
+/// harnais de `src/engine.rs`). Thread-local (`tracing::subscriber::with_default`, jamais
+/// `set_global_default`) — les tests Rust tournent en parallèle. Le module `warn_tests`
+/// garde le sien, non réécrit.
+#[cfg(test)]
+mod warn_capture {
+    use super::HandleBars;
+    use crate::Result;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+
+    /// Couche de capture minimale : ne retient que le texte formaté du champ `message`
+    /// (le strict nécessaire pour assertionner présence/texte/nombre des warns du contrat).
+    struct MessageCapture(Arc<Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for MessageCapture {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = MessageOnly(Vec::new());
+            event.record(&mut visitor);
+            self.0.lock().unwrap().extend(visitor.0);
+        }
+    }
+
+    struct MessageOnly(Vec<String>);
+
+    impl Visit for MessageOnly {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.push(format!("{value:?}"));
+            }
+        }
+    }
+
+    /// Rend `template` sous le subscriber de capture confiné au fil courant ; retourne le
+    /// résultat du rendu (jamais consommé par `expect` ici — la voie dur/soft est justement
+    /// ce que plusieurs verrous assertionnent) et les textes de warn capturés, dans l'ordre.
+    pub fn render_with_warn_capture(hbs: &mut HandleBars, template: &str) -> (Result<String>, Vec<String>) {
+        let captured: Arc<Mutex<Vec<String>>> = Arc::default();
+        let subscriber =
+            tracing_subscriber::registry::Registry::default().with(MessageCapture(Arc::clone(&captured)));
+        let out =
+            tracing::subscriber::with_default(subscriber, || hbs.render(template, &serde_json::Value::Null));
+        (out, captured.lock().unwrap().clone())
+    }
+}
+
+/// Scénario « new compose les trois couches et les deux réglages hérités » + Scenario
+/// « `uuid_new_v7` rend un v4 » + Scenario « `CORE_HBS_HELPERS` informe sans piloter » de
+/// `hbs.sdd`, tous sous `hbs` seul. La voie d'écriture est `HandleBars::new()` public
+/// (strict + `no_escape` ne se rejouent pas sans `new_hbs`).
+///
+/// Note de portée : le Scenario « les portes isolent hbs de rhai » est un Scenario de
+/// portes — il est joué par la batterie de features (`cargo check/test --no-default-features
+/// --features hbs`, puis `hbs,rhai`, puis `hbs-scripting`), pas par un test : la compilation
+/// sous chaque graphe EST le test.
+#[cfg(test)]
+mod composition_tests {
+    use super::{CORE_HBS_HELPERS, HandleBars};
+    use crate::Error;
+    use serde_json::json;
+
+    /// Contrat `new` : les trois couches sont vivantes dans un même template (built-in
+    /// `each`, cas `string_helpers` `snakeCase`, misc `to_upper_case`, vendored
+    /// `str_to_json`+`json_to_str`, maison `base64_encode`), `no_escape` est actif (chevrons
+    /// et `+`/`=` rendus tels quels, jamais échappés HTML), et le strict de `new_hbs` fait
+    /// échouer un chemin absent en `HbsRenderError` au lieu de rendre vide.
+    #[test]
+    fn new_composes_three_layers_and_inherits_strict_and_no_escape() {
+        let mut hbs = HandleBars::new();
+        let data = json!({"items": [1, 2, 3], "s": "<a>&"});
+        let out = hbs
+            .render(
+                r#"{{#each items}}{{this}}{{/each}}{{ snakeCase "helloWorld" }}{{ to_upper_case "abc" }}{{ json_to_str (str_to_json "{\"foo\":true}") }}{{ base64_encode "abc" }}{{ s }}{{ base64_encode s }}"#,
+                &data,
+            )
+            .expect("all three layers resolve in one template");
+        assert_eq!(
+            out, r#"123hello_worldABC{"foo":true}YWJj<a>&PGE+Jg=="#,
+            "each→123 (built-in), snakeCase (string_helpers), to_upper_case (misc), \
+             str_to_json→json_to_str (vendored), base64_encode STANDARD (maison), \
+             no_escape keeps <a>& and the base64 +/= unescaped"
+        );
+        let err = hbs
+            .render("{{ manquant }}", &json!({}))
+            .expect_err("strict mode must fail a missing path, not render empty");
+        assert!(
+            matches!(err, Error::HbsRenderError(_)),
+            "the strict failure surfaces as the render variant, got {err:?}"
+        );
+    }
+
+    /// Contrat `uuid_new_v7` (`hbs.sdd`) : la chaîne rendue est un UUID v4 — bug amont
+    /// `handlebars_misc_helpers` 0.17.0 (câblé sur `Uuid::new_v4`), dernière version
+    /// publiée, verrouillé comme observable de tout moteur produit.
+    #[test]
+    fn uuid_new_v7_renders_a_version_4_uuid_string() {
+        let mut hbs = HandleBars::new();
+        let out = hbs
+            .render("{{ uuid_new_v7 }}", &serde_json::Value::Null)
+            .expect("the misc uuid helper resolves");
+        assert_eq!(out.len(), 36, "hyphenated UUID form, got {out:?}");
+        for (i, c) in out.bytes().enumerate() {
+            let hyphen = matches!(i, 8 | 13 | 18 | 23);
+            assert!(
+                if hyphen { c == b'-' } else { c.is_ascii_hexdigit() },
+                "unexpected byte {c:?} at index {i}, got {out:?}"
+            );
+        }
+        assert_eq!(
+            out.as_bytes()[14],
+            b'4',
+            "the version nibble is 4 — uuid_new_v7 is wired on Uuid::new_v4 (upstream bug)"
+        );
+    }
+
+    /// Contrat `CORE_HBS_HELPERS` : liste INFORMATIQUE — ses entrées gated suivent leurs
+    /// features dans le littéral, `crc32_hash`/`concat` restent, `inline` est listé alors
+    /// que `handlebars` l'enregistre comme décorateur. Aucun test n'asservit la liste au
+    /// registre réel (décision de la spec : point de doc, pas de contrat d'exhaustivité).
+    #[test]
+    fn core_helpers_list_follows_gates_and_lists_the_decorator() {
+        assert!(CORE_HBS_HELPERS.contains(&"crc32_hash"), "unconditional entry");
+        assert!(CORE_HBS_HELPERS.contains(&"concat"), "unconditional entry");
+        assert!(
+            CORE_HBS_HELPERS.contains(&"inline"),
+            "listed although a decorator"
+        );
+        #[cfg(feature = "crypto")]
+        for name in ["argon_hash", "bcrypt_hash", "gen_private_key"] {
+            assert!(CORE_HBS_HELPERS.contains(&name), "{name} under crypto");
+        }
+        #[cfg(not(feature = "crypto"))]
+        for name in ["argon_hash", "bcrypt_hash", "gen_private_key"] {
+            assert!(!CORE_HBS_HELPERS.contains(&name), "{name} off without crypto");
+        }
+        #[cfg(feature = "password")]
+        for name in ["gen_password", "gen_password_alphanum"] {
+            assert!(CORE_HBS_HELPERS.contains(&name), "{name} under password");
+        }
+        #[cfg(not(feature = "password"))]
+        for name in ["gen_password", "gen_password_alphanum"] {
+            assert!(!CORE_HBS_HELPERS.contains(&name), "{name} off without password");
+        }
+    }
+}
+
+/// Scénarios « les Value aident dans le vice », « `base64_decode` traverse trois échecs sans
+/// lever », « `to_decimal` lit l'octal » (partie lecture — les deux sites de warn de `999`/`8`
+/// sont déjà verrouillés par `warn_tests`) et « `crc32_hash` rend un nombre et 0 dans le vice »
+/// de `hbs.sdd`, tous sous `hbs` seul. Les warns ne sont assertionnés qu'en présence (« warn
+/// au passage », « après `@tracing::warn` ») — les compteurs ne sont nommés au contrat que pour
+/// `to_decimal`, déjà verrouillés ailleurs.
+#[cfg(test)]
+mod value_helpers_tests {
+    use super::{HandleBars, warn_capture::render_with_warn_capture};
+
+    /// Contrat (Scenario « les Value aident dans le vice ») : le non-chaîne est remplacé par
+    /// la chaîne vide APRÈS warn, le rendu ne casse jamais — `base64_encode 42` rend le
+    /// base64 de la vide (la vide), `url_encode true` rend la vide, `concat 5 "x"` rend `x`
+    /// (chaque côté non-chaîne valant segment vide).
+    #[test]
+    fn non_string_inputs_become_the_empty_segment_after_warn_without_failing_render() {
+        let mut hbs = HandleBars::new();
+        let (out, warns) = render_with_warn_capture(&mut hbs, "{{ base64_encode 42 }}");
+        assert_eq!(
+            out.expect("a soft helper never fails the render"),
+            "",
+            "base64 of the substituted empty string is the empty string"
+        );
+        assert!(!warns.is_empty(), "the substitution warns, got {warns:?}");
+
+        let (out, warns) = render_with_warn_capture(&mut hbs, "{{ url_encode true }}");
+        assert_eq!(out.expect("a soft helper never fails the render"), "");
+        assert!(!warns.is_empty(), "the substitution warns, got {warns:?}");
+
+        let (out, warns) = render_with_warn_capture(&mut hbs, r#"{{ concat 5 "x" }}"#);
+        assert_eq!(
+            out.expect("a soft helper never fails the render"),
+            "x",
+            "the non-string side is the empty segment"
+        );
+        assert!(!warns.is_empty(), "the substitution warns, got {warns:?}");
+    }
+
+    /// Contrat (Scenario « `base64_decode` traverse trois échecs sans lever ») : alphabet
+    /// STANDARD invalide, octets valides non-UTF-8, et entrée non-chaîne rendent tous la
+    /// chaîne vide, chacun avec warn, aucun chemin n'est une erreur de rendu.
+    #[test]
+    fn base64_decode_traverses_three_failures_as_empty_string() {
+        let mut hbs = HandleBars::new();
+        // Alphabet STANDARD invalide : decode raté remplace par vec vide puis UTF-8 de rien.
+        let (out, warns) = render_with_warn_capture(&mut hbs, r#"{{ base64_decode "non-base64!!" }}"#);
+        assert_eq!(out.expect("no failure path here raises a render error"), "");
+        assert!(!warns.is_empty(), "the decode failure warns, got {warns:?}");
+        // Décodage valide d'octets non-UTF-8 (`/w==` est le motif d'un octet 0xFF).
+        let (out, warns) = render_with_warn_capture(&mut hbs, r#"{{ base64_decode "/w==" }}"#);
+        assert_eq!(
+            out.expect("the UTF-8 conversion failure is not a render error"),
+            ""
+        );
+        assert!(!warns.is_empty(), "the UTF-8 failure warns, got {warns:?}");
+        // Entrée non-chaîne : substitution vide, decode de la vide, rendu vide.
+        let (out, warns) = render_with_warn_capture(&mut hbs, "{{ base64_decode 42 }}");
+        assert_eq!(out.expect("a non-string input is not a render error"), "");
+        assert!(!warns.is_empty(), "the substitution warns, got {warns:?}");
+    }
+
+    /// Contrat (Scenario « `to_decimal` lit l'octal », partie lecture) : `"755"` rend la
+    /// chaîne décimale `493`, `"0"` rend bien `0`. Les chemins vice (`999`/`8`, warn
+    /// comptés) sont verrouillés par `warn_tests`.
+    #[test]
+    fn to_decimal_reads_base_8_and_renders_the_decimal_string() {
+        let mut hbs = HandleBars::new();
+        assert_eq!(
+            hbs.render(r#"{{ to_decimal "755" }}"#, &serde_json::Value::Null)
+                .expect("a soft helper never fails the render"),
+            "493",
+            "0o755 is 493 in decimal"
+        );
+        assert_eq!(
+            hbs.render(r#"{{ to_decimal "0" }}"#, &serde_json::Value::Null)
+                .expect("a soft helper never fails the render"),
+            "0"
+        );
+    }
+
+    /// Contrat (Scenario « `crc32_hash` rend un nombre et 0 dans le vice ») : `"hello"` rend
+    /// le NOMBRE 907060870 (contrat de valeur `hashes.sdd`), et `42` — warn puis CRC de la
+    /// vide — rend le nombre `0`, sans erreur.
+    #[test]
+    fn crc32_hash_renders_a_number_and_zero_in_vice() {
+        let mut hbs = HandleBars::new();
+        assert_eq!(
+            hbs.render(r#"{{ crc32_hash "hello" }}"#, &serde_json::Value::Null)
+                .expect("a soft helper never fails the render"),
+            "907060870"
+        );
+        let (out, warns) = render_with_warn_capture(&mut hbs, "{{ crc32_hash 42 }}");
+        assert_eq!(
+            out.expect("a non-string input is not a render error"),
+            "0",
+            "the CRC of the substituted empty string is 0"
+        );
+        assert!(!warns.is_empty(), "the substitution warns, got {warns:?}");
+    }
+}
+
+/// Scénarios « les trois typés rejettent le mal-typé au lieu d'avaler », « les trois typés
+/// rendent vide sur échec métier seulement », « `gen_private_key` bits, algos et sel » et le
+/// verrou de la tolérance différentielle d'entrée (`hbs.sdd` `Handles` : `{{ base64_encode 42 }}`
+/// warn + vide vs `{{ gen_password "12" }}` erreur de rendu, verrouillé tel quel).
+///
+/// Les portes des helpers étant séparées (`password` pour `gen_password*`, `crypto` pour
+/// `gen_private_key`), chaque test est gated sur la feature qui l'enregistre — les deux
+/// Scenario se rejouent complets sous `crypto`+`password` (graphe `--all-features`). La
+/// clause « deux rendus d'`argon_hash` du même mot de passe diffèrent (sel frais) » du
+/// Scenario `gen_private_key bits, algos et sel` est déjà verrouillée par
+/// `argon_hash_helper_renders_phc_hash_with_fresh_salt_per_call` (non dupliquée : argon lent).
+/// Le défaut `bits=4096` du LITTÉRAL macro est verrouillé à la mesure (clé RSA de 4096 bits)
+/// — littéral et constante `key::DEFAULT_RSA_BITS` valant 4096 aujourd'hui, le test verrouille
+/// la valeur rendue, non sa source. Les warns ne sont assertionnés que là où le contrat les
+/// nomme : absence stricte sur mal-typé (« SANS warn »), présence sur échec métier.
+#[cfg(test)]
+mod typed_helpers_tests {
+    /// Verrou tel quel de la tolérance différentielle d'entrée (`hbs.sdd` `Handles`) : dans le
+    /// MÊME registre, `{{ base64_encode 42 }}` (voie douce) warn et rend le base64 de la vide,
+    /// tandis que `{{ gen_password "12" }}` (voie typée) échoue le rendu, SANS warn et SANS
+    /// rendre la chaîne vide.
+    #[cfg(feature = "password")]
+    #[test]
+    fn soft_and_typed_helpers_split_on_the_same_mistyping() {
+        use super::{HandleBars, warn_capture::render_with_warn_capture};
+        use crate::Error;
+
+        let mut hbs = HandleBars::new();
+        let (out, warns) = render_with_warn_capture(&mut hbs, "{{ base64_encode 42 }}");
+        assert_eq!(
+            out.expect("the soft path never fails the render"),
+            "",
+            "base64 of the substituted empty string"
+        );
+        assert!(!warns.is_empty(), "the soft path warns, got {warns:?}");
+
+        let (out, warns) = render_with_warn_capture(&mut hbs, r#"{{ gen_password "12" }}"#);
+        let err = out.expect_err("the typed path fails the render instead of swallowing");
+        assert!(
+            matches!(err, Error::HbsRenderError(_)),
+            "the macro type mismatch surfaces as the render variant, got {err:?}"
+        );
+        assert!(
+            warns.is_empty(),
+            "the typed path rejects WITHOUT warn (contract: SANS warn), got {warns:?}"
+        );
+    }
+
+    /// Contrat (Scenario « les trois typés rejettent le mal-typé », membres `password`) : une
+    /// chaîne pour le `u32` positionnel (`ParamTypeMismatch`) et un hash mal typé
+    /// (`HashTypeMismatch`) échouent le rendu en `HbsRenderError` de la macro, SANS warn et
+    /// SANS chaîne vide. La formulation exacte du message appartient à `handlebars` 6.4.4.
+    #[cfg(feature = "password")]
+    #[test]
+    fn gen_password_rejects_mistyped_positional_and_hash_without_warn_or_empty() {
+        use super::{HandleBars, warn_capture::render_with_warn_capture};
+        use crate::Error;
+
+        let mut hbs = HandleBars::new();
+        for template in [r#"{{ gen_password "12" }}"#, r#"{{ gen_password 12 lower="x" }}"#] {
+            let (out, warns) = render_with_warn_capture(&mut hbs, template);
+            let err = out.expect_err("a mistyped typed helper must fail the render");
+            assert!(
+                matches!(err, Error::HbsRenderError(_)),
+                "the macro rejection surfaces as the render variant, got {err:?}"
+            );
+            assert!(
+                warns.is_empty(),
+                "rejection never warns (contract: SANS warn), got {warns:?}"
+            );
+        }
+    }
+
+    /// Contrat (même Scenario, membre `crypto`) : un algorithme NUMÉRIQUE pour le `str`
+    /// strict de la macro est un `ParamTypeMismatch` — échec de rendu, pas de warn.
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn gen_private_key_rejects_a_numeric_algo_without_warn() {
+        use super::{HandleBars, warn_capture::render_with_warn_capture};
+        use crate::Error;
+
+        let mut hbs = HandleBars::new();
+        let (out, warns) = render_with_warn_capture(&mut hbs, "{{ gen_private_key 5 }}");
+        let err = out.expect_err("a numeric algo must fail the render (ParamTypeMismatch)");
+        assert!(
+            matches!(err, Error::HbsRenderError(_)),
+            "the macro rejection surfaces as the render variant, got {err:?}"
+        );
+        assert!(warns.is_empty(), "rejection never warns, got {warns:?}");
+    }
+
+    /// Contrat (Scenario « les trois typés rendent vide sur échec métier seulement »,
+    /// membres `password`) : les échecs métier de `password::generate` (PWD-SPEC-001 : somme
+    /// des minima > len) tombent dans la voie douce — chaîne vide rendue APRÈS warn.
+    #[cfg(feature = "password")]
+    #[test]
+    fn gen_password_business_failures_render_empty_after_warn() {
+        use super::{HandleBars, warn_capture::render_with_warn_capture};
+
+        let mut hbs = HandleBars::new();
+        for template in [
+            r"{{ gen_password 4 lower=3 upper=3 }}",
+            r"{{ gen_password_alphanum 2 }}",
+        ] {
+            let (out, warns) = render_with_warn_capture(&mut hbs, template);
+            assert_eq!(
+                out.expect("a business failure never fails the render"),
+                "",
+                "PWD-SPEC business failures fall into the soft path"
+            );
+            assert!(!warns.is_empty(), "the business failure warns, got {warns:?}");
+        }
+    }
+
+    /// Contrat (même Scenario, membre `crypto`) : un algo inconnu de `key.sdd`
+    /// (`KEY-ALGO-001`) tombe lui aussi dans la voie douce — vide + warn.
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn gen_private_key_unknown_algo_renders_empty_after_warn() {
+        use super::{HandleBars, warn_capture::render_with_warn_capture};
+
+        let mut hbs = HandleBars::new();
+        let (out, warns) = render_with_warn_capture(&mut hbs, r#"{{ gen_private_key "inconnu" }}"#);
+        assert_eq!(
+            out.expect("an unknown algo failure never fails the render"),
+            "",
+            "KEY-ALGO-001 falls into the soft path"
+        );
+        assert!(!warns.is_empty(), "the business failure warns, got {warns:?}");
+    }
+
+    /// Contrat (Scenario « `gen_private_key` bits, algos et sel », membre `crypto`) : `rsa`
+    /// sans hash rend un PEM PKCS8 dont la clé fait 4096 bits — le défaut du LITTÉRAL macro
+    /// (les deux candidats valant 4096, le test verrouille la valeur rendue). Sous 2 s sur la
+    /// machine de dev (RSA-4096 mesuré ~0.3–0.8 s).
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn gen_private_key_rsa_default_renders_a_4096_bit_pkcs8_pem() {
+        use super::HandleBars;
+        use openssl::pkey::{Id, PKey};
+
+        let mut hbs = HandleBars::new();
+        let out = hbs
+            .render(r#"{{ gen_private_key "rsa" }}"#, &serde_json::Value::Null)
+            .expect("rsa with the literal default bits never fails the render");
+        assert!(
+            out.starts_with("-----BEGIN PRIVATE KEY-----") && out.contains("-----END PRIVATE KEY-----"),
+            "PKCS8 PEM expected, got {out}"
+        );
+        let key = PKey::private_key_from_pem(out.as_bytes()).expect("the rendered PEM parses back");
+        assert_eq!(key.id(), Id::RSA, "the default algo is rsa");
+        assert_eq!(
+            usize::try_from(key.rsa().expect("an rsa key").size()).expect("a positive size") * 8,
+            4096,
+            "the macro literal default is bits=4096"
+        );
+    }
+
+    /// Contrat (même Scenario, membre `crypto`) : `ed25519` avec `bits=999` rend un PEM
+    /// `ed25519` sans erreur — `bits` est ignoré hors rsa (`key.sdd`).
+    #[cfg(feature = "crypto")]
+    #[test]
+    fn gen_private_key_ed25519_ignores_bits_and_renders_pkcs8_pem() {
+        use super::HandleBars;
+        use openssl::pkey::{Id, PKey};
+
+        let mut hbs = HandleBars::new();
+        let out = hbs
+            .render(
+                r#"{{ gen_private_key "ed25519" bits=999 }}"#,
+                &serde_json::Value::Null,
+            )
+            .expect("bits is ignored outside rsa — the render must not fail");
+        assert!(
+            out.starts_with("-----BEGIN PRIVATE KEY-----") && out.contains("-----END PRIVATE KEY-----"),
+            "PKCS8 PEM expected, got {out}"
+        );
+        let key = PKey::private_key_from_pem(out.as_bytes()).expect("the rendered PEM parses back");
+        assert_eq!(key.id(), Id::ED25519, "bits=999 did not disturb the ed25519 arm");
+    }
+}
+
+/// Scénarios « `register_template` remplace et parle en `TemplateError` », « render inline
+/// fond compilation et rendu en un seul type » et « `render_named` distingue et laisse des
+/// traces » de `hbs.sdd`, sous `hbs` seul.
+#[cfg(test)]
+mod registry_tests {
+    use super::HandleBars;
+    use crate::Error;
+    use serde_json::json;
+
+    /// Contrat `register_template` : le second enregistrement du même nom remplace le premier
+    /// sans erreur (insert `handlebars`) ; un template syntaxiquement invalide remonte
+    /// `HbsTemplateError`, d'affichage exactement `Registering template failed with error: <X>`.
+    #[test]
+    fn register_template_replaces_silently_and_raises_the_exact_template_error_text() {
+        let mut hbs = HandleBars::new();
+        hbs.register_template("t", "first")
+            .expect("a valid registration succeeds");
+        hbs.register_template("t", "second {{ v }}")
+            .expect("registering the same name again replaces without error");
+        let out = hbs
+            .engine_mut()
+            .render("t", &json!({"v": 1}))
+            .expect("the replacing body renders");
+        assert_eq!(out, "second 1", "the last registration has the last word");
+
+        let err = hbs
+            .register_template("bad", "{{#each}}")
+            .expect_err("an invalid template fails the registration");
+        assert!(matches!(err, Error::HbsTemplateError(_)), "got {err:?}");
+        assert!(
+            err.to_string()
+                .starts_with("Registering template failed with error: "),
+            "the variant display leads the message, got {err}"
+        );
+    }
+
+    /// Contrat `render` (voie inline) : compilation ET rendu sont confondus en un seul type —
+    /// un template invalide comme un chemin manquant hors strict-données remontent en
+    /// `HbsRenderError`, jamais `HbsTemplateError`.
+    #[test]
+    fn render_inline_folds_compile_and_render_failures_into_the_renderer_variant() {
+        let mut hbs = HandleBars::new();
+        let err = hbs
+            .render("{{#each}}", &json!({}))
+            .expect_err("an invalid inline template fails");
+        assert!(
+            matches!(err, Error::HbsRenderError(_)),
+            "the inline path folds compile failures into the render variant, got {err:?}"
+        );
+        let err = hbs
+            .render("{{ x }}", &json!({}))
+            .expect_err("strict mode fails the missing path");
+        assert!(
+            matches!(err, Error::HbsRenderError(_)),
+            "render failures share the same variant, got {err:?}"
+        );
+    }
+
+    /// Contrat `render_named` : distingue `HbsTemplateError` (compilation) de `HbsRenderError`
+    /// (rendu), et laisse le template en cache après un succès — effet de bord contractuel,
+    /// dernier mot à l'insert : le corps est rejouable par nom sans réenregistrement, un
+    /// réenregistrement valide remplace, et un échec de compilation laisse en place le corps
+    /// déjà inséré.
+    #[test]
+    fn render_named_distinguishes_variants_and_leaves_the_template_cached() {
+        let mut hbs = HandleBars::new();
+        let out = hbs
+            .render_named("t", "A {{ v }}", &json!({"v": 1}))
+            .expect("a valid named render succeeds");
+        assert_eq!(out, "A 1");
+
+        // Cache trace : le template est resté enregistrable par nom, rejouable sans passer
+        // par la face enregistrement.
+        let out = hbs
+            .engine_mut()
+            .render("t", &json!({"v": 2}))
+            .expect("the template stayed in cache after the call");
+        assert_eq!(out, "A 2", "the cached body replays by name");
+
+        // Dernier mot à l'insert : un second render_named valide remplace le corps.
+        let out = hbs
+            .render_named("t", "B", &serde_json::Value::Null)
+            .expect("a valid replacing body succeeds");
+        assert_eq!(out, "B");
+        let out = hbs
+            .engine_mut()
+            .render("t", &json!({"v": 2}))
+            .expect("the replacing body is what stays cached");
+        assert_eq!(out, "B");
+
+        // Compilation ratée → TemplateError, et le corps déjà inséré survit à l'échec.
+        let err = hbs
+            .render_named("t", "{{#each}}", &serde_json::Value::Null)
+            .expect_err("an invalid body fails at compile time");
+        assert!(
+            matches!(err, Error::HbsTemplateError(_)),
+            "compile failures are distinguished, got {err:?}"
+        );
+        let out = hbs
+            .engine_mut()
+            .render("t", &serde_json::Value::Null)
+            .expect("the failed re-registration left the previous body in cache");
+        assert_eq!(out, "B");
+
+        // Rendu raté (corps valide, chemin manquant) → RenderError.
+        let err = hbs
+            .render_named("strict", "{{ missing }}", &json!({}))
+            .expect_err("strict mode fails the missing path");
+        assert!(
+            matches!(err, Error::HbsRenderError(_)),
+            "render failures are distinguished, got {err:?}"
+        );
+    }
+}
+
+/// Scénario « `partial_dir` enregistre plat, saute, et n'annule rien » de `hbs.sdd`, côté
+/// échec et no-op (les sauts et le suffixe unique sont verrouillés par `dir_skip_tests`).
+/// L'ordre de la boucle plate n'est PAS contractuel (« selon l'ordre de la boucle ») : le
+/// verrou d'absence de rollback est joué insensible à cet ordre — après l'erreur, seul
+/// l'invalide est assuré absent et les enregistrements en place sont des entrées valides.
+#[cfg(test)]
+mod partial_dir_error_tests {
+    use super::HandleBars;
+    use crate::Error;
+
+    /// Contrat : la première compilation ratée donne `HbsTemplateError` ; les enregistrements
+    /// déjà faits RESTENT (aucun rollback), l'invalide n'est jamais enregistré.
+    #[test]
+    fn register_partial_dir_raises_on_invalid_and_rolls_back_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.hbs"), "valid body").unwrap();
+        std::fs::write(root.join("bad.hbs"), "{{#each}}").unwrap();
+
+        let mut hbs = HandleBars::new();
+        let err = hbs
+            .register_partial_dir(root.to_path_buf())
+            .expect_err("an invalid `*.hbs` fails the directory");
+        assert!(
+            matches!(err, Error::HbsTemplateError(_)),
+            "the first failed compilation raises the template variant, got {err:?}"
+        );
+
+        let names: Vec<&str> = hbs
+            .engine_mut()
+            .get_templates()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert!(
+            !names.contains(&"bad"),
+            "the invalid entry is never registered, got {names:?}"
+        );
+        assert!(
+            names.iter().all(|n| *n == "a"),
+            "whatever the loop already registered stays in place (no rollback), got {names:?}"
+        );
+    }
+
+    /// Contrat : un chemin de non-répertoire — fichier existant ou chemin inexistant — est un
+    /// `Ok(())` silencieux (no-op contracté).
+    #[test]
+    fn register_partial_dir_on_a_non_directory_is_a_silent_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-dir.txt");
+        std::fs::write(&file, "x").unwrap();
+
+        let mut hbs = HandleBars::new();
+        hbs.register_partial_dir(file)
+            .expect("a file path is a contracted silent no-op");
+        hbs.register_partial_dir(dir.path().join("nowhere"))
+            .expect("a missing path is a contracted silent no-op");
+        assert!(
+            hbs.engine_mut().get_templates().is_empty(),
+            "the no-op registers nothing"
+        );
+    }
+}
+
+/// Scénario « `helper_dir` scripting charge les rhai et parle en Debug » de `hbs.sdd`, côté
+/// erreur et no-op (l'enregistrement valide, le nom plat et le rendu du corps `.rhai` sur le
+/// moteur interne sont verrouillés par `dir_skip_tests::register_helper_dir_skips_empty_name_
+/// and_non_files`). Sous `hbs-scripting` seule (qui implique `hbs`+`rhai`).
+#[cfg(all(test, feature = "hbs-scripting"))]
+mod helper_dir_scripting_tests {
+    use super::HandleBars;
+    use crate::Error;
+
+    /// Contrat : un helper `.rhai` invalide remonte `Error::Other` portant le `{:?}` DEBUG de
+    /// l'erreur `handlebars` (texte Debug, pas Display). L'oracle Debug est produit en
+    /// rejouant la compilation de la dépendance elle-même via `engine_mut` sur le même
+    /// fichier — le payload est verrouillé égal à cette empreinte.
+    #[test]
+    fn register_helper_dir_raises_other_carrying_the_debug_text_of_the_script_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let broken = root.join("broken.rhai");
+        std::fs::write(&broken, "fn {").unwrap();
+
+        let mut probe = HandleBars::new();
+        let raw = probe
+            .engine_mut()
+            .register_script_helper_file("broken", &broken)
+            .expect_err("the dependency itself rejects the invalid script");
+
+        let mut hbs = HandleBars::new();
+        let err = hbs
+            .register_helper_dir(root.to_path_buf())
+            .expect_err("an invalid `*.rhai` fails the directory");
+        match err {
+            Error::Other(payload) => assert_eq!(
+                payload,
+                format!("{raw:?}"),
+                "the payload is the Debug text of the handlebars script error"
+            ),
+            other => panic!("the contract raises Error::Other, got {other:?}"),
+        }
+    }
+
+    /// Contrat : un non-répertoire est un `Ok(())` silencieux pour `register_helper_dir`
+    /// aussi (no-op contracté).
+    #[test]
+    fn register_helper_dir_on_a_non_directory_is_a_silent_no_op() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-dir.txt");
+        std::fs::write(&file, "x").unwrap();
+
+        let mut hbs = HandleBars::new();
+        hbs.register_helper_dir(file)
+            .expect("a file path is a contracted silent no-op");
+    }
+}
+
+/// Scénario « la face Rhai type toutes ses erreurs » de `hbs.sdd`, côté succès : la
+/// conversion `rhai::Map` → `serde_json::Value` par `to_value` direct et le rendu qui sort en
+/// chaîne, pour `rhai_render` et `rhai_render_named`. Sous `rhai` (donc jouable `hbs`+`rhai`
+/// sans `hbs-scripting`). Les voies d'échec (enveloppe `rhai_err`, `error_chain` complète)
+/// et la caractérisation de la branche « dynamique non sérialisable » — injouable sur
+/// `rhai` 1.25.1, mesure consignée à la tâche d'unification, verrouillée par la FACE et non
+/// par la branche — sont déjà verrouillées par `rhai_wrapper_tests`, non dupliquées ici.
+#[cfg(all(test, feature = "rhai"))]
+mod rhai_surface_tests {
+    use super::HandleBars;
+    use rhai::{Dynamic, Map};
+
+    /// Contrat : `rhai_render` convertit la Map directement et rend la chaîne.
+    #[test]
+    fn rhai_render_converts_the_map_and_renders_the_string() {
+        let mut data = Map::new();
+        data.insert("name".into(), Dynamic::from("world"));
+        let mut hbs = HandleBars::new();
+        let out = hbs
+            .rhai_render("Hello {{ name }}!".to_string(), data)
+            .expect("a well-typed map converts and renders");
+        assert_eq!(out, "Hello world!");
+    }
+
+    /// Contrat : `rhai_render_named` enregistre sous `name` puis rend, en chaîne.
+    #[test]
+    fn rhai_render_named_registers_then_renders_the_string() {
+        let mut data = Map::new();
+        data.insert("v".into(), Dynamic::from(7_i64));
+        let mut hbs = HandleBars::new();
+        let out = hbs
+            .rhai_render_named("t".to_string(), "v={{ v }}".to_string(), data)
+            .expect("registration and render both succeed");
+        assert_eq!(out, "v=7");
+    }
+}
