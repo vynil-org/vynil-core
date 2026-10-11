@@ -1771,4 +1771,52 @@ fn run(args) { return "fallback/1"; }
             "le vrai type s'enregistre sous « Registry », le mock jamais"
         );
     }
+
+    // ── « never-auto-wired même portes ouvertes » (moitié fonction-inconnue,
+    // tâche ouverte de ./engine.sdd) : la face positive `new_registry` est
+    // verrouillée ci-dessus ; les trois enregistreurs restants — `http`, `s3`,
+    // `k8s` — ne sont AUCUN appel depuis ./engine.rs, même quand leur feature est
+    // ACTIVE (la porte `http` joue déjà par défaut ; `s3` et `k8s` n'entrent dans
+    // aucune porte de la batterie défaut). Joués par `--all-features` et
+    // `k8s,oci,s3`. ──
+
+    /// Avec `s3` actif (qui implique `rhai` et `http`), `new_bare` ne câble NI
+    /// `crate::s3::s3_rhai_register` NI `crate::http::http_rhai_register` :
+    /// `s3_get_yaml` et la construction `RestClient` (`new_http_client`) sont
+    /// fonction-inconnue AVEC leurs features actives.
+    #[cfg(all(feature = "rhai", feature = "s3"))]
+    #[test]
+    fn test_new_bare_never_wires_s3_nor_http_even_with_features_active() {
+        let mut s = make_script();
+        let err = s
+            .eval(r#"s3_get_yaml("s3://bucket/key.yaml", "region", "ak", "sk")"#)
+            .expect_err("s3 actif ne câble pas s3_get_yaml : ./engine.rs n'appelle pas s3_rhai_register");
+        assert!(
+            err.to_string().contains("s3_get_yaml"),
+            "l'échec doit porter le nom s3_get_yaml, obtenu : {err}"
+        );
+        let err = s
+            .eval(r#"new_http_client("http://x")"#)
+            .expect_err("`http` est dans `default` et ne câble jamais la construction RestClient (http.sdd « jamais auto-wired »)");
+        assert!(
+            err.to_string().contains("new_http_client"),
+            "l'échec doit porter le nom new_http_client, obtenu : {err}"
+        );
+    }
+
+    /// Pareil sous `k8s` actif : aucun des trois enregistreurs k8s
+    /// (generic/raw/workload) n'est appelé depuis ./engine.rs — les noms `k8s_*`
+    /// (`k8s_resource` ici) sont fonction-inconnue AVEC la feature active.
+    #[cfg(all(feature = "rhai", feature = "k8s"))]
+    #[test]
+    fn test_new_bare_never_wires_k8s_names_even_with_feature_active() {
+        let mut s = make_script();
+        let err = s.eval(r#"k8s_resource("pods")"#).expect_err(
+            "k8s actif ne câble pas k8s_resource : ./engine.rs n'appelle aucun *_rhai_register k8s",
+        );
+        assert!(
+            err.to_string().contains("k8s_resource"),
+            "l'échec doit porter le nom k8s_resource, obtenu : {err}"
+        );
+    }
 }

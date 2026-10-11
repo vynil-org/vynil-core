@@ -2340,4 +2340,396 @@ JI/2Ub72WWBi1OfE3agVbrU/sewOI4hlz7Sq5O1ccQ==
             }
         }
     }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Conversion des Scenario restés SANS VERROU (http.sdd, tâche « Convertir
+    // les Scenario en tests passants ») : builders TLS côté identité cliente et
+    // CA multiples, `body_delete`/`body_delete_with_body` sur 404, label `Get`
+    // de l'étage `body_*`, redirects, borne basse du timeout, Then complet du
+    // Scenario `http_get_yaml` 404, et la VOIE VALIDE du `json` des `rhai_*`
+    // (seconde tâche ouverte, dans le sillage de
+    // `script_json_fallback_is_an_empty_indexable_map`).
+    // ════════════════════════════════════════════════════════════════════════
+
+    // ── Builders TLS : identité cliente et CA multiples, VALIDATION À LA
+    // CONSTRUCTION (Handles « pile TLS à trois régimes ») ──
+
+    // PEM de la CLÉ cliente (première section de l'identité mTLS, l'autre face
+    // portant le CERTIFICAT ci-dessous). Provenance consignée :
+    // `openssl req -x509 -newkey rsa:2048 -keyout client-key.pem -out client-cert.pem
+    //  -days 3650 -nodes -subj "/CN=vyvil-core-test-client"` (OpenSSL 3.5.6, 2026-10-11 ;
+    // clé PKCS#8 `BEGIN PRIVATE KEY`, même veine que TEST_CA_PEM ci-dessus).
+    const TEST_CLIENT_KEY_PEM: &str = "-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDTKzSIcwDyWddK
+w3NLov7AOhPjXk7UJZejuCKGLz5RKyiLTQj8WWY4GhcRT6cPnLAP2nvLb70ja97W
+YK/7d/ttmf0SXzZu0niYpp3JZZ+tynMWlBEOThrwNy9z7z+uSUyfVvMyDau9PN/b
+KOk2z+noep6IdL43lzs6bGNIdIofg7zJp2PYrXBwIRpFYQppMoexQy4zJZ6NeNwp
+dJOexdtu88sqVRX6dGIrfq3IzAQuI1Iycy+HCyudkv7WOo2zxpld3GTPXtSbPj9x
+UC9MZDdHq24oQ32vjetP2NRhKCFWFNW0l+rBNX+0RgJKEig7+X75B30CK4lV9z4O
+MXKTXdYtAgMBAAECggEARLSa/AZG+ZMnjCi5e5OFxW9gByspBLdSdi8z9GqsoOYk
+4+XllY1Ux84dUUGUPm0hj5brjk5FwJ+ZOjDtMSlhgdCHWZHm+Pm7yRb04ZER+g6T
+kXYNcpURCLU72EGwe3lX18QHjnKKPSDwSLMv5eiR11UF/anWNeobmC+pwepBAm1X
+1T5OiTOmmzF5+sQIQAzSzCeJFvG++yWJ+fBulzE5mMML+kLt29cckHQwThtimi0t
+s43ihrF5miqHDNwG++hckhNL7tTbfssSt8pBfMlzS02g3ReTzq4fV627d8wQx+/d
+7uUB+DWKR0ZiJeobM5a5cXmPmevOs5y8hdI3i8WntQKBgQD2IV2LhDB/fiLV0Utr
+yRmtj62k7WCEYvVWrQGkgtD3wfX1AGKy2XhM0gkkeGYERzqLQO2KXJtcfo7X6R8s
+zvLootcFxG4l3Vbghu+LqTZkmWq1x1TSi2J2H/rjG2pwAjgCItd2pvOgMlc+KIcq
+6t7RC57GkQVkHuNwJmCXsQNSowKBgQDbovG2hw3m1phP2yd77XYv5qfUhOwodEuV
+uWja0upZzRZeGhy+BxOV/zn0VJFzwFlnt25ODn/MGZmcH1B4V4zi5cmL0qjP1YMt
+FL8PxfXpMc0snDxY7CCg1Jwf9OlTrqSOhtnoUPYxz0Qle4wnFrV1Pts/Sl2FTf2/
+feppNpiQ7wKBgQDZF5LX9Q+F1G7LY2B/wI/ai2kgmJNSEarN+akCPrQsY7Mal212
+zOQT9gpEVcG9sknL+8fJC2epTKOXgzKRJjQQx1ia6Kgy06jGP55X9DdawgriLN//
+GRwOjqSO3maiRwK5t5uONzGZse1LkRmv3BwODI7OG6nCpo/7Io5+HY6NuwKBgH4p
+Oejb6PtY9wKf4y1HeKUJPAxSEgkmzCgD6ZwQnTbaHGgPXcU18WUuxw526Vnw+ioe
+boj9wSDu75KDVkjaGX5X+g6MAhXoEkJ58UnRL3E0/yMJ14xIjnFzzv54QvKjlbic
+81yD7PctlHpnXlkxrSfc5DmVsOSaqRAu9tBa4QYXAoGAP+sZ79rKAj2F/goFEiXv
+82TDNNSpoBN/bNVndfkDBDQLo1pTLXvPjqI1THrcbwEN4YJtjyXJBhZnNk8DgbAf
+73Wrs1es7HONBFkZmpnfjX0F0/QkklOC2/9U3RbeCcLpfldhpyplt9JT3+7eo6+7
+J0A86HCuh4i2KcDnBQmmmpw=
+-----END PRIVATE KEY-----
+";
+
+    // PEM du CERTIFICAT client (paired avec TEST_CLIENT_KEY_PEM ci-dessus, même
+    // commande openssl, CN=vyvil-core-test-client).
+    const TEST_CLIENT_CERT_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIDIzCCAgugAwIBAgIUNrfq0cyyGnBWbmevDKw7/TsLY7gwDQYJKoZIhvcNAQEL
+BQAwITEfMB0GA1UEAwwWdnl2aWwtY29yZS10ZXN0LWNsaWVudDAeFw0yNjEwMTEw
+NjUwMzFaFw0zNjEwMDgwNjUwMzFaMCExHzAdBgNVBAMMFnZ5dmlsLWNvcmUtdGVz
+dC1jbGllbnQwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDTKzSIcwDy
+WddKw3NLov7AOhPjXk7UJZejuCKGLz5RKyiLTQj8WWY4GhcRT6cPnLAP2nvLb70j
+a97WYK/7d/ttmf0SXzZu0niYpp3JZZ+tynMWlBEOThrwNy9z7z+uSUyfVvMyDau9
+PN/bKOk2z+noep6IdL43lzs6bGNIdIofg7zJp2PYrXBwIRpFYQppMoexQy4zJZ6N
+eNwpdJOexdtu88sqVRX6dGIrfq3IzAQuI1Iycy+HCyudkv7WOo2zxpld3GTPXtSb
+Pj9xUC9MZDdHq24oQ32vjetP2NRhKCFWFNW0l+rBNX+0RgJKEig7+X75B30CK4lV
+9z4OMXKTXdYtAgMBAAGjUzBRMB0GA1UdDgQWBBQ/eg4/ydQf5xorQeVQDyLXZkj2
+ujAfBgNVHSMEGDAWgBQ/eg4/ydQf5xorQeVQDyLXZkj2ujAPBgNVHRMBAf8EBTAD
+AQH/MA0GCSqGSIb3DQEBCwUAA4IBAQAqxJXNl/3ZuJrtJq5u5rRSETspxlSMoodj
+X3u51RzPnjW+E2uqLp1LNMbFAH6M4jRkg6qwsbY0zVYR9mUfkd+nCwmWnglEtDr6
+R+kcUxgukMsDW+B4u6JepRQprhNZnskFOwvNUERe1TNpR6rhpbnWX3fzMYJ6VmYC
+sG0pCPMyC5dIpqdZAbNhQV2Elgondpio607DEjZgqBthjBXMsO106XTht70x9jyk
+W3IiEoFsJ5jAou6KHVVBADZ98cS6cwGRn0RfhVTPwglGU72yyLUvWA61hHutGzDP
+2IfC6r+FRo9DNhSlfBr/VSx8MfihimuMg++E9B693IM5nYFxfw7X
+-----END CERTIFICATE-----
+";
+
+    // Second CA (pour le verrou « CA multiples »). Provenance consignée :
+    // `openssl req -x509 -newkey rsa:2048 -keyout /dev/null -out ca2.pem -days 3650
+    //  -nodes -subj "/CN=vyvil-core-test-ca-2"` (OpenSSL 3.5.6, 2026-10-11).
+    const TEST_CA2_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIDHzCCAgegAwIBAgIUYwXfUjr1c9dE+YlXa5qk0WtiQl8wDQYJKoZIhvcNAQEL
+BQAwHzEdMBsGA1UEAwwUdnl2aWwtY29yZS10ZXN0LWNhLTIwHhcNMjYxMDExMDY1
+MDMxWhcNMzYxMDA4MDY1MDMxWjAfMR0wGwYDVQQDDBR2eXZpbC1jb3JlLXRlc3Qt
+Y2EtMjCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAKYrxJDBvZ+Q0+MB
+UmI3uqvkRGMzPCudBVtakS+6YEpODlz32yXAGowF2i6VZPUFLW7vVQ6PdJT3Cmuc
+MTxegbqNgo+1JzDmn9E7mg2F1yMeXEMdExCPMEcXBNVA1Cp0DAj0AIX/JdGqNVk1
+t6DUdL2/UIYdUHoBDMRhQANNmO+EKOa6qc4cz33Y7rBoPtHDVesQ94Uasc2+A1HS
+XE2oK8mc0axiXl8VdJqtwKFI4TC0FQz9T+jB25hFb8tLqrSkPBMferIePmtP+kVs
+MO5pPrzCraBzBWsd6JQxij4zoeFumAUBB4AsrrjkjXrllVxtJ+p5/ZbQHKc6KJWW
+OXzbqG8CAwEAAaNTMFEwHQYDVR0OBBYEFA99ZLTH3nRcaH8lu32KvsGJSSe8MB8G
+A1UdIwQYMBaAFA99ZLTH3nRcaH8lu32KvsGJSSe8MA8GA1UdEwEB/wQFMAMBAf8w
+DQYJKoZIhvcNAQELBQADggEBABOMf5fckI9y2tTlM91LZ6A4rECodKYRE+ulP84T
+S4+LhxpBtaJlpe+0/LmkclTgOHmiF5vn3qt1ne9Zogt43MzU/cXm4E4t9POYMDUV
+d0DQA4PCLy+DNQuJlvx3iSJbqAZtdh9VviIc5TQQQWClzPGlk/me2nThHjcJWeiN
+3eADYmvMw44vSetqLFtDWPup8dwJjBaGqrpi3Lts2jMU5dZtdKSQ4SEx6O/QXKZS
+A0zCL3skArjVYr5LPVfE+c95+9LM7MYw/YorcueAuaBFiorX0F6kiX6A3Z+QD9kG
+1HA4duyRnYpydS/vcMPoBumjd14X3BB/H0Tq8q3gMS2qAV0=
+-----END CERTIFICATE-----
+";
+
+    // Scenario « PEM au setter, la fureur à la requête » (given mTLS) + Handles
+    // « pile TLS à trois régimes » : sous rustls seul, `Identity::from_pem` valide
+    // À LA CONSTRUCTION (le commentaire de la bascule consigné dans la tâche le
+    // nomme expressément : « l'identité mTLS en revanche reste validée à la
+    // construction sous rustls »). Un couple (cert, key) non-PEM rate donc au
+    // `build()` du client — erreur de type builder, jamais une requête partie.
+    #[test]
+    fn invalid_mtls_identity_fails_at_client_construction_not_at_send() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let mut client = RestClient::new("http://127.0.0.1:1");
+        client.set_mtls("not-a-pem", "not-a-pem");
+        match client.http_get("x") {
+            Err(crate::Error::ReqwestError(e)) => assert!(
+                e.is_builder(),
+                "identité mTLS invalide = erreur de CONSTRUCTION du client \
+                 (`Identity::from_pem` sous rustls), pas d'erreur d'envoi ; erreur obtenue : \
+                 {e:?}"
+            ),
+            other => panic!("Error::ReqwestError attendu, rendu : {other:?}"),
+        }
+    }
+
+    // Contre-verrou de l'identité : un couple (key, cert) PEM légitime passe la
+    // construction — l'échec ressort au transport seul (port fermé, reqwest
+    // non-builder). Le `Must` nomme l'ordre : concaténation `key` PUIS `\n` PUIS
+    // `cert` malgré une signature de setter cert-avant-key ; l'ordre inverse
+    // ferait rater `Identity::from_pem` (mesuré à l'écriture : ce test bascule en
+    // erreur builder), ce verrou fige donc aussi cet ordre.
+    #[test]
+    fn valid_mtls_identity_builds_client_and_locks_key_before_cert_order() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let mut client = RestClient::new("http://127.0.0.1:1");
+        client.set_mtls(TEST_CLIENT_CERT_PEM, TEST_CLIENT_KEY_PEM);
+        match client.http_get("x") {
+            Err(crate::Error::ReqwestError(e)) => assert!(
+                !e.is_builder(),
+                "une identité mTLS valide doit passer la construction : l'échec attendu est le \
+                 transport (port fermé), pas le builder ; erreur obtenue : {e:?}"
+            ),
+            other => panic!("Error::ReqwestError de transport attendu, rendu : {other:?}"),
+        }
+    }
+
+    // Scenario « CA multiples » : le PEM du CA peut porter PLUSIEURS sections
+    // CERTIFICATE (`CertificateDer::pem_slice_iter` itère chaque section). Deux CA
+    // autosignés concaténés passent la pré-validation ET la construction du
+    // client ; l'échec reste le transport, jamais le builder.
+    #[test]
+    fn multiple_ca_bundle_builds_client() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let mut client = RestClient::new("http://127.0.0.1:1");
+        client.set_server_ca(&format!("{TEST_CA_PEM}{TEST_CA2_PEM}"));
+        match client.http_get("x") {
+            Err(crate::Error::ReqwestError(e)) => assert!(
+                !e.is_builder(),
+                "un magasin de DEUX CA doit passer la construction : l'échec attendu est le \
+                 transport (port fermé), pas le builder ; erreur obtenue : {e:?}"
+            ),
+            other => panic!("Error::ReqwestError de transport attendu, rendu : {other:?}"),
+        }
+    }
+
+    // ── Étages `body_*` : label `Get` figé + excerpt hors Display ; 404-delete ──
+
+    // Scenario « étages Get et Delete, deux poids JSON » (first given) : un 500 sur
+    // `body_get` rate en `Error::MethodFailed` de label exactement `Get`, Display
+    // exactement `Get query failed: 500` — l'excerpt du corps est ABSENT de
+    // l'affichage mais lisible par `Error::http_body`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn body_get_non_success_display_is_get_query_failed_without_excerpt() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/y"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom-body"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let err = match client.body_get("y") {
+            Err(crate::Error::MethodFailed(label, code, excerpt)) => {
+                assert_eq!(label, "Get", "label figé : Get");
+                assert_eq!(code, 500);
+                assert!(
+                    excerpt.contains("The server returned the error: 500 Internal Server Error | boom-body"),
+                    "le troisième champ porte le texte contracté, obtenu : {excerpt}"
+                );
+                crate::Error::MethodFailed(label, code, excerpt)
+            }
+            other => panic!("Error::MethodFailed(Get, 500, …) attendu, rendu : {other:?}"),
+        };
+        assert_eq!(
+            err.to_string(),
+            "Get query failed: 500",
+            "Display exactement `Get query failed: 500`, l'excerpt du corps absent de \
+             l'affichage"
+        );
+        assert!(
+            err.http_body().is_some_and(|b| b.contains("boom-body")),
+            "le corps reste lisible par `Error::http_body`"
+        );
+    }
+
+    // Scenario « étages Get et Delete » (given 404 sur `/d`) + `Must` : `body_delete`
+    // ET `body_delete_with_body` traitent le 404 COMME UN SUCCÈS — le texte est rendu
+    // tel quel. Contre-face : un 500 n'est PAS un succès (label `Delete`).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn body_delete_faces_treat_404_as_success_and_500_as_failure() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/d"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("already gone"))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/boom"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("nope"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        assert_eq!(
+            client.body_delete("d").expect("404 = succès sur delete"),
+            "already gone",
+            "le texte du 404 est rendu tel quel"
+        );
+        assert_eq!(
+            client
+                .body_delete_with_body("d", "payload")
+                .expect("404 = succès sur delete_with_body"),
+            "already gone",
+            "404 = succès aussi pour la face avec corps"
+        );
+        match client.body_delete("boom") {
+            Err(crate::Error::MethodFailed(label, code, _)) => {
+                assert_eq!(label, "Delete", "label figé : Delete");
+                assert_eq!(code, 500, "seul le 404 est un succès, pas le 500");
+            }
+            other => panic!("Error::MethodFailed(Delete, 500, …) attendu, rendu : {other:?}"),
+        }
+    }
+
+    // ── Scenario réseau de bas de fichier : redirects et timeouts fins ────────
+
+    // Scenario réseau (redirects, dépendance `reqwest` au nom du `Depends on`
+    // « le comportement réseau réel appartient à la dépendance ») : aucune
+    // politique de redirection n'est posée sur le builder, la politique PAR DÉFAUT
+    // de @reqwest (suivi jusqu'à 10 bonds) est donc celle du client — un 302 mène
+    // à la réponse finale, et les DEUX requêtes sont visibles côté serveur.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn default_redirect_policy_follows_302_to_the_final_response() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", format!("{}/done", server.uri())),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/done"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("landed"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        assert_eq!(
+            client.body_get("start").expect("le 302 doit être suivi"),
+            "landed",
+            "le corps de la réponse FINALE est rendu"
+        );
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(
+            received.len(),
+            2,
+            "le bond est passé par le serveur (302 puis GET final)"
+        );
+    }
+
+    // Scenario réseau (timeouts fins) : `DEFAULT_TIMEOUT` (5 min) est posé sur
+    // chaque client construit. La borne HAUTE de 5 min est INVERROUILLABLE sous le
+    // budget de la batterie (test < ~5 s, décision de tâche) — seul le borne BASSE
+    // est verrouillée ici : une requête à un serveur branché mais muet n'est PAS
+    // annulée avant la borne observée (1,2 s), puis l'erreur de transport ressort
+    // à la fermeture côté serveur, au bon moment et typée (`Error::ReqwestError`,
+    // non-builder : le timeout n'y est pour rien). Le plafond réel reste SANS
+    // VERROU, consigné au rapport.
+    #[test]
+    fn request_to_a_stalled_server_is_not_cancelled_before_the_timeout_lower_bound() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        // Serveur brut : lit la requête, ne répond RIEN, ferme au bout de ~1,6 s.
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0_u8; 4096];
+                let _ = stream.read(&mut buf);
+                std::thread::sleep(std::time::Duration::from_millis(1600));
+                drop(stream);
+            }
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut client = RestClient::new(format!("http://{addr}").as_str());
+            let _ = tx.send(client.body_get("x"));
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(1200)).is_err(),
+            "borne basse du réglage : à +1,2 s la requête doit ENCORE vivre — un timeout \
+             accidentellement court (ou absent et coupé plus bas) tuerait la requête ici"
+        );
+        let outcome = rx
+            .recv_timeout(std::time::Duration::from_secs(4))
+            .expect("la fermeture côté serveur doit dénouer l'appel");
+        match outcome {
+            Err(crate::Error::ReqwestError(e)) => assert!(
+                !e.is_timeout(),
+                "l'erreur verrouillée est la fermeture serveur (transport), pas une erreur de \
+                 timeout — le plafond de 5 min n'est pas déclenchable sous le budget ; obtenu : \
+                 {e:?}"
+            ),
+            other => panic!("Error::ReqwestError de transport attendu, rendu : {other:?}"),
+        }
+    }
+
+    // ── Then COMPLET du Scenario `http_get_yaml` 404 ──────────────────────────
+
+    // Scenario « http_get_yaml parle bearer, basic, et scanne » (given 404) :
+    // l'erreur porte EN ENTIER `HTTP-GET-YAML-001: HTTP 404 Not Found for <url>` —
+    // le verrou existant ne figeait que le code du label.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_http_get_yaml_404_carries_the_full_message() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/missing.yaml"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let url = format!("{}/missing.yaml", server.uri());
+        let result = http_get_yaml(url.clone(), String::new(), String::new());
+        let err = result.expect_err("un 404 doit rendre l'erreur complète");
+        assert!(
+            err.to_string()
+                .contains(&format!("HTTP-GET-YAML-001: HTTP 404 Not Found for {url}")),
+            "le Then complet `HTTP-GET-YAML-001: HTTP 404 Not Found for <url>` est attendu, \
+             obtenu : {err}"
+        );
+    }
+
+    // ── VOIE VALIDE du `json` des `rhai_*` (tâche ouverte, second bras du `Must`
+    // amendé 2026-10-10 : corps JSON valide → Dynamic NATIF indexable) ─────────
+
+    // Dans le sillage de `script_json_fallback_is_an_empty_indexable_map` (bras
+    // `Err` du repli), le bras valide : un corps JSON VALIDE servi par @wiremock
+    // passe `serde_json::from_str::<Dynamic>` en @rhai::Dynamic NATIF — `type_of`
+    // rend "map", l'indexation script (`r.json.a`, `r.json.nested.b`) fonctionne.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn script_json_valid_body_is_a_native_indexable_map() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/j"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"a": 1, "nested": {"b": "two"}})),
+            )
+            .mount(&server)
+            .await;
+        // Face directe : la clé `json` est une map rhai peuplée, pas un Value opaque.
+        let mut client = RestClient::new(server.uri().as_str());
+        let out = client.rhai_get("j".to_string()).expect("voie valide : Ok(map)");
+        let json = out.get("json").expect("json présent");
+        assert!(
+            json.is_map(),
+            "corps JSON valide → VRAIE map rhai (`type_of` = \"map\" côté script)"
+        );
+        let parsed: Map = json.clone().cast();
+        assert_eq!(
+            parsed.len(),
+            2,
+            "les deux clés du corps sont présentes : {parsed:?}"
+        );
+        // Face script : indexation native `r.json.a` et `r.json.nested.b`.
+        let mut engine = Engine::new();
+        http_rhai_register(&mut engine);
+        let base = server.uri();
+        let joined = engine
+            .eval::<String>(&format!(
+                "let c = new_http_client(\"{base}\"); let r = c.get(\"j\"); \
+                 type_of(r.json) + \"|\" + r.json.a.to_string() + \"|\" + r.json.nested.b"
+            ))
+            .expect("la voie valide doit être indexable en script, jamais un Value opaque");
+        assert_eq!(
+            joined, "map|1|two",
+            "`type_of` rend map, `r.json.a` et le sous-objet s'indexent nativement : {joined:?}"
+        );
+    }
 }
