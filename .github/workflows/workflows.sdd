@@ -144,8 +144,9 @@ Tasks:
     ./test.yml, commentaires à l'état (les branches gated de `new_bare` que la matrice
     `--each-feature` ne compile pas, `fs` et `password` n'impliquant pas `rhai`).
 
-  [ ] Ajouter `../CODEOWNERS` (`* @sebt3 @reivaxm`) et son attribution à `Owns`, tâche jumelle
-    du ruleset `main` appliqué côté GitHub. Reste à cocher avec la synthèse du `validator`.
+  [x] Ajouter `../CODEOWNERS` (`* @sebt3 @reivaxm`) et son attribution à `Owns`, tâche jumelle
+    du ruleset `main` appliqué côté GitHub. Changement non-Rust : la batterie cargo ne le
+    couvre pas, la validation tient lieu de relecture du développeur principal.
 
 Scenario: PR sans approbation d'un autre owner
   Given une PR ouverte par l'un des deux owners, checks verts
