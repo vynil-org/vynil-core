@@ -10,6 +10,7 @@ Purpose:
 Owns:
   ./test.yml
   ./publish.yml
+  ../CODEOWNERS
 
 Can read:
   ../../tooling.sdd
@@ -84,6 +85,13 @@ Must:
   Lancer `cargo test --all-features` avant `cargo publish --all-features`.
   Créer la release GitHub uniquement après la réussite du job de publication (`needs: publish`).
 
+  Désigner par `../CODEOWNERS` (`* @sebt3 @reivaxm`) les deux propriétaires de l'organisation
+    comme relecteurs de tout le dépôt : le ruleset `main` (réglage GitHub, hors dépôt) exige une PR,
+    une approbation d'un code owner autre que l'auteur de la PR et que l'auteur du dernier push,
+    et les 16 checks de `./test.yml` au vert (13 `Tests (…)`, `Format`, `Clippy`,
+    `Feature matrix (cargo hack)`), sans bypass. Décision des développeurs : le dépôt est
+    codétenu, aucun merge sans l'autre.
+
 Must not:
   Publier alors que les tests `--all-features` du job de publication ont échoué.
   Retirer le job `clippy` à combinaisons explicites au profit seul de `feature-matrix` : la
@@ -135,6 +143,14 @@ Tasks:
     combinaisons `rhai,fs` et `rhai,password` à la boucle explicite du job `clippy` de
     ./test.yml, commentaires à l'état (les branches gated de `new_bare` que la matrice
     `--each-feature` ne compile pas, `fs` et `password` n'impliquant pas `rhai`).
+
+  [ ] Ajouter `../CODEOWNERS` (`* @sebt3 @reivaxm`) et son attribution à `Owns`, tâche jumelle
+    du ruleset `main` appliqué côté GitHub. Reste à cocher avec la synthèse du `validator`.
+
+Scenario: PR sans approbation d'un autre owner
+  Given une PR ouverte par l'un des deux owners, checks verts
+  When il l'approuve lui-même, ou qu'il pousse le dernier commit après l'approbation de l'autre
+  Then le merge reste bloqué tant que l'autre owner n'a pas approuvé le dernier push
 
 Scenario: régression sur une feature isolée
   Given un changement compile uniquement avec les features par défaut
