@@ -246,7 +246,7 @@ Tasks:
     `rhai`), hors `default`. Vérifier `cargo hack check --each-feature --no-dev-deps` et son
     pendant clippy, plus `cargo test --all-features`. Tâche jumelle de « Ajouter la feature
     `metadata` à la table de doc » de ./src/lib.sdd, cochée dans le même commit.
-  [ ] Relever le plancher `rhai` de ./Cargo.toml (`1.20.0`) à la plus ancienne version qui
+  [x] Relever le plancher `rhai` de ./Cargo.toml (`1.20.0`) à la plus ancienne version qui
     expose @rhai::FuncRegistration avec `with_comments` et `with_params_info`, VÉRIFIÉE en
     compilant contre elle (`cargo update -p rhai --precise <version>` puis la batterie) et non
     supposée ; le lock actuel est en 1.25.1. Tâche jumelle de « Poser le motif double cible »

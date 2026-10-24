@@ -367,7 +367,7 @@ Tasks:
     fil et dort par tranches de 25 ms quand il y en a un. Tests d'abord depuis les Scenario
     « sleep annulé » ; ceux de `sleep(0)`, `sleep(-3)`, `sleep(1)` existants restent verts.
     Prérequis : « Créer ./cancel.rs » de ./cancel.sdd coché.
-  [ ] Poser le motif double cible (PILOTE des issues #19 et #20, sur les quatre groupes d'ici) :
+  [x] Poser le motif double cible (PILOTE des issues #19 et #20, sur les quatre groupes d'ici) :
     chaque groupe défini UNE fois comme liste de @rhai::FuncRegistration (nom, fonction, nom des
     paramètres et commentaire sous `metadata`), appliquée soit directement à un @rhai::Engine
     (`register_into_engine` : enregistreur de groupe), soit à un @rhai::Module

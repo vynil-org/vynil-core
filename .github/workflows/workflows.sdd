@@ -4,8 +4,8 @@ Platform: GitHub Actions, ubuntu-latest, toolchain stable 1.99.0 + rustfmt night
 
 Purpose:
   Galler la crate par les tests sur la matrice de features, vérifier le formatage nightly,
-  faire tourner le harnais clippy, et publier sur crates.io + créer la release GitHub sur
-  tag `v*` dont la version correspond à `Cargo.toml`.
+    faire tourner le harnais clippy, et publier sur crates.io + créer la release GitHub sur
+    tag `v*` dont la version correspond à `Cargo.toml`.
 
 Owns:
   ./test.yml
@@ -57,7 +57,7 @@ Must:
     chaque machine joue le harnais sous son propre stable et `stable` a bougé de 1.97.1 à 1.99.0 en
     cours de campagne, ce qui a fait apparaître des lints inconnus de la CI.
   Vérifier le formatage avec rustfmt nightly (`cargo fmt -- --check`), `rustfmt.toml`
-  contenant des options instables.
+    contenant des options instables.
   Lancer le harnais clippy via `cargo clippy --all-features --all-targets -- -D warnings`, les
     lints bloquants étant portés par la table `[lints]` de `Cargo.toml` et les warnings rustc
     résiduels escaladés par le flag (`../../tooling.sdd`). La boucle explicite du même job
@@ -81,7 +81,7 @@ Must:
     ni les cibles de test, et les combinaisons porteuses de sens (`k8s,oci,s3`,
     `--all-features`) restent contractuelles.
   Refuser un tag `v*` dont la version ne correspond pas à celle de `Cargo.toml` avant toute
-  publication.
+    publication.
   Lancer `cargo test --all-features` avant `cargo publish --all-features`.
   Créer la release GitHub uniquement après la réussite du job de publication (`needs: publish`).
 
@@ -147,6 +147,13 @@ Tasks:
   [x] Ajouter `../CODEOWNERS` (`* @sebt3 @reivaxm`) et son attribution à `Owns`, tâche jumelle
     du ruleset `main` appliqué côté GitHub. Changement non-Rust : la batterie cargo ne le
     couvre pas, la validation tient lieu de relecture du développeur principal.
+  [x] Part jumelle de « Interdire en CI le retour des deux défauts de forme `.sdd` » de
+    ../../tooling.sdd, cochée dans le même commit qu'elle : ajouter à ./test.yml l'étape de
+    contrôle qui rougit sur les deux classes mesurées — repli de phrase à deux espaces et ligne
+    de corps non-tâche dans `Tasks:` — sur tous les `.sdd` du dépôt, verrouillée par ses propres
+    cas rouges avant d'être rendue bloquante. La contractualisation du classifieur — ses cas
+    limites, ses faux positifs à éviter — est portée par ../../tooling.sdd ; cet `Owns` ne tient
+    que la part ./test.yml.
 
 Scenario: PR sans approbation d'un autre owner
   Given une PR ouverte par l'un des deux owners, checks verts

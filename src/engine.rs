@@ -27,6 +27,7 @@ pub use rhai::{
     module_resolvers::{FileModuleResolver, ModuleResolversCollection},
     serde::to_dynamic,
 };
+use rhai::{FnNamespace, FuncRegistration, RhaiNativeFunc, Variant};
 use std::path::{Path, PathBuf};
 use url::form_urlencoded;
 
@@ -47,6 +48,69 @@ pub fn url_encode(arg: &str) -> String {
     form_urlencoded::byte_serialize(arg.as_bytes()).collect::<String>()
 }
 
+// ── Motif double cible (engine.sdd, issues #19 et #20) ──────────────────────────────
+// Chaque groupe est défini UNE seule fois, dans sa fonction `*_fns`, comme une liste
+// d'enregistrements (nom, fonction, noms des paramètres et commentaire `///` sous
+// `metadata`). La même liste s'applique soit directement à un Engine — les fonctions
+// tombent dans l'espace de noms global de l'engine et @rhai::Engine::gen_fn_signatures
+// les voit comme avant l'introduction du motif, sans module global intermédiaire —,
+// soit à un Module dans ce même espace de noms global — le jumeau module, enregistrable
+// par @rhai::Engine::register_static_module sous le nom que choisit le consommateur.
+
+/// Double cible du motif : une même liste d'enregistrements appliquée à un [`Engine`]
+/// (l'enregistreur) ou à un [`Module`] (le jumeau module).
+enum Target<'a> {
+    Engine(&'a mut Engine),
+    Module(&'a mut Module),
+}
+
+/// Pose, sous la feature `metadata` seule, le commentaire `///` et les noms des
+/// paramètres d'un enregistrement (vyvil-core.sdd, issue #20) :
+/// `rhai::FuncRegistration::with_comments` et `rhai::FuncRegistration::with_params_info`
+/// n'existent que sous cette feature de `rhai`. Sans la feature, rien n'est posé —
+/// l'enregistrement est identique, la documentation n'est qu'une métadonnée.
+#[must_use]
+fn documented(reg: FuncRegistration, comments: &[&str], params: &[&str]) -> FuncRegistration {
+    #[cfg(feature = "metadata")]
+    {
+        reg.with_comments(comments.iter().copied())
+            .with_params_info(params.iter().copied())
+    }
+    #[cfg(not(feature = "metadata"))]
+    {
+        let _ = (comments, params);
+        reg
+    }
+}
+
+/// Applique une entrée de la liste d'un groupe à sa cible : le nom et ses métadonnées
+/// voyagent dans le [`FuncRegistration`] sous l'espace de noms global, la fonction est
+/// posée sur l'engine (`rhai::FuncRegistration::register_into_engine`) ou sur le module
+/// (`rhai::FuncRegistration::set_into_module`) selon la cible.
+fn register_at<A: 'static, const N: usize, const X: bool, R: Variant + Clone, const FALLIBLE: bool, FUNC>(
+    target: &mut Target<'_>,
+    name: &'static str,
+    comments: &[&str],
+    params: &[&str],
+    func: FUNC,
+) where
+    FUNC: RhaiNativeFunc<A, N, X, R, FALLIBLE> + Send + Sync + 'static,
+{
+    let reg = documented(
+        FuncRegistration::new(name).with_namespace(FnNamespace::Global),
+        comments,
+        params,
+    );
+    match target {
+        Target::Engine(engine) => {
+            let _ = reg.register_into_engine(engine, func);
+        }
+        Target::Module(module) => {
+            let _ = reg.set_into_module(module, func);
+        }
+    }
+}
+
 /// Registers the **pure** group of the sixteen common helpers: functions that compute on
 /// their arguments alone and grant no host access (`basename`/`dirname` split a string,
 /// they never touch the disk) — `sha256`, `url_encode`, `to_decimal`, `base64_decode`,
@@ -54,57 +118,142 @@ pub fn url_encode(arg: &str) -> String {
 ///
 /// Additive and idempotent: callable alone on a fresh [`Engine`], in any order with the
 /// other `core_*_rhai_register` groups, and registers nothing outside the names above.
+///
+/// Module twin: [`core_pure_module`] — same list of registrations, same semantics.
 pub fn core_pure_rhai_register(engine: &mut Engine) {
-    engine
-        .register_fn("sha256", |v: String| sha256::digest(v))
-        .register_fn("url_encode", url_encode)
-        .register_fn("to_decimal", |val: ImmutableString| -> RhaiRes<u32> {
-            // toute chaîne non octale est une erreur, jamais un `0` indiscernable du `0` légitime
-            u32::from_str_radix(val.as_str(), 8).map_err(|_| {
-                rhai_err(Error::Other(format!(
-                    "to_decimal received a non-valid parameter: {val:?}"
-                )))
-            })
-        })
-        .register_fn(
-            "base64_decode",
-            |val: ImmutableString| -> RhaiRes<ImmutableString> {
-                base64_decode(val.as_str())
-                    .map_err(rhai_err)
-                    .map(std::convert::Into::into)
-            },
-        )
-        .register_fn("base64_encode", |val: ImmutableString| -> ImmutableString {
-            STANDARD.encode(val.to_string()).into()
-        })
-        .register_fn("json_encode", |val: Dynamic| -> RhaiRes<ImmutableString> {
+    core_pure_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`core_pure_rhai_register`] (issue #19): the same functions, under the
+/// global namespace of a fresh [`Module`], registrable by [`Engine::register_static_module`]
+/// under the name the consumer picks. A twin that drifts from its registrar is a defect:
+/// both share the single `core_pure_fns` list.
+#[must_use]
+pub fn core_pure_module() -> Module {
+    let mut module = Module::new();
+    core_pure_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The **pure** group defined once (motif double cible): each entry is a name, its
+/// function, its parameter names and its `///` comment (both under `metadata` only).
+fn core_pure_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "sha256",
+        &["/// SHA-256 digest of `text`, lowercase hexadecimal. No errors."],
+        &["text: String"],
+        |v: String| sha256::digest(v),
+    );
+    register_at(
+        target,
+        "url_encode",
+        &["/// Percent-encode `text` for a URL query string (space becomes `+`). No errors."],
+        &["text: String"],
+        url_encode,
+    );
+    register_at(
+        target,
+        "to_decimal",
+        &["/// Decode octal text such as `\"755\"` into 493; errors on any non-octal string."],
+        &["text: String"],
+        to_decimal_fn,
+    );
+    register_at(
+        target,
+        "base64_decode",
+        &["/// Decode padded base64 `text` into UTF-8; errors on invalid base64 or non-UTF-8."],
+        &["text: String"],
+        |val: ImmutableString| -> RhaiRes<ImmutableString> {
+            base64_decode(val.as_str())
+                .map_err(rhai_err)
+                .map(std::convert::Into::into)
+        },
+    );
+    register_at(
+        target,
+        "base64_encode",
+        &["/// Encode `text` in standard padded base64 alphabet. Cannot fail."],
+        &["text: String"],
+        |val: ImmutableString| -> ImmutableString { STANDARD.encode(val.to_string()).into() },
+    );
+    register_at(
+        target,
+        "json_encode",
+        &["/// Serialize `value` to a compact JSON string; errors when it cannot be serialized."],
+        &["value: Dynamic"],
+        |val: Dynamic| -> RhaiRes<ImmutableString> {
             serde_json::to_string(&val)
                 .map_err(|e| rhai_err(Error::SerializationError(e)))
                 .map(std::convert::Into::into)
-        })
-        .register_fn("json_encode_escape", |val: Dynamic| -> RhaiRes<ImmutableString> {
+        },
+    );
+    register_at(
+        target,
+        "json_encode_escape",
+        &["/// JSON of `value` with enclosing quotes escaped — nested one level; errors on failure."],
+        &["value: Dynamic"],
+        |val: Dynamic| -> RhaiRes<ImmutableString> {
             let str = serde_json::to_string(&val).map_err(|e| rhai_err(Error::SerializationError(e)))?;
             Ok(format!("{str:?}").into())
-        })
-        .register_fn("json_decode", |val: ImmutableString| -> RhaiRes<Dynamic> {
+        },
+    );
+    register_at(
+        target,
+        "json_decode",
+        &["/// Parse the JSON `text` into a Rhai value; errors on invalid JSON."],
+        &["text: String"],
+        |val: ImmutableString| -> RhaiRes<Dynamic> {
             serde_json::from_str(val.as_ref()).map_err(|e| rhai_err(Error::SerializationError(e)))
-        })
-        .register_fn("basename", |name: String| -> ImmutableString {
-            Path::new(&name)
-                .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or_default()
-                .into()
-        })
-        .register_fn("dirname", |name: String| -> ImmutableString {
-            Path::new(&name)
-                .parent()
-                .unwrap_or(Path::new(""))
-                .to_str()
-                .unwrap_or_default()
-                .into()
-        });
+        },
+    );
+    register_at(
+        target,
+        "basename",
+        &["/// File name of `path` — string split, no disk access; absent or non-UTF-8 yields empty."],
+        &["path: String"],
+        basename_fn,
+    );
+    register_at(
+        target,
+        "dirname",
+        &["/// Parent directory of `path` — string split, no disk access; absent yields empty."],
+        &["path: String"],
+        dirname_fn,
+    );
+}
+
+/// Corps de la fonction script `to_decimal` : toute chaîne non octale est une erreur,
+/// jamais un `0` indiscernable du `0` légitime.
+fn to_decimal_fn(val: ImmutableString) -> RhaiRes<u32> {
+    let text: String = val.into();
+    u32::from_str_radix(&text, 8).map_err(|_| {
+        rhai_err(Error::Other(format!(
+            "to_decimal received a non-valid parameter: {text:?}"
+        )))
+    })
+}
+
+/// Corps de la fonction script `basename` : découpe de chaîne, jamais de disque ; tout
+/// `None` et tout non-UTF-8 rendent la chaîne vide.
+fn basename_fn(name: String) -> ImmutableString {
+    PathBuf::from(name)
+        .file_name()
+        .unwrap_or_default()
+        .to_str()
+        .unwrap_or_default()
+        .into()
+}
+
+/// Corps de la fonction script `dirname` : découpe de chaîne, jamais de disque ; tout
+/// `None` et tout non-UTF-8 rendent la chaîne vide.
+fn dirname_fn(name: String) -> ImmutableString {
+    PathBuf::from(name)
+        .parent()
+        .unwrap_or(Path::new(""))
+        .to_str()
+        .unwrap_or_default()
+        .into()
 }
 
 /// Registers the **host** group of the sixteen common helpers: what a script reads from the
@@ -113,13 +262,62 @@ pub fn core_pure_rhai_register(engine: &mut Engine) {
 ///
 /// Additive and idempotent: callable alone on a fresh [`Engine`], in any order with the
 /// other `core_*_rhai_register` groups, and registers nothing outside the names above.
+///
+/// Module twin: [`core_host_module`] — same list of registrations, same semantics.
 pub fn core_host_rhai_register(engine: &mut Engine) {
-    engine
-        .register_fn("log_debug", |s: ImmutableString| tracing::debug!("{s}"))
-        .register_fn("log_info", |s: ImmutableString| tracing::info!("{s}"))
-        .register_fn("log_warn", |s: ImmutableString| tracing::warn!("{s}"))
-        .register_fn("log_error", |s: ImmutableString| tracing::error!("{s}"))
-        .register_fn("get_env", |var: ImmutableString| -> RhaiRes<ImmutableString> {
+    core_host_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`core_host_rhai_register`] (issue #19): the same functions, under the
+/// global namespace of a fresh [`Module`], registrable by [`Engine::register_static_module`]
+/// under the name the consumer picks. A twin that drifts from its registrar is a defect:
+/// both share the single `core_host_fns` list.
+#[must_use]
+pub fn core_host_module() -> Module {
+    let mut module = Module::new();
+    core_host_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The **host** group defined once (motif double cible).
+fn core_host_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "log_debug",
+        &["/// Log `message` at debug level. Returns the unit."],
+        &["message: String"],
+        |s: ImmutableString| tracing::debug!("{s}"),
+    );
+    register_at(
+        target,
+        "log_info",
+        &["/// Log `message` at info level. Returns the unit."],
+        &["message: String"],
+        |s: ImmutableString| tracing::info!("{s}"),
+    );
+    register_at(
+        target,
+        "log_warn",
+        &["/// Log `message` at warning level. Returns the unit."],
+        &["message: String"],
+        |s: ImmutableString| tracing::warn!("{s}"),
+    );
+    register_at(
+        target,
+        "log_error",
+        &["/// Log `message` at error level. Returns the unit."],
+        &["message: String"],
+        |s: ImmutableString| tracing::error!("{s}"),
+    );
+    register_at(
+        target,
+        "get_env",
+        &[
+            "/// Value of environment variable `var`; the empty string when absent (defaults are a use case).",
+            "/// Errors when the variable exists but is not valid UTF-8.",
+        ],
+        &["var: String"],
+        |var: ImmutableString| -> RhaiRes<ImmutableString> {
             match std::env::var_os(var.to_string()) {
                 // variable absente → chaîne vide (les défauts sont un cas d'usage)
                 None => Ok(String::new().into()),
@@ -130,7 +328,8 @@ pub fn core_host_rhai_register(engine: &mut Engine) {
                     )))
                 }),
             }
-        });
+        },
+    );
 }
 
 /// Registers the **waiting** group of the sixteen common helpers: `sleep` only.
@@ -149,35 +348,63 @@ pub fn core_host_rhai_register(engine: &mut Engine) {
 /// stay immediate no-ops either way. This is not an [`rhai::Engine::on_progress`] hook,
 /// which cannot get the hand inside a native call; a script catching the error with `try`
 /// continues, ending the script staying the consumer's call.
+///
+/// Module twin: [`core_sleep_module`] — same list of registrations, same semantics.
 pub fn core_sleep_rhai_register(engine: &mut Engine) {
-    engine.register_fn("sleep", |seconds: i64| -> RhaiRes<()> {
-        // 0 et négatifs : no-op immédiats dans tous les cas, jeton annulé compris —
-        // un no-op n'a rien à annuler.
-        let Ok(seconds) = u64::try_from(seconds) else {
-            return Ok(());
-        };
-        if seconds == 0 {
-            return Ok(());
-        }
-        match crate::cancel::current() {
-            // sans jeton sur le fil : comportement d'avant, un seul thread::sleep sans plafond
-            None => std::thread::sleep(std::time::Duration::from_secs(seconds)),
-            // jeton : sommeil par tranches de WAIT_SLICE au plus, drapeau relu à chaque
-            // entrée de boucle — jeton déjà annulé à l'entrée ⇒ aucune tranche dormie
-            Some(token) => {
-                let mut remaining = std::time::Duration::from_secs(seconds);
-                while !token.is_cancelled() && !remaining.is_zero() {
-                    let slice = remaining.min(crate::cancel::WAIT_SLICE);
-                    std::thread::sleep(slice);
-                    remaining = remaining.saturating_sub(slice);
-                }
-                if token.is_cancelled() {
-                    return Err(rhai_err(Error::Other("cancelled".to_string())));
+    core_sleep_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`core_sleep_rhai_register`] (issue #19): the same functions, under the
+/// global namespace of a fresh [`Module`], registrable by [`Engine::register_static_module`]
+/// under the name the consumer picks. A twin that drifts from its registrar is a defect:
+/// both share the single `core_sleep_fns` list.
+#[must_use]
+pub fn core_sleep_module() -> Module {
+    let mut module = Module::new();
+    core_sleep_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The **waiting** group defined once (motif double cible).
+fn core_sleep_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "sleep",
+        &[
+            "/// Block the thread for `seconds` whole seconds; zero and negatives are immediate no-ops.",
+            "/// No ceiling. With a cancel token installed for the thread ([`crate::cancel::scope`]),",
+            "/// waits in slices of 25 ms and fails with `cancelled` once the flag is seen — entry included.",
+        ],
+        &["seconds: i64"],
+        |seconds: i64| -> RhaiRes<()> {
+            // 0 et négatifs : no-op immédiats dans tous les cas, jeton annulé compris —
+            // un no-op n'a rien à annuler.
+            let Ok(seconds) = u64::try_from(seconds) else {
+                return Ok(());
+            };
+            if seconds == 0 {
+                return Ok(());
+            }
+            match crate::cancel::current() {
+                // sans jeton sur le fil : comportement d'avant, un seul thread::sleep sans plafond
+                None => std::thread::sleep(std::time::Duration::from_secs(seconds)),
+                // jeton : sommeil par tranches de WAIT_SLICE au plus, drapeau relu à chaque
+                // entrée de boucle — jeton déjà annulé à l'entrée ⇒ aucune tranche dormie
+                Some(token) => {
+                    let mut remaining = std::time::Duration::from_secs(seconds);
+                    while !token.is_cancelled() && !remaining.is_zero() {
+                        let slice = remaining.min(crate::cancel::WAIT_SLICE);
+                        std::thread::sleep(slice);
+                        remaining = remaining.saturating_sub(slice);
+                    }
+                    if token.is_cancelled() {
+                        return Err(rhai_err(Error::Other("cancelled".to_string())));
+                    }
                 }
             }
-        }
-        Ok(())
-    });
+            Ok(())
+        },
+    );
 }
 
 /// Filesystem access exposed to Rhai scripts: read/write/copy files, create and list
@@ -189,26 +416,90 @@ pub fn core_sleep_rhai_register(engine: &mut Engine) {
 /// and [`core_sleep_rhai_register`]: callable alone on a fresh [`Engine`], registering
 /// nothing outside `file_read`, `file_write`, `file_copy`, `create_dir`, `read_dir`,
 /// `is_file`, `is_dir`.
+///
+/// Module twin: [`fs_module`] — same list of registrations, same semantics.
 #[cfg(feature = "fs")]
 pub fn fs_rhai_register(engine: &mut Engine) {
-    engine
-        .register_fn("file_read", |name: String| -> RhaiRes<ImmutableString> {
+    fs_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`fs_rhai_register`] (issue #19): the same functions, under the global
+/// namespace of a fresh [`Module`], registrable by [`Engine::register_static_module`] under
+/// the name the consumer picks. A twin that drifts from its registrar is a defect: both
+/// share the single `fs_fns` list.
+#[cfg(feature = "fs")]
+#[must_use]
+pub fn fs_module() -> Module {
+    let mut module = Module::new();
+    fs_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The `fs` group defined once (motif double cible).
+#[cfg(feature = "fs")]
+fn fs_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "file_read",
+        &[
+            "/// Read `path` as a UTF-8 string.",
+            "/// Errors on I/O failure or on bytes that are not valid UTF-8.",
+        ],
+        &["path: String"],
+        |name: String| -> RhaiRes<ImmutableString> {
             std::fs::read_to_string(name)
                 .map_err(|e| rhai_err(Error::Stdio(e)))
                 .map(std::convert::Into::into)
-        })
-        .register_fn("file_write", |name: String, content: String| -> RhaiRes<()> {
+        },
+    );
+    register_at(
+        target,
+        "file_write",
+        &[
+            "/// Write `content` to `path`, fully overwriting it, creating the file.",
+            "/// Parent directories are NOT created — only `create_dir` does that.",
+            "/// Errors on I/O failure.",
+        ],
+        &["path: String", "content: String"],
+        |name: String, content: String| -> RhaiRes<()> {
             std::fs::write(name, content).map_err(|e| rhai_err(Error::Stdio(e)))
-        })
-        .register_fn("file_copy", |source: String, dest: String| -> RhaiRes<()> {
+        },
+    );
+    register_at(
+        target,
+        "file_copy",
+        &[
+            "/// Copy `source` to `destination`, overwriting the destination; the source stays.",
+            "/// Errors on I/O failure.",
+        ],
+        &["source: String", "destination: String"],
+        |source: String, dest: String| -> RhaiRes<()> {
             std::fs::copy(source, dest)
                 .map_err(|e| rhai_err(Error::Stdio(e)))
                 .map(|_| ())
-        })
-        .register_fn("create_dir", |name: String| -> RhaiRes<()> {
+        },
+    );
+    register_at(
+        target,
+        "create_dir",
+        &[
+            "/// Create `path` with all missing parents, recursively and idempotently.",
+            "/// Errors on I/O failure.",
+        ],
+        &["path: String"],
+        |name: String| -> RhaiRes<()> {
             std::fs::create_dir_all(name).map_err(|e| rhai_err(Error::Stdio(e)))
-        })
-        .register_fn("read_dir", |name: String| -> RhaiRes<rhai::Array> {
+        },
+    );
+    register_at(
+        target,
+        "read_dir",
+        &[
+            "/// Full paths of the entries of `path` as an array of strings, unspecified order.",
+            "/// Errors on I/O failure or on a non-UTF-8 entry path — never an empty string slipped in.",
+        ],
+        &["path: String"],
+        |name: String| -> RhaiRes<rhai::Array> {
             let mut res = rhai::Array::new();
             for entry in std::fs::read_dir(name).map_err(|e| rhai_err(Error::Stdio(e)))? {
                 let entry = entry.map_err(|e| rhai_err(Error::Stdio(e)))?;
@@ -225,9 +516,22 @@ pub fn fs_rhai_register(engine: &mut Engine) {
                 );
             }
             Ok(res)
-        })
-        .register_fn("is_file", |name: String| -> bool { Path::new(&name).is_file() })
-        .register_fn("is_dir", |name: String| -> bool { Path::new(&name).is_dir() });
+        },
+    );
+    register_at(
+        target,
+        "is_file",
+        &["/// Whether `path` is a regular file; broken paths yield `false`, never an error."],
+        &["path: String"],
+        |name: String| -> bool { Path::new(&name).is_file() },
+    );
+    register_at(
+        target,
+        "is_dir",
+        &["/// Whether `path` is a directory; broken paths yield `false`, never an error."],
+        &["path: String"],
+        |name: String| -> bool { Path::new(&name).is_dir() },
+    );
 }
 
 /// Rhai engine + evaluation scope.
@@ -929,7 +1233,7 @@ fn run(args) { return "fallback/1"; }
     /// `cancelled` sans dormir aucune tranche (mesuré), tandis que `sleep(0)` et `sleep(-3)`
     /// avec ce même jeton réussissent — un no-op n'a rien à annuler.
     #[test]
-    fn scenario_sleep_jeton_deja_annule_a_lement() {
+    fn scenario_sleep_jeton_deja_annule_a_l_entree() {
         let mut s = make_script();
         let token = crate::cancel::CancelToken::new();
         token.cancel();
@@ -2224,6 +2528,379 @@ fn run(args) { return "fallback/1"; }
                 noms.contains(nom),
                 "new_bare enregistre toujours {nom} après la scission"
             );
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // Tâche « Poser le motif double cible » (PILOTE des issues #19 et #20) —
+    // Scenario « module équivalent à l'enregistreur (groupes communs) » et
+    // « fonctions documentées sous metadata (communs et fs) ». Chaque groupe est
+    // défini une seule fois comme liste de @rhai::FuncRegistration, appliquée soit
+    // directement à l'engine (enregistreur, fonctions en namespace global, visibles
+    // de gen_fn_signatures comme avant), soit à un Module en namespace global
+    // (jumeau module, enregistré par register_static_module sous `m`).
+    // ════════════════════════════════════════════════════════════════════════════
+
+    /// Engine vierge portant le jumeau module enregistré par
+    /// `rhai::Engine::register_static_module` sous le nom `m` (face qualifiée du Scenario).
+    fn engine_with_module(module: Module) -> Engine {
+        let mut engine = Engine::new();
+        engine.register_static_module("m", module.into());
+        engine
+    }
+
+    /// Scenario « module équivalent à l'enregistreur » : rejoue les appels
+    /// représentatifs en nom nu sur l'engine de l'enregistreur et qualifiés `m::nom`
+    /// sur l'engine du jumeau module — mêmes valeurs rendues, et sur échec même
+    /// noyau de message d'erreur (l'enveloppe d'appel qualifié vs nu appartient à
+    /// @rhai, non contractée).
+    fn assert_module_equivalent(
+        register: impl Fn(&mut Engine),
+        module: Module,
+        calls: &[(&str, &str, Option<&str>)],
+    ) {
+        let mut nu = Script {
+            engine: Engine::new(),
+            ctx: Scope::new(),
+        };
+        register(&mut nu.engine);
+        let mut qualifie = Script {
+            engine: engine_with_module(module),
+            ctx: Scope::new(),
+        };
+        for (bare, qualified, marqueur) in calls {
+            let rn = nu.eval(bare);
+            let rq = qualifie.eval(qualified);
+            match (rn, rq) {
+                (Ok(vn), Ok(vq)) => assert_eq!(
+                    vn.to_string(),
+                    vq.to_string(),
+                    "valeur divergente entre nom nu ({bare}) et qualifié ({qualified})"
+                ),
+                (Err(en), Err(eq)) => {
+                    let marqueur = marqueur.expect("jeu de test : les échecs portent un noyau de message");
+                    assert!(
+                        en.to_string().contains(marqueur),
+                        "l'erreur en nom nu doit porter « {marqueur} », got {en}"
+                    );
+                    assert!(
+                        eq.to_string().contains(marqueur),
+                        "l'erreur qualifiée doit porter « {marqueur} », got {eq}"
+                    );
+                }
+                (rn, rq) => panic!("divergence entre {bare} ({rn:?}) et {qualified} ({rq:?})"),
+            }
+        }
+    }
+
+    /// Noms qu'un jumeau module ajoute à un `Engine::new` par
+    /// `rhai::Engine::register_static_module` sous `m` (diff sur la baseline, préfixe
+    /// `m::` retiré s'il est porté par le nom) — face « les ensembles de noms de
+    /// fonctions sont égaux » du Scenario.
+    fn names_added_by_module(module: Module) -> std::collections::BTreeSet<String> {
+        let apres = registered_names(&engine_with_module(module));
+        let avant = registered_names(&Engine::new());
+        apres
+            .difference(&avant)
+            .map(|nom| {
+                let s = nom.as_str();
+                s.strip_prefix("m::").unwrap_or(s).to_string()
+            })
+            .collect()
+    }
+
+    /// Scenario « module équivalent à l'enregistreur », groupe PUR : mêmes noms, mêmes
+    /// valeurs, mêmes erreurs sous `m::` que par l'enregistreur en nom nu.
+    #[test]
+    fn scenario_module_equivalent_a_lenregistreur_pur() {
+        assert_eq!(
+            names_added_by_module(core_pure_module()),
+            set_of(&PUR),
+            "le jumeau module du groupe pur rend exactement les noms du groupe"
+        );
+        assert_module_equivalent(core_pure_rhai_register, core_pure_module(), &[
+            (r#"sha256("hello")"#, r#"m::sha256("hello")"#, None),
+            (r#"base64_encode("hello")"#, r#"m::base64_encode("hello")"#, None),
+            (r#"base64_decode("aGk=")"#, r#"m::base64_decode("aGk=")"#, None),
+            (r#"to_decimal("755")"#, r#"m::to_decimal("755")"#, None),
+            ("json_encode(#{a: 1})", "m::json_encode(#{a: 1})", None),
+            (
+                r#"url_encode("hello world")"#,
+                r#"m::url_encode("hello world")"#,
+                None,
+            ),
+            (
+                r#"to_decimal("8")"#,
+                r#"m::to_decimal("8")"#,
+                Some("to_decimal received a non-valid parameter"),
+            ),
+        ]);
+    }
+
+    /// Scenario « module équivalent à l'enregistreur », groupe HÔTE.
+    #[test]
+    fn scenario_module_equivalent_a_lenregistreur_hote() {
+        assert_eq!(
+            names_added_by_module(core_host_module()),
+            set_of(&HOTE),
+            "le jumeau module du groupe hôte rend exactement les noms du groupe"
+        );
+        assert_module_equivalent(core_host_rhai_register, core_host_module(), &[
+            (
+                r#"get_env("VYVIL_ABSENT_MODULE_EQUIVALENT")"#,
+                r#"m::get_env("VYVIL_ABSENT_MODULE_EQUIVALENT")"#,
+                None,
+            ),
+            ("log_info(\"x\")", r#"m::log_info("x")"#, None),
+        ]);
+    }
+
+    /// Scenario « module équivalent à l'enregistreur », groupe ATTENTE : `sleep(0)` rend
+    /// l'unité des deux voies (le `sleep(1)` bloquant n'est pas rejoué ici, déjà verrouillé
+    /// par les tests de durée).
+    #[test]
+    fn scenario_module_equivalent_a_lenregistreur_attente() {
+        assert_eq!(
+            names_added_by_module(core_sleep_module()),
+            set_of(&ATTENTE),
+            "le jumeau module du groupe attente rend exactement sleep"
+        );
+        assert_module_equivalent(core_sleep_rhai_register, core_sleep_module(), &[(
+            "sleep(0)",
+            "m::sleep(0)",
+            None,
+        )]);
+    }
+
+    /// Scenario « module équivalent à l'enregistreur », groupe `fs` (double porte) :
+    /// aller-retour `file_write`/`file_read` dans un répertoire temporaire et erreur
+    /// `Stdio error ` sur lecture absente, identiques sous `m::`.
+    #[cfg(feature = "fs")]
+    #[test]
+    fn scenario_module_equivalent_a_lenregistreur_fs() {
+        let noms = [
+            "file_read",
+            "file_write",
+            "file_copy",
+            "create_dir",
+            "read_dir",
+            "is_file",
+            "is_dir",
+        ];
+        assert_eq!(
+            names_added_by_module(fs_module()),
+            set_of(&noms),
+            "le jumeau module fs rend exactement les sept noms accordés"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("f").display().to_string();
+        let absent = dir.path().join("absent").display().to_string();
+        let ec = format!(r#"file_write("{f}", "contenu"); file_read("{f}")"#);
+        let qc = format!(r#"m::file_write("{f}", "contenu"); m::file_read("{f}")"#);
+        let lu = format!(r#"file_read("{absent}")"#);
+        let lq = format!(r#"m::file_read("{absent}")"#);
+        assert_module_equivalent(fs_rhai_register, fs_module(), &[
+            (&ec, &qc, None),
+            (
+                &format!(r#"is_file("{f}")"#),
+                &format!(r#"m::is_file("{f}")"#),
+                None,
+            ),
+            (&lu, &lq, Some("Stdio error")),
+        ]);
+    }
+
+    /// Scenario « module équivalent à l'enregistreur », dernier `And` : l'enregistreur garde
+    /// ses fonctions DIRECTEMENT sur l'engine — `rhai::Engine::gen_fn_signatures` (porte
+    /// `metadata` de `rhai`, donc feature `metadata` de la crate) les liste comme avant la
+    /// tâche, sans passage par un module global.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn scenario_enregistreur_fonctions_directement_sur_l_engine() {
+        let mut engine = Engine::new();
+        core_pure_rhai_register(&mut engine);
+        core_host_rhai_register(&mut engine);
+        core_sleep_rhai_register(&mut engine);
+        let signatures = engine.gen_fn_signatures(false);
+        for nom in SEIZE {
+            assert!(
+                signatures.iter().any(|s| s.starts_with(&format!("{nom}("))),
+                "{nom} doit être une fonction directe de l'engine, signatures : {signatures:?}"
+            );
+        }
+    }
+
+    /// Les 23 noms des quatre groupes joués par le Scenario « fonctions documentées sous
+    /// metadata » : les seize communs plus les sept de `fs` sous sa porte.
+    #[cfg(feature = "metadata")]
+    fn noms_des_quatre_groupes() -> Vec<&'static str> {
+        let noms: Vec<&'static str> = SEIZE.to_vec();
+        #[cfg(feature = "fs")]
+        let noms = noms
+            .into_iter()
+            .chain([
+                "file_read",
+                "file_write",
+                "file_copy",
+                "create_dir",
+                "read_dir",
+                "is_file",
+                "is_dir",
+            ])
+            .collect();
+        noms
+    }
+
+    /// Engine portant les quatre groupes par leurs enregistreurs, tel que le nomme le
+    /// Scenario « fonctions documentées sous metadata ».
+    #[cfg(feature = "metadata")]
+    fn engine_quatre_groupes() -> Engine {
+        let mut engine = Engine::new();
+        core_pure_rhai_register(&mut engine);
+        core_host_rhai_register(&mut engine);
+        core_sleep_rhai_register(&mut engine);
+        #[cfg(feature = "fs")]
+        fs_rhai_register(&mut engine);
+        engine
+    }
+
+    /// Scenario « fonctions documentées sous metadata » : sous la feature `metadata`,
+    /// `rhai::Engine::collect_fn_metadata` montre pour chacune des fonctions des quatre
+    /// groupes un commentaire non vide et les noms de ses paramètres, et
+    /// `rhai::Engine::gen_fn_signatures` nomme les paramètres (`json_encode(value: Dynamic)`,
+    /// pas `json_encode(_)`).
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn scenario_fonctions_documentees_sous_metadata() {
+        let engine = engine_quatre_groupes();
+        let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
+            None,
+            |f| {
+                Some((
+                    f.metadata.name.to_string(),
+                    f.metadata.params_info.len(),
+                    f.metadata.comments.len(),
+                ))
+            },
+            false,
+        );
+        for nom in noms_des_quatre_groupes() {
+            let (_, params, commentaires) = documentees
+                .iter()
+                .find(|(n, _, _)| n == nom)
+                .unwrap_or_else(|| panic!("{nom} absente des métadonnées de l'engine"));
+            assert!(
+                *commentaires > 0,
+                "{nom} doit porter un commentaire non vide sous `metadata`"
+            );
+            assert!(
+                *params > 0,
+                "{nom} doit porter les noms de ses paramètres sous `metadata`"
+            );
+        }
+        let signatures = engine.gen_fn_signatures(false);
+        for (nom, param) in [
+            ("json_encode", "value"),
+            ("sha256", "text"),
+            ("get_env", "var"),
+            ("sleep", "seconds"),
+        ] {
+            let signature = signatures
+                .iter()
+                .find(|s| s.starts_with(&format!("{nom}(")))
+                .unwrap_or_else(|| panic!("{nom} absente des signatures : {signatures:?}"));
+            assert!(
+                signature.contains(param),
+                "la signature de {nom} doit nommer son paramètre « {param} », got {signature}"
+            );
+            assert!(
+                !signature.contains("(_"),
+                "la signature de {nom} ne doit plus réduire le paramètre à un underscore, got {signature}"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata », face JSON :
+    /// `rhai::Engine::gen_fn_metadata_to_json` rend pour chaque fonction le commentaire
+    /// `///` et la signature nommant les paramètres.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn scenario_fonctions_documentees_sous_metadata_json() {
+        let engine = engine_quatre_groupes();
+        let json = engine
+            .gen_fn_metadata_to_json(false)
+            .expect("le JSON des métadonnées de l'engine se sérialise");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("JSON valide");
+        let functions = value["functions"]
+            .as_array()
+            .expect("le JSON porte un tableau « functions »");
+        for nom in noms_des_quatre_groupes() {
+            let entree = functions
+                .iter()
+                .find(|f| f["name"] == nom)
+                .unwrap_or_else(|| panic!("{nom} absente du JSON des métadonnées"));
+            let commentaires = entree["docComments"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{nom} doit porter des docComments, got {entree}"));
+            assert!(
+                commentaires.iter().any(|c| {
+                    let c = c.as_str().unwrap_or_default();
+                    c.starts_with("///") && c.len() > 3
+                }),
+                "le commentaire /// de {nom} doit être non vide, got {entree}"
+            );
+            let params = entree["params"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{nom} doit porter des params nommés, got {entree}"));
+            assert!(
+                !params.is_empty()
+                    && params
+                        .iter()
+                        .all(|p| p["name"].as_str().unwrap_or_default() != "_"),
+                "les paramètres de {nom} doivent être nommés, got {entree}"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata », face « sans la feature, les mêmes
+    /// tests de comportement passent sans différence » : les quatre groupes sur un engine
+    /// jouent leurs valeurs verrouillées et leurs noms, aucune métadonnée observable de plus.
+    #[cfg(not(feature = "metadata"))]
+    #[test]
+    fn scenario_fonctions_documentees_sans_metadata_sans_difference() {
+        let mut s = Script {
+            engine: {
+                let mut engine = Engine::new();
+                core_pure_rhai_register(&mut engine);
+                core_host_rhai_register(&mut engine);
+                core_sleep_rhai_register(&mut engine);
+                #[cfg(feature = "fs")]
+                fs_rhai_register(&mut engine);
+                engine
+            },
+            ctx: Scope::new(),
+        };
+        assert_eq!(
+            s.eval(r#"sha256("hello")"#).unwrap().to_string(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            "sans `metadata`, sha256 rend la même valeur qu'avec"
+        );
+        assert_eq!(
+            s.eval(r#"to_decimal("755")"#).unwrap().cast::<u32>(),
+            493,
+            "sans `metadata`, to_decimal rend la même valeur qu'avec"
+        );
+        assert_eq!(
+            s.eval(r#"get_env("VYVIL_ABSENT_SANS_METADATA")"#)
+                .unwrap()
+                .to_string(),
+            "",
+            "sans `metadata`, get_env d'une absente rend toujours la chaîne vide"
+        );
+        assert!(s.eval("sleep(0)").unwrap().is_unit(), "sleep(0) rend l'unité");
+        let noms = registered_names(&s.engine);
+        for nom in SEIZE {
+            assert!(noms.contains(nom), "{nom} est enregistrée sans `metadata` aussi");
         }
     }
 }

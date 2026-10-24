@@ -98,7 +98,7 @@ hbs-scripting = ["hbs", "rhai", "handlebars?/script_helper"]
 metadata = ["rhai", "rhai/metadata"]
 
 [dependencies]
-rhai = { version = "1.20.0", features = ["sync", "serde", "internals"], optional = true }
+rhai = { version = "1.23.3", features = ["sync", "serde", "internals"], optional = true }
 # rhai::Map is a BTreeMap keyed by rhai's `Identifier` alias, which is `smartstring::SmartString`
 # directly (not the `ImmutableString` newtype rhai implements Serialize for by hand) -- so any
 # serde_json/serde_yaml call or #[derive(Serialize/Deserialize)] on a rhai::Map (yaml.rs, engine.rs,

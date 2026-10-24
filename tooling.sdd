@@ -227,7 +227,7 @@ Tasks:
     jumelle de la spec racine, `Owns` de ces deux fichiers), la tâche jumelle de
     ./.github/workflows/workflows.sdd (entrée de matrice et boucle clippy de ./test.yml), et
     la vue de ./src/engine.sdd — toutes les coches dans le même commit.
-  [ ] Interdire en CI le retour des deux défauts de forme `.sdd` mesurés sur ce dépôt, par un
+  [x] Interdire en CI le retour des deux défauts de forme `.sdd` mesurés sur ce dépôt, par un
     contrôle de quelques dizaines de lignes ajouté à ./.github/workflows/test.yml (avec sa spec
     `./workflows.sdd`) : l'artefact est un script de contrôle et non du code de `src/`, donc la
     règle « une spec `.sdd` par fichier de `src/` » ne s'applique pas et c'est cette spec qui en
