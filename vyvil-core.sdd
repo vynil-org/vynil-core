@@ -252,7 +252,7 @@ Tasks:
     supposée ; le lock actuel est en 1.25.1. Tâche jumelle de « Poser le motif double cible »
     de ./src/engine.sdd, cochée dans le même commit.
   [ ] Livrer `0.9.0` une fois les tâches des issues #18 à #22 closes dans les specs de ./src/ :
-    bascule de `version` de ./Cargo.toml (0.8.0 → 0.9.0), ./CHANGELOG.md — `Added` : les cinq
+    bascule de `version` de ./Cargo.toml (0.8.0 → 0.9.0), ./CHANGELOG.md — `Added` : les quatre
     groupes publics de l'engine, les jumeaux module, la feature `metadata`, les fonctions
     documentées, `cancel::{CancelToken, scope}` ; `Changed` : `sleep` et `rt::block_on` annulables,
     plancher `rhai` relevé — extraits `vynil-core = ...` de la rustdoc racine, de ./README.md et
