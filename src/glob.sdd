@@ -51,6 +51,10 @@ Exposes:
     enregistre la fonction de script `glob` dans le @rhai::Engine fourni.
   Fonction de script `glob(text, pattern) -> bool` — nom exact côté script `glob`, retour
     `bool` et jamais @RhaiRes, portée par la fonction privée @glob::glob_fn.
+  @crate::glob::glob_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
+    @crate::glob::glob_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
 
 Accepts:
   @glob::glob_rhai_register — un `&mut @rhai::Engine` fourni par l'appelant, qu'elle ne lit
@@ -79,6 +83,15 @@ Tasks:
     ./engine.rs ou la batterie de features, mais doivent être verrouillés quelque part.
     Aucun test inline n'existe à ce jour dans ./glob.rs : les dix-sept Scenario sont à
     convertir.
+  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::glob::glob_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::glob::glob_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (glob) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: correspondance littérale exacte
   Given un engine avec la fonction `glob` enregistrée
@@ -172,3 +185,22 @@ Scenario: module absent sans la feature rhai
   Given la crate compilée sans la feature `rhai`, par exemple `cargo check --no-default-features`
   When l'API publique de la crate est inspectée
   Then @glob::glob_rhai_register n'existe pas et `glob` n'est disponible dans aucun script
+
+Scenario: glob_module équivaut à glob_rhai_register
+  Given un @rhai::Engine où glob_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::glob::glob_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (glob)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (glob_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And sans la feature, les mêmes tests de comportement passent sans différence

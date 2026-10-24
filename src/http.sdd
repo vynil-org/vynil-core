@@ -291,6 +291,10 @@ Exposes:
     @crate::http_mock::RestClientMock::new (`#[must_use]`), setters/add_* no-op publics, @crate::http_mock::RestClientMock::baseurl
     (stocke), huit verbes miroirs de noms script.
   @crate::http_mock::httpmock_rhai_register — `pub fn(engine, mocks)` ; seul point d'entrée mock.
+  @crate::http::http_module — `#[must_use] pub fn() -> @rhai::Module`, porte `http`, jumeau de
+    @crate::http::http_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
   Rien de plus dans les deux fichiers (le `fn get_client` de ./http.rs est PRIVÉ).
 
 Accepts:
@@ -481,6 +485,15 @@ Tasks:
 #   statut jamais erreur côté script, `json_delete` enrobant contre `json_*` stricts, mock
 #   inchangé (setters muets, matching sans baseurl ni corps), panique contractuelle de
 #   `get_client_name`.
+  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::http::http_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::http::http_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (http) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: http par défaut mais jamais auto-wired
   Given la crate en default (`http` y est, ./Cargo.toml ligne 50) et un
@@ -630,3 +643,22 @@ Scenario: co-enregistrement, la substitution à deux trous
   When le script appelle `new_client("http://x")`, `http_get_yaml(...)` ou `c.http_head(...)`
   Then fonction INCONNUE : ces trois noms manquent à la table du mock — trous assumés et
     documentés (le mock ne change pas), les consommateurs redéfinissant `http_get_yaml` en script
+
+Scenario: http_module équivaut à http_rhai_register
+  Given un @rhai::Engine où http_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::http::http_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (http)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (http_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And sans la feature, les mêmes tests de comportement passent sans différence

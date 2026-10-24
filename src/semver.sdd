@@ -210,6 +210,10 @@ Exposes:
     opérateurs `==`, `!=`, `<`, `>`, `<=`, `>=` entre objets `Semver`. ./engine.rs les livre
     automatiquement via @Script::new_bare, mais le registre reste appelable sur tout
     @rhai::Engine nu.
+  @crate::semver::semver_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
+    @crate::semver::semver_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
   Rien de plus : aucune propriété d'objet, aucun accesseur de composant, aucun alias de
     constructeur, aucune fonction globale de comparaison ou de parsing sous un autre nom.
 
@@ -369,6 +373,15 @@ Tasks:
     la provenance d'avant le bump serait fausse après), test d'abord. Documenter « resets
     minor/patch, clears prerelease and build » dans ./docs/rhai_helpers.md est la tâche
     jumelle de ./docs.sdd, à cocher dans le même commit.
+  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::semver::semver_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::semver::semver_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (semver) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: le même type sous deux chemins dans tous les graphes
   Given la crate compilée par `cargo check --no-default-features`
@@ -522,3 +535,22 @@ Scenario: la mutation reste visible et l'erreur du script rattrapable
     @std::num::ParseIntError et l'enveloppe de @rhai ne sont verrouillés nulle part
   And l'évaluation ne fait paniquer aucun moteur
   But le sort des valeurs aliasées ou clonées reste la sémantique interne de @rhai, non verrouillée
+
+Scenario: semver_module équivaut à semver_rhai_register
+  Given un @rhai::Engine où semver_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::semver::semver_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (semver)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (semver_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And sans la feature, les mêmes tests de comportement passent sans différence

@@ -151,6 +151,10 @@ Exposes:
   @crate::s3::s3_rhai_register — `pub fn(engine: &mut @rhai::Engine)`, porte `s3`, jamais
     appelée par le crate lui-même ; c'est le seul chemin par lequel les deux noms entrent
     dans un engine.
+  @crate::s3::s3_module — `#[must_use] pub fn() -> @rhai::Module`, porte `s3`, jumeau de
+    @crate::s3::s3_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
   Rien de plus : `build_store` reste privée, aucun type, aucune constante, aucun variant
     @Error propre ; aucun nom Rhai homophone (`s3_get`, `list_keys`) n'existe.
 
@@ -219,6 +223,15 @@ Tasks:
     incomplets, passer par `crate::rt::block_on` (décisions actées).
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
+  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::s3::s3_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::s3::s3_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (s3) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: s3 reste hors de new_bare même feature activée
   Given la crate compilée avec `s3` (donc `rhai` avec)
@@ -332,3 +345,22 @@ Scenario: sans la feature s3, rien n'existe
   Then ni @crate::s3 ni ses trois items n'existent, et @object_store, @futures, @tokio restent
     hors du graphe — la feature `rhai` seule ne les active pas, seul `s3` (et `k8s`/`oci`/
     `http` pour tokio/futures) le fait
+
+Scenario: s3_module équivaut à s3_rhai_register
+  Given un @rhai::Engine où s3_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::s3::s3_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (s3)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (s3_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And sans la feature, les mêmes tests de comportement passent sans différence

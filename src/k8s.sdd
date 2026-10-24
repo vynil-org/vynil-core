@@ -363,6 +363,18 @@ Exposes:
   Aucun type privé contracté (excluded_apiservice_groups, async_populate_cache, populate_cache,
     prepare_handle, job_is_completed, find_workload_mock, upsert_in_list, merge_with_existing sont
     internes — seuls leurs EFFETS sont contractés).
+  @crate::k8s::k8sgeneric_module — `#[must_use] pub fn() -> @rhai::Module`, porte `k8s`, jumeau de
+    @crate::k8s::k8sgeneric_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
+  @crate::k8s::k8sraw_module — `#[must_use] pub fn() -> @rhai::Module`, porte `k8s`, jumeau de
+    @crate::k8s::k8sraw_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
+  @crate::k8s::k8sworkload_module — `#[must_use] pub fn() -> @rhai::Module`, porte `k8s`, jumeau de
+    @crate::k8s::k8sworkload_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
 
 Accepts:
   Des noms de ressources en kind OU plural, casse indifférente (vrai) — en kind EXACT casse
@@ -535,6 +547,15 @@ Tasks:
 #   panics d'infrastructure (contexte non câblé, discovery initiale), macros `register_k8s_*`
 #   publiques stables, un contexte par process, liste sans pagination, mock inchangé (sémantique
 #   documentée).
+  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::k8s::k8sgeneric_rhai_register, @crate::k8s::k8sraw_rhai_register, @crate::k8s::k8sworkload_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::k8s::k8sgeneric_module, @crate::k8s::k8sraw_module, @crate::k8s::k8sworkload_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (k8s) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: k8s en feature off, tout s'éteint en bloc
   Given le crate compilé `--no-default-features` (k8s n'est PAS dans default, ./README l.34)
@@ -713,3 +734,44 @@ Scenario: mock waits exist et no-op updates
   Then AUCUN touch de provider, AUCUNE panic même sans set_get_client — le no-op est
     enregistré explicitement par le mock, sans dépendre de l'ordre de réenregistrement ; Given @crate::k8s_mock::K8sRawMock
   Then les trois rendent une map VIDE figée
+
+Scenario: k8sgeneric_module équivaut à k8sgeneric_rhai_register
+  Given un @rhai::Engine où k8sgeneric_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::k8s::k8sgeneric_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: k8sraw_module équivaut à k8sraw_rhai_register
+  Given un @rhai::Engine où k8sraw_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::k8s::k8sraw_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: k8sworkload_module équivaut à k8sworkload_rhai_register
+  Given un @rhai::Engine où k8sworkload_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::k8s::k8sworkload_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (k8s)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (k8sgeneric_rhai_register; k8sraw_rhai_register; k8sworkload_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And sans la feature, les mêmes tests de comportement passent sans différence

@@ -319,6 +319,16 @@ Tasks:
     face ShellOutput de `shell_run` n'y figurant pas, et y documenter l'assomption unix seul.
     Tâche jumelle de « Documenter le risque d'exécution de commandes » de ./src/shell.sdd et de
     la description de feature portée par ./vyvil-core.sdd, à cocher dans le même commit.
+  [ ] Déclarer `cancel` dans ./lib.rs : `#[cfg(feature = "rhai")]` + `cfg_attr(docsrs,
+    doc(cfg(feature = "rhai")))` + `pub mod cancel;` avec une ligne de rustdoc, sans ré-export
+    racine. Jumelle de « Créer ./cancel.rs » de ./cancel.sdd, cochée dans le même commit.
+    À la clôture, reprendre les décomptes d'`Exposes` et de `Purpose` (déclarations de modules,
+    modules publics) à l'état produit, sans les maintenir en chiffres : « chacun de ces
+    modules » plutôt qu'un compte.
+  [ ] Ajouter la feature `metadata` à la table de doc des features de ./lib.rs (même statut que
+    le manifest : hors `default`, active `rhai`) et à la liste de `References`
+    (`Cargo.toml`). Jumelle de « Exposer la feature `metadata` » de ../vyvil-core.sdd, cochée
+    dans le même commit.
 Scenario: error_chain remonte la source de l'extérieur vers la racine
   Given une erreur à trois niveaux calquée sur un échec DNS reqwest
   When @fn-error_chain la rend

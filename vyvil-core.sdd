@@ -79,6 +79,27 @@ Must:
     l'exige. Rien d'autre n'entre en `@std::cargo::dev-dependencies` sans raison écrite ici, et
     la dépendance n'en sort pas : les tests observent le harnais de logs, la face publiée ne
     l'exporte pas.
+  Offrir pour chaque enregistreur Rhai public `X_rhai_register(engine)` un jumeau
+    `X_module() -> @rhai::Module` (issue vynil-org/vynil-core#19) : mêmes noms, mêmes
+    sémantiques, enregistrable par @rhai::Engine::register_static_module sous le nom que choisit
+    le consommateur (`http::get(...)`), pour que l'introspection et le filtrage par agent
+    attribuent les fonctions à leur groupe sans comparer des signatures avant/après. L'enregistreur
+    ne disparaît pas et garde ses fonctions directement sur l'engine. Une seule définition des
+    fonctions sert les deux voies : un jumeau qui diverge de son enregistreur est un défaut.
+    Hors périmètre, par décision de cette spec : les trois enregistreurs de test double
+    (`httpmock_rhai_register`, `oci_mock_rhai_register`, `k8s_mock_rhai_register`), qui reçoivent
+    des fixtures en paramètre et n'ont pas de consommateur par groupe.
+  Documenter les fonctions enregistrées pour l'introspection (issue vynil-org/vynil-core#20) :
+    chaque fonction de script d'un enregistreur public porte, sous la feature `metadata`, un
+    commentaire `///` (ce qu'elle fait, ses erreurs, sa valeur) et le NOM de chacun de ses
+    paramètres, par @rhai::FuncRegistration. Sans la feature, le comportement est identique :
+    la documentation n'est qu'une métadonnée.
+  Exposer la feature `metadata` (issue vynil-org/vynil-core#22) : `metadata = ["rhai",
+    "rhai/metadata"]`, hors `default`, qui active l'introspection Rhai (`gen_fn_signatures`,
+    `gen_fn_metadata_to_json`, commentaires des fonctions de script). Elle implique `rhai`
+    comme `k8s`/`oci`/`s3`/`http` : seule, elle n'a pas de sens. Aucune porte nommée de plus dans
+    la batterie : `cargo hack --each-feature` la compile et la lint, `--all-features` joue les
+    verrous qu'elle porte (décision de cette spec ; ./tooling.sdd n'en change pas).
 
 Must not:
   Dépendre de vynil, kuberest, kydah ou d'un autre consommateur de cette crate.
@@ -220,6 +241,25 @@ Tasks:
     feature `shell` de ./Cargo.toml : aucune whitelist, aucun timeout, aucun bac à sable,
     l'opt-in cargo est le seul garde-fou (décision actée). Tâche jumelle de « Documenter le
     risque d'exécution de commandes » de ./src/shell.sdd, à cocher dans le même commit.
+  [ ] Exposer la feature `metadata` dans ./Cargo.toml (issue #22) : `metadata = ["rhai",
+    "rhai/metadata"]`, commentée comme ses voisines (ce qu'elle active, pourquoi elle implique
+    `rhai`), hors `default`. Vérifier `cargo hack check --each-feature --no-dev-deps` et son
+    pendant clippy, plus `cargo test --all-features`. Tâche jumelle de « Ajouter la feature
+    `metadata` à la table de doc » de ./src/lib.sdd, cochée dans le même commit.
+  [ ] Relever le plancher `rhai` de ./Cargo.toml (`1.20.0`) à la plus ancienne version qui
+    expose @rhai::FuncRegistration avec `with_comments` et `with_params_info`, VÉRIFIÉE en
+    compilant contre elle (`cargo update -p rhai --precise <version>` puis la batterie) et non
+    supposée ; le lock actuel est en 1.25.1. Tâche jumelle de « Poser le motif double cible »
+    de ./src/engine.sdd, cochée dans le même commit.
+  [ ] Livrer `0.9.0` une fois les tâches des issues #18 à #22 closes dans les specs de ./src/ :
+    bascule de `version` de ./Cargo.toml (0.8.0 → 0.9.0), ./CHANGELOG.md — `Added` : les cinq
+    groupes publics de l'engine, les jumeaux module, la feature `metadata`, les fonctions
+    documentées, `cancel::{CancelToken, scope}` ; `Changed` : `sleep` et `rt::block_on` annulables,
+    plancher `rhai` relevé — extraits `vynil-core = ...` de la rustdoc racine, de ./README.md et
+    de ./docs/ passés de `0.8` à `0.9` (jumelles de ./src/lib.sdd et ./docs.sdd). Aucun
+    changement de comportement pour vynil et kuberest, qui n'appellent que `new_bare` : version
+    mineure sous `1.0`. Le tag `v0.9.0` n'est posé qu'APRÈS le merge et la CI verte, le workflow
+    `publish.yml` vérifiant tag et manifest.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec revue (`Owns` groupé admis pour les mocks),

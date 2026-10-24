@@ -8,7 +8,10 @@ Purpose:
     sur un runtime `current_thread` — où `block_in_place` panique — il rend une erreur
     explicite. Remplace la soixantaine de couples `block_in_place` + `Handle::current` éparpillés
     dans ./http.rs, ./oci.rs, ./s3.rs et ./k8s.rs, dont la panique hors runtime multi-thread violait la
-    règle racine « un script ne peut pas paniquer l'hôte » (../vyvil-core.sdd).
+    règle racine « un script ne peut pas paniquer l'hôte » (../vyvil-core.sdd). Honore le jeton
+    d'annulation que le consommateur installe sur le fil par @crate::cancel::scope (issue
+    vynil-org/vynil-core#21) : sans lui un script interrompu par @rhai::Engine::on_progress
+    n'est rendu qu'au retour du futur, un appel réseau pouvant durer indéfiniment.
 
 Owns:
   ./rt.rs
@@ -19,6 +22,8 @@ References:
     ces quatre features activent @tokio ; le module n'existe pas sans elles et ne fait partie d'aucune API
     publique. Variantes @Error consommées : @variant-Error::Other et @variant-Error::Stdio,
     toutes deux non gated.
+  ./cancel.sdd — le jeton lu (@crate::cancel::CancelToken, lecture du jeton courant du fil,
+    tranche de 25 ms).
   ./http.sdd, ./oci.sdd, ./s3.sdd, ./k8s.sdd — les quatre appelants ; chacun y renvoie par
     « voir ./rt.sdd ».
   ./Cargo.toml — @tokio optionnel `1.48`, features `macros`, `rt-multi-thread`, `net` et `time` :
@@ -43,6 +48,14 @@ Must:
   Ne jamais paniquer : aucun `unwrap`/`expect`, aucun appel à @tokio::runtime::Handle::current,
     aucun `block_in_place` hors du seul bras multi-thread.
   Ne pas exiger que le futur soit `Send` : il est exécuté sur le thread appelant.
+  Honorer le jeton d'annulation du fil, quand @crate::cancel::scope en a installé un, dans
+    les TROIS stratégies d'exécution et sans changer la signature : jeton déjà annulé à
+    l'entrée → le futur n'est pas interrogé du tout et l'erreur est rendue ; annulé pendant
+    l'exécution → le futur est ABANDONNÉ (détruit, pas poursuivi en tâche de fond) et l'erreur
+    est rendue au plus tard une tranche de 25 ms plus tard, par une course entre le futur et
+    un contrôle périodique du drapeau dans le même runtime (@tokio::select! sur
+    @tokio::time::interval ; aucun thread, aucune tâche supplémentaire). Sans jeton, le
+    chemin est exactement celui d'avant.
   Documenter que la voie « aucun runtime » est un secours (coût d'un runtime par appel) : en
     production les scripts tournent dans le runtime du consommateur.
 
@@ -52,15 +65,20 @@ Must not:
   Exposer une variante async ou une API à l'appelant : le module ne connaît ni @rhai ni
     @crate::RhaiRes — les appelants convertissent l'erreur par @crate::rhai_err.
   Retenter, temporiser ou journaliser : une erreur remonte telle quelle.
+  Annuler de lui-même ou lire un jeton autre que celui du fil appelant : l'arrêt est la décision
+    du consommateur, le module n'observe que ce que @crate::cancel::scope a installé.
+  Prendre le jeton en paramètre : les appelants de ./http.rs, ./oci.rs, ./s3.rs et ./k8s.rs
+    restent inchangés.
 
 Depends on:
   tokio — @tokio::runtime::Handle (`try_current`, `runtime_flavor`, `block_on`),
     @tokio::runtime::RuntimeFlavor, @tokio::runtime::Builder (`new_current_thread`,
     `enable_all`, `build`), @tokio::task::block_in_place.
-  crate — @crate::Result, @crate::Error.
+  crate — @crate::Result, @crate::Error, @crate::cancel (jeton courant du fil et tranche).
 
 Exposes:
-  `crate::rt::block_on` — `pub(crate) fn block_on<F: Future>(fut: F) -> @crate::Result<F::Output>`.
+  `crate::rt::block_on` — `pub(crate) fn block_on<F: Future>(fut: F) -> @crate::Result<F::Output>`
+    (signature inchangée ; le jeton est lu du fil, pas passé).
 
 Accepts:
   Tout futur, `Send` ou non, à sortie quelconque ; appel depuis un thread de runtime
@@ -72,15 +90,26 @@ Returns:
 Raises:
   @variant-Error::Other `requires a multi-thread tokio runtime` sur un runtime `current_thread`.
   @variant-Error::Stdio si le runtime temporaire ne peut pas être construit.
+  @variant-Error::Other `cancelled` quand le jeton du fil est annulé, avant ou pendant
+    l'exécution, quelle que soit la stratégie.
   Aucune panique dans aucun cas.
 
 Handles:
   Appel imbriqué : un `block_on` lancé depuis le runtime temporaire d'un `block_on` extérieur
     rencontre un runtime `current_thread` et rend l'erreur explicite plutôt que de paniquer.
+  Jeton annulé depuis un autre fil pendant que le fil appelant attend : le fil appelant est
+    rendu en moins de 100 ms (tranche de 25 ms, marge d'ordonnancement), le futur est détruit.
+  Jeton installé sur un AUTRE fil que celui de l'appel : ignoré (le jeton est par fil,
+    ./cancel.sdd) ; sur `spawn_blocking` ou une tâche, le consommateur ouvre sa portée dedans.
   Futur qui panique lui-même : la panique du futur traverse (c'est celle de l'appelant), le
     module n'en ajoute aucune.
 
 Tasks:
+  [ ] Honorer le jeton d'annulation dans ./rt.rs (issue #21), selon le `Must` ci-dessus : tests
+    d'abord depuis les quatre Scenario « annulation » ; signature de `block_on` et appelants
+    inchangés. Prérequis : « Créer ./cancel.rs » de ./cancel.sdd coché. Les tests d'attente
+    utilisent un futur qui dort 30 s et assertent un retour sous 500 ms (marge d'ordonnanceur
+    pour la CI), jamais l'égalité à la tranche.
   [x] Retirer le `#[allow(dead_code)]` de ./rt.rs : sa justification (« tant qu'aucun
     appelant de `block_on` n'existe », clause des quatre tâches de migration) est épuisée :
     `http`/`oci`/`k8s` appellent `block_on` depuis leur migration (`a2ffac6`), `s3` avec la
@@ -122,3 +151,28 @@ Scenario: futur non Send
   Given un futur qui garde un `Rc` à travers un point d'attente
   When `block_on` l'exécute sur un thread sans runtime
   Then il compile et s'exécute, aucune borne `Send` n'étant exigée
+
+Scenario: annulation avant l'appel
+  Given un jeton déjà annulé et une portée ouverte par @crate::cancel::scope
+  When `block_on` reçoit un futur qui lève un drapeau observable
+  Then l'@variant-Error::Other `cancelled` est rendu et le drapeau n'est pas levé
+  And le résultat est le même sous un runtime multi-thread (`#[tokio::test(flavor = "multi_thread")]`)
+    et hors de tout runtime
+
+Scenario: annulation pendant l'attente
+  Given une portée ouverte avec un jeton, et un futur qui dort 30 s en portant un témoin de
+    destruction (`Drop` qui lève un drapeau)
+  When un autre fil annule le jeton 100 ms après le début de `block_on`
+  Then `block_on` rend @variant-Error::Other `cancelled` en moins de 500 ms au total
+  And le témoin de destruction a été levé : le futur est abandonné, pas laissé en vie
+  And les deux stratégies qui exécutent (multi-thread, et hors runtime) le prouvent
+
+Scenario: annulation ignorée sans portée
+  Given aucun jeton installé sur le fil, un jeton annulé existant ailleurs
+  When `block_on` reçoit un futur qui rend `7`
+  Then `Ok(7)` est rendu, comme avant la tâche
+
+Scenario: jeton d'un autre fil
+  Given un jeton annulé installé par `scope` sur le fil A
+  When le fil B appelle `block_on` avec un futur qui rend `7`
+  Then `Ok(7)` est rendu sur B

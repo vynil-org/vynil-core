@@ -1,0 +1,116 @@
+Spec: cancel
+
+Purpose:
+  Donner à un consommateur qui pilote un script Rhai (typiquement une session LLM) le moyen
+    d'interrompre les appels natifs BLOQUANTS de la crate. @rhai::Engine::on_progress n'a la main
+    qu'entre deux opérations du script : un appel natif qui dort ou attend le réseau, comme
+    `sleep` (./engine.rs) ou @crate::rt::block_on (./rt.rs), ne rend pas la main avant son retour
+    (mesuré par le consommateur : 1,5 s pour un appel natif de 1,5 s, 200 ms pour une boucle
+    Rhai). Un @crate::cancel::CancelToken installé pour la durée d'une évaluation par
+    @crate::cancel::scope est lu par ces appels natifs, qui rendent alors une erreur au lieu
+    d'attendre. Le jeton est porté par le FIL appelant (thread-local) et non par un paramètre :
+    les soixante appelants de `block_on` et les fonctions natives n'ont ainsi aucune signature à
+    changer, et l'évaluation Rhai, synchrone, reste sur le fil qui l'a lancée (y compris sous
+    @tokio::task::block_in_place). Ce module ne dépend ni de @tokio ni de la porte réseau :
+    `sleep` n'existe que sous `rhai`.
+
+Owns:
+  ./cancel.rs
+
+References:
+  ./lib.rs — déclarant : `#[cfg(feature = "rhai")]` + `pub mod cancel;`. Aucune variante @Error
+    nouvelle : l'annulation est @variant-Error::Other de texte `cancelled`.
+  ./rt.sdd, ./engine.sdd — les deux lecteurs du jeton (@crate::rt::block_on et la fonction de
+    script `sleep`).
+  Issue vynil-org/vynil-core#21.
+
+Must:
+  N'exister que sous la porte `rhai`.
+  Fournir @crate::cancel::CancelToken : un drapeau partagé, @core::clone::Clone (les clones
+    désignent le MÊME drapeau), @core::fmt::Debug, @core::default::Default (non annulé),
+    @core::marker::Send et @core::marker::Sync affirmés par test. Une fois annulé il le reste :
+    aucune réinitialisation.
+  Fournir @crate::cancel::scope : installe le jeton pour le fil courant le temps de la fermeture
+    et rend sa valeur ; à la sortie — retour normal OU panique de la fermeture — le jeton
+    précédent du fil (ou l'absence de jeton) est rétabli. Des portées imbriquées se
+    superposent : la plus interne l'emporte tant qu'elle dure.
+  Ne porter le jeton QUE pour le fil qui a appelé `scope` : un autre fil, une tâche lancée par
+    @tokio::task::spawn, un @tokio::task::spawn_blocking ne l'héritent pas. Le consommateur
+    qui évalue sur un autre fil ouvre sa propre portée sur ce fil. À documenter en rustdoc.
+  Fournir à ./rt.rs et ./engine.rs une lecture `pub(crate)` du jeton courant du fil (absent
+    quand aucune portée n'est ouverte) et la tranche d'attente commune de 25 ms : borne de la
+    latence d'annulation d'un appel natif, partagée par `sleep` et `block_on`.
+  Ne jamais paniquer : aucun `unwrap`/`expect`, y compris sur l'accès au thread-local pendant
+    la destruction du fil (l'absence de jeton est alors rendue).
+
+Must not:
+  Interrompre quoi que ce soit lui-même : le module ne pose aucun arrêt, il ne fait que porter
+    un drapeau que les appelants natifs lisent. L'arrêt du script reste la décision du
+    consommateur (@rhai::Engine::on_progress).
+  Utiliser un état global de processus pour le jeton : deux évaluations concurrentes sur deux
+    fils ne se voient pas.
+  Dépendre de @tokio, de @rhai ou d'une dépendance nouvelle : @std::sync::Arc et
+    @std::sync::atomic::AtomicBool suffisent.
+
+Depends on:
+  std — @std::sync::Arc, @std::sync::atomic::AtomicBool, @std::cell::RefCell (thread-local),
+    @std::time::Duration.
+
+Exposes:
+  @crate::cancel::CancelToken — `pub struct`, `new()` (`#[must_use]`), `cancel(&self)`,
+    `is_cancelled(&self) -> bool` (`#[must_use]`) ; `Clone`, `Debug`, `Default`.
+  @crate::cancel::scope — `pub fn scope<R>(token: &CancelToken, f: impl FnOnce() -> R) -> R`.
+  Les lectures `pub(crate)` décrites au `Must` (jeton courant, tranche de 25 ms).
+
+Accepts:
+  N'importe quel jeton, annulé ou non ; une fermeture quelconque, y compris une qui panique.
+
+Returns:
+  @crate::cancel::scope — la valeur de la fermeture.
+
+Handles:
+  Jeton annulé avant l'ouverture de la portée : la portée s'ouvre normalement, l'appelant
+    natif voit un jeton déjà annulé et rend son erreur sans commencer son attente.
+  Annulation depuis un autre fil pendant que le fil évaluateur attend : le drapeau est atomique,
+    l'appelant natif la voit au plus tard à sa tranche suivante.
+
+Tasks:
+  [ ] Créer ./cancel.rs depuis les Scenario ci-dessous et le déclarer dans ./lib.rs (module
+    `pub`, sous `#[cfg(feature = "rhai")]` + `cfg_attr(docsrs, doc(cfg(feature = "rhai")))`
+    comme `engine`) : tests d'abord. Tâche jumelle de « Déclarer `cancel` » de ./lib.sdd,
+    cochée dans le même commit. À cocher AVANT les tâches « annulation » de ./rt.sdd et
+    ./engine.sdd, qui lisent ce module.
+
+Scenario: sans portée, aucun jeton
+  Given un fil sur lequel aucune portée n'est ouverte
+  When la lecture du jeton courant est appelée
+  Then aucun jeton n'est rendu
+
+Scenario: la portée installe puis rétablit
+  Given un jeton T1
+  When `scope(&T1, || ...)` s'exécute
+  Then la lecture du jeton courant dans la fermeture rend un jeton dont l'annulation par T1 est visible
+  And après le retour de `scope`, la lecture rend de nouveau aucun jeton
+  And la valeur rendue par `scope` est celle de la fermeture
+
+Scenario: portées imbriquées
+  Given deux jetons T1 et T2
+  When `scope(&T1, || scope(&T2, || ...))` s'exécute
+  Then dans la portée interne le jeton courant est T2, et à sa sortie T1 est rétabli
+  And à la sortie de la portée externe plus aucun jeton n'est installé
+
+Scenario: la portée se rétablit sur panique
+  Given un jeton T1 et une fermeture qui panique, interceptée par `catch_unwind`
+  When `scope(&T1, ...)` laisse passer la panique
+  Then le fil n'a plus de jeton installé après l'interception
+
+Scenario: le jeton ne traverse pas les fils
+  Given une portée ouverte sur le fil A
+  When un fil B lancé depuis cette portée lit le jeton courant
+  Then B ne voit aucun jeton
+
+Scenario: les clones partagent le drapeau
+  Given un jeton T et son clone C
+  When `C.cancel()` est appelé
+  Then `T.is_cancelled()` est vrai, et le reste après tout autre appel
+  And un `CancelToken::default()` n'est pas annulé

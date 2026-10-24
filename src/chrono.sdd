@@ -128,6 +128,10 @@ Exposes:
     n'étant enregistré, `date_now` est l'unique façon d'obtenir une valeur de script.
   Méthode de script `<DateTimeHandler>.format(fmt)` — une chaîne en argument, retourne une
     chaîne ; @type_of d'une valeur du handler rendu vaut `DateTimeHandler`.
+  @crate::chrono::chrono_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
+    @crate::chrono::chrono_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
 
 Accepts:
   @crate::chrono::DateTimeHandler::now — rien, et ne consulte ni argument, ni variable
@@ -201,6 +205,15 @@ Tasks:
     @std::fmt::Write::write_fmt, @crate::chrono::DateTimeHandler::rhai_format rend un
     @crate::RhaiRes ; les trois Scenario d'erreur ci-dessus sont à écrire en test d'abord, et
     les appelants Rust de `format` (./engine.rs, consommateurs) à répercuter.
+  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::chrono::chrono_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::chrono::chrono_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (chrono) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: rendu local d'un motif valide
   Given un @crate::chrono::DateTimeHandler dont @crate::chrono::DateTimeHandler::date est une
@@ -356,3 +369,22 @@ Scenario: un motif invalide dans un script devient une erreur rattrapable
     `()` et non la chaîne
   Then l'évaluation retourne `rattrape`
   And sans `try`, l'évaluation échoue en erreur @rhai portant `Invalid date format '%Q'`, sans panic
+
+Scenario: chrono_module équivaut à chrono_rhai_register
+  Given un @rhai::Engine où chrono_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::chrono::chrono_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (chrono)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (chrono_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And sans la feature, les mêmes tests de comportement passent sans différence

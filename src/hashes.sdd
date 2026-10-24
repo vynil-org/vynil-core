@@ -157,6 +157,14 @@ Exposes:
     rend la chaîne PHC ou échoue en @crate::RhaiRes ; existe aussi en forme globale
     `hash(argon, password)`.
   Rien n'est réexporté à la racine : le module s'atteint par son chemin @crate::hashes.
+  @crate::hashes::hashes_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
+    @crate::hashes::hashes_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
+  @crate::hashes::crypto_hashes_module — `#[must_use] pub fn() -> @rhai::Module`, porte `crypto` et `rhai`, jumeau de
+    @crate::hashes::crypto_hashes_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
 
 Accepts:
   @crate::hashes::crc32_hash — tout @std::string::String, vide et non-ASCII compris, haché sur
@@ -297,6 +305,15 @@ Tasks:
     Close 2026-10-11 : ouverte sur vynil-org/vynil#266 et vynil-org/kuberest#12 ; kydah n'en
     reçoit pas (décision du développeur principal : la box suit vynil, pas de dépôt consommateur
     direct).
+  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::hashes::hashes_rhai_register, @crate::hashes::crypto_hashes_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::hashes::hashes_module, @crate::hashes::crypto_hashes_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (hashes) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: la face Rust crc32 survit sans aucune feature
   Given la crate compilée par `cargo check --no-default-features`
@@ -409,3 +426,33 @@ Scenario: le réenregistrement reste sans effet visible
   Then les deux nouveaux appels rendent `()` sans erreur
   And `crc32_hash("hello")`, `bcrypt_hash("p")` et `new_argon().hash("p")` réussissent avec les
     mêmes formes de sortie qu'auparavant
+
+Scenario: hashes_module équivaut à hashes_rhai_register
+  Given un @rhai::Engine où hashes_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::hashes::hashes_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: crypto_hashes_module équivaut à crypto_hashes_rhai_register
+  Given un @rhai::Engine où crypto_hashes_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::hashes::crypto_hashes_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (hashes)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (hashes_rhai_register; crypto_hashes_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And sans la feature, les mêmes tests de comportement passent sans différence

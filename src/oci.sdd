@@ -243,6 +243,10 @@ Exposes:
     @rhai::Map — invisible en script.
   @crate::oci_mock::oci_mock_rhai_register — `pub fn(engine: &mut @rhai::Engine)` ; six
     enregistrements, `get_auth_from_file` compris.
+  @crate::oci::oci_module — `#[must_use] pub fn() -> @rhai::Module`, porte `oci`, jumeau de
+    @crate::oci::oci_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
   Rien de plus dans les deux fichiers.
 
 Accepts:
@@ -377,6 +381,15 @@ Tasks:
     # DÉBLOQUÉE. exécution en lockstep : ./http.sdd (pré-validation + bascule), cette
     # face-ci (`oci-client` en `default-features = false`, feature `rustls-tls`), et le
     # manifest par la tâche jumelle de ../vyvil-core.sdd — trois coches dans le même commit.
+  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::oci::oci_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::oci::oci_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (oci) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: oci éteint, les deux modules n'existent pas
   Given la crate compilée `--no-default-features --features rhai` (`oci` off par défaut)
@@ -509,3 +522,22 @@ Scenario: co-enregistrement des deux mondes est possible mais déconseillé
     des trois chaînes résout le DERNIER enregistré — les méthodes se dispatchant par type,
     les deux types peuvent coexister ; la recommandation mocking.md (un seul monde par
     engine) est la conduite contractuelle, le mécanisme de coexistence restant détail @rhai
+
+Scenario: oci_module équivaut à oci_rhai_register
+  Given un @rhai::Engine où oci_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::oci::oci_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (oci)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (oci_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And sans la feature, les mêmes tests de comportement passent sans différence

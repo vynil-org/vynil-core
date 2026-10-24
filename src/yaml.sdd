@@ -149,6 +149,10 @@ Exposes:
     plus.
   Rien de ce module n'est réexporté à la racine de la crate : les trois helpers Rust
     s'appellent par leur chemin @crate::yaml.
+  @crate::yaml::yaml_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
+    @crate::yaml::yaml_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
 
 Accepts:
   @crate::yaml::yaml_str_to_json — un `&str` de contenu libre, longueur quelconque, chaîne
@@ -315,6 +319,15 @@ Tasks:
     quatre items `pub` exige et qu'elle n'a pas depuis avant cette campagne (écart trouvé par
     l'agent `validator` en relisant la doc de HEAD, identique sur HEAD : ce n'est pas une régression
     introduite par la voie @serde_yaml::Value).
+  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::yaml::yaml_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::yaml::yaml_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (yaml) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: document mapping converti en JSON
   Given la chaîne `image: nginx\nreplicas: 3\n`
@@ -559,3 +572,22 @@ Scenario: entier sous i64 refusé plutôt qu'inventé
     rend surtout pas `9223372036854775807`
   But `yaml_decode("9223372036854775809\n")` rend un FLOTTANT : @serde_yaml bascule au-dessus de
     @i64::MAX, asymétrie venue de @serde_yaml et non du module
+
+Scenario: yaml_module équivaut à yaml_rhai_register
+  Given un @rhai::Engine où yaml_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::yaml::yaml_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (yaml)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (yaml_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And sans la feature, les mêmes tests de comportement passent sans différence
