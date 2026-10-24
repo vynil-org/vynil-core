@@ -139,7 +139,6 @@ pub fn scope<R>(token: &CancelToken, f: impl FnOnce() -> R) -> R {
 /// Read by the crate's blocking native calls (`sleep`, `block_on`); cancellation is
 /// never decided here — the module only carries the flag, stopping the script stays the
 /// consumer's call (`rhai::Engine::on_progress`).
-#[allow(dead_code)] // lu par rt.rs / engine.rs à la vague suivante (cancel.sdd, Must « lecture pub(crate) »)
 pub(crate) fn current() -> Option<CancelToken> {
     CURRENT.try_with(|cell| cell.borrow().clone()).ok().flatten()
 }
@@ -147,7 +146,6 @@ pub(crate) fn current() -> Option<CancelToken> {
 /// Common wait slice of 25 ms: the bound on a native call's cancellation latency,
 /// shared by `sleep` and `block_on` — each waits at most this long before re-reading
 /// [`current`] and its flag.
-#[allow(dead_code)] // consommée par rt.rs / engine.rs à la vague suivante (cancel.sdd, Must « tranche 25 ms »)
 pub(crate) const WAIT_SLICE: Duration = Duration::from_millis(25);
 
 #[cfg(test)]

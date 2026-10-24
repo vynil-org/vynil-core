@@ -25,9 +25,9 @@ References:
   ./chrono.sdd, ./hashes.sdd, ./password.sdd, ./yaml.sdd, ./key.sdd, ./glob.sdd, ./http.sdd
     (avec son mock ./http_mock.sdd via ./http.sdd), ./oci.sdd, ./s3.sdd, ./shell.sdd — tous
     déclarés ici ;
-  ../Cargo.toml — l.50 `default` = http/crypto/rhai/hbs/hbs-scripting ; 11 features au
-    total, la table de doc des features de ./lib.rs (l.14-26) les énumère toutes avec le même
-    statut default que le manifest.
+  ../Cargo.toml — la table `default` (http/crypto/rhai/hbs/hbs-scripting) ; toutes les
+    features du manifest, chacune énumérée dans la table de doc des features de ./lib.rs avec
+    le même statut default que le manifest.
 
 Must:
   Dériver @variant-Error de @thiserror (import @use l.110) et de @core::fmt::Debug
@@ -325,7 +325,7 @@ Tasks:
     À la clôture, reprendre les décomptes d'`Exposes` et de `Purpose` (déclarations de modules,
     modules publics) à l'état produit, sans les maintenir en chiffres : « chacun de ces
     modules » plutôt qu'un compte.
-  [ ] Ajouter la feature `metadata` à la table de doc des features de ./lib.rs (même statut que
+  [x] Ajouter la feature `metadata` à la table de doc des features de ./lib.rs (même statut que
     le manifest : hors `default`, active `rhai`) et à la liste de `References`
     (`Cargo.toml`). Jumelle de « Exposer la feature `metadata` » de ../vyvil-core.sdd, cochée
     dans le même commit.

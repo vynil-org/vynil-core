@@ -139,13 +139,44 @@ pub fn core_host_rhai_register(engine: &mut Engine) {
 /// why it does not travel with the host group. Additive and idempotent: callable alone on a
 /// fresh [`Engine`], in any order with the other `core_*_rhai_register` groups, and registers
 /// nothing outside that name.
+///
+/// `sleep` is cancellable ([`crate::cancel`], issue #21): with no token installed for the
+/// thread it sleeps the whole requested duration in one [`std::thread::sleep`] (no ceiling —
+/// an operator's script may legitimately wait); with a token installed by
+/// [`crate::cancel::scope`] it waits in slices of at most `crate::cancel::WAIT_SLICE`
+/// (25 ms) and fails with `cancelled` as soon as the flag is seen set — including a token
+/// already cancelled at entry, where no slice is slept at all. Zero and negative durations
+/// stay immediate no-ops either way. This is not an [`rhai::Engine::on_progress`] hook,
+/// which cannot get the hand inside a native call; a script catching the error with `try`
+/// continues, ending the script staying the consumer's call.
 pub fn core_sleep_rhai_register(engine: &mut Engine) {
-    engine.register_fn("sleep", |seconds: i64| {
-        if let Ok(seconds) = u64::try_from(seconds)
-            && seconds > 0
-        {
-            std::thread::sleep(std::time::Duration::from_secs(seconds));
+    engine.register_fn("sleep", |seconds: i64| -> RhaiRes<()> {
+        // 0 et négatifs : no-op immédiats dans tous les cas, jeton annulé compris —
+        // un no-op n'a rien à annuler.
+        let Ok(seconds) = u64::try_from(seconds) else {
+            return Ok(());
+        };
+        if seconds == 0 {
+            return Ok(());
         }
+        match crate::cancel::current() {
+            // sans jeton sur le fil : comportement d'avant, un seul thread::sleep sans plafond
+            None => std::thread::sleep(std::time::Duration::from_secs(seconds)),
+            // jeton : sommeil par tranches de WAIT_SLICE au plus, drapeau relu à chaque
+            // entrée de boucle — jeton déjà annulé à l'entrée ⇒ aucune tranche dormie
+            Some(token) => {
+                let mut remaining = std::time::Duration::from_secs(seconds);
+                while !token.is_cancelled() && !remaining.is_zero() {
+                    let slice = remaining.min(crate::cancel::WAIT_SLICE);
+                    std::thread::sleep(slice);
+                    remaining = remaining.saturating_sub(slice);
+                }
+                if token.is_cancelled() {
+                    return Err(rhai_err(Error::Other("cancelled".to_string())));
+                }
+            }
+        }
+        Ok(())
     });
 }
 
@@ -854,6 +885,79 @@ fn run(args) { return "fallback/1"; }
         let start = std::time::Instant::now();
         assert!(s.eval("sleep(1)").is_ok());
         assert!(start.elapsed() >= std::time::Duration::from_millis(900));
+    }
+
+    // ── sleep annulé (Scenario « sleep annulé », cancel.sdd, issue #21) ──
+    // La face « aucune portée ouverte » du Scenario est verrouillée sans modification par les
+    // deux tests ci-dessus : ils tournent sur un fil sans `cancel::scope`, `sleep(0)`/`sleep(-3)`
+    // y restent des no-op immédiats (< 250 ms) et `sleep(1)` bloque ≥ 900 ms d'un seul
+    // `thread::sleep` — le jeton étant thread-local, aucune portée ouverte sur un autre fil de
+    // la batterie ne peut les affecter.
+
+    /// Scenario « sleep annulé », face annulation pendant le sommeil : jeton ouvert par
+    /// `cancel::scope`, un autre fil l'annule 100 ms après le début de l'évaluation de
+    /// `sleep(30)` ; l'erreur `cancelled` rend au plus une tranche (25 ms) plus une marge
+    /// après l'annulation — jamais les 30 s demandées.
+    #[test]
+    fn scenario_sleep_annule_par_un_autre_fil() {
+        let mut s = make_script();
+        let token = crate::cancel::CancelToken::new();
+        let canceller = {
+            let token = token.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                token.cancel();
+            })
+        };
+        let start = std::time::Instant::now();
+        let res = crate::cancel::scope(&token, || s.eval("sleep(30)"));
+        let elapsed = start.elapsed();
+        canceller.join().expect("le fil annulateur rend sa main");
+        let err = res.expect_err("sleep(30) annulé doit rendre une erreur, pas dormir les 30 s");
+        assert!(matches!(err, Error::RhaiError(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("cancelled"),
+            "l'erreur doit porter le texte cancelled, got {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "erreur rendue en moins de 500 ms (100 ms avant annulation + tranche de 25 ms + marge CI), got {elapsed:?}"
+        );
+    }
+
+    /// Scenario « sleep annulé », faces jeton déjà annulé à l'entrée : `sleep(30)` rend
+    /// `cancelled` sans dormir aucune tranche (mesuré), tandis que `sleep(0)` et `sleep(-3)`
+    /// avec ce même jeton réussissent — un no-op n'a rien à annuler.
+    #[test]
+    fn scenario_sleep_jeton_deja_annule_a_lement() {
+        let mut s = make_script();
+        let token = crate::cancel::CancelToken::new();
+        token.cancel();
+        let start = std::time::Instant::now();
+        let err = crate::cancel::scope(&token, || s.eval("sleep(30)"))
+            .expect_err("jeton déjà annulé à l'entrée ⇒ erreur sur toute durée strictement positive");
+        let elapsed = start.elapsed();
+        assert!(
+            err.to_string().contains("cancelled"),
+            "l'erreur doit porter le texte cancelled, got {err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(250),
+            "aucune tranche dormie : erreur immédiate (à l'ancienne implémentation, 30 s dormies ici), got {elapsed:?}"
+        );
+        let start = std::time::Instant::now();
+        for appel in ["sleep(0)", "sleep(-3)"] {
+            let res = crate::cancel::scope(&token, || s.eval(appel));
+            assert!(
+                res.is_ok(),
+                "{appel} doit réussir même jeton annulé : un no-op n'a rien à annuler, got {res:?}"
+            );
+        }
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(250),
+            "les no-op restent immédiats jeton annulé, got {:?}",
+            start.elapsed()
+        );
     }
 
     // ── get_env : absente reste chaîne vide, non-UTF-8 rend une erreur (Scenario utilitaires) ──
@@ -1995,8 +2099,8 @@ fn run(args) { return "fallback/1"; }
     /// hôte (sans `add_common`) résout `log_info` et `get_env` — les groupes sont additifs et
     /// n'en supposent aucun autre. Écart mesuré à la tâche (signalé, non supposé) : le `sleep`
     /// que le Scenario dit « fonction inconnue » ne peut pas l'être sur un `Engine::new` — le
-    /// package standard `@rhai` (`LangPackageCore`) fournit un `sleep(FLOAT)` natif sur tout
-    /// `Engine::new` et `@rhai` coercit INT vers FLOAT. Le contrat « le groupe attente
+    /// package standard `@rhai` (`LangPackageCore`) fournit `sleep(INT)` et `sleep(FLOAT)`
+    /// natifs sur tout `Engine::new`. Le contrat « le groupe attente
     /// n'expose `sleep` qu'avec lui » est donc vérifié en deux faces vraies : le PUR
     /// n'enregistre rien hors de ses noms (notamment pas `sleep`), et sur un engine
     /// réellement vierge (`Engine::new_raw`, sans package standard) `sleep(1)` est bien

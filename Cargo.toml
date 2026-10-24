@@ -91,6 +91,11 @@ hbs = ["dep:handlebars", "dep:handlebars_misc_helpers", "dep:jmespath", "dep:tom
 # into their graph (e.g. combined with async-graphql) can now disable this sub-feature; a plain
 # `vynil-core = "x"` dependency is unaffected since this stays on by default alongside "rhai".
 hbs-scripting = ["hbs", "rhai", "handlebars?/script_helper"]
+# Rhai introspection metadata (issue #22): script functions' `///` comments and parameter names
+# carried by FuncRegistration, consumed by gen_fn_signatures / gen_fn_metadata_to_json. Off by
+# default: pure metadata, registrations behave identically without it. Implies `rhai` like
+# k8s/oci/s3/http -- metadata alone, with no engine to register on, makes no sense.
+metadata = ["rhai", "rhai/metadata"]
 
 [dependencies]
 rhai = { version = "1.20.0", features = ["sync", "serde", "internals"], optional = true }

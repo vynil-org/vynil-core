@@ -75,6 +75,10 @@ Handles:
     l'appelant natif la voit au plus tard à sa tranche suivante.
 
 Tasks:
+  [x] Retirer les deux `#[allow(dead_code)]` de `current()` et `WAIT_SLICE` quand les tâches
+    « annulation » de ./rt.sdd et ./engine.sdd les consomment : la justification du pont est
+    épuisée dès les deux faces câblées. Part des deux tâches susnommées, retirée dans le même
+    commit qu'elles.
   [x] Créer ./cancel.rs depuis les Scenario ci-dessous et le déclarer dans ./lib.rs (module
     `pub`, sous `#[cfg(feature = "rhai")]` + `cfg_attr(docsrs, doc(cfg(feature = "rhai")))`
     comme `engine`) : tests d'abord. Tâche jumelle de « Déclarer `cancel` » de ./lib.sdd,

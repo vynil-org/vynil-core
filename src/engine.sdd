@@ -363,7 +363,7 @@ Tasks:
     rustdoc de `add_common` : la dépendance au groupe hôte. Fait de contrat à propager : le
     `Purpose` de ./lib.sdd et ./docs/rhai_helpers.md (tâche de ./docs.sdd) parlent de seize noms
     « communs » sans groupes.
-  [ ] Rendre `sleep` annulable (issue #21), selon le `Must` : le groupe attente lit le jeton du
+  [x] Rendre `sleep` annulable (issue #21), selon le `Must` : le groupe attente lit le jeton du
     fil et dort par tranches de 25 ms quand il y en a un. Tests d'abord depuis les Scenario
     « sleep annulé » ; ceux de `sleep(0)`, `sleep(-3)`, `sleep(1)` existants restent verts.
     Prérequis : « Créer ./cancel.rs » de ./cancel.sdd coché.

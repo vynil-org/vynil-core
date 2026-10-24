@@ -241,7 +241,7 @@ Tasks:
     feature `shell` de ./Cargo.toml : aucune whitelist, aucun timeout, aucun bac à sable,
     l'opt-in cargo est le seul garde-fou (décision actée). Tâche jumelle de « Documenter le
     risque d'exécution de commandes » de ./src/shell.sdd, à cocher dans le même commit.
-  [ ] Exposer la feature `metadata` dans ./Cargo.toml (issue #22) : `metadata = ["rhai",
+  [x] Exposer la feature `metadata` dans ./Cargo.toml (issue #22) : `metadata = ["rhai",
     "rhai/metadata"]`, commentée comme ses voisines (ce qu'elle active, pourquoi elle implique
     `rhai`), hors `default`. Vérifier `cargo hack check --each-feature --no-dev-deps` et son
     pendant clippy, plus `cargo test --all-features`. Tâche jumelle de « Ajouter la feature
