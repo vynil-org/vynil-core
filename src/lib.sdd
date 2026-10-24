@@ -5,7 +5,7 @@ Purpose:
     Display gelés (source de vérité des textes d'erreur vus par les consommateurs et les
     scripts), @fn-error_chain qui remonte les chaînes @source(), les deux fabriques
     d'erreurs Rhai (@fn-rhai_err, @fn-rhai_err_str), les alias @type-Result et
-    @type-RhaiRes, les 19 déclarations de modules qui fixent la carte des features, les 9
+    @type-RhaiRes, les déclarations de modules qui fixent la carte des features, les
     ré-exports racine, et l'exemption `cfg(test)` du harnais clippy — celle-ci déjà
     contractualisée par ./tooling.sdd, référencée ici sans être re-contractualisée.
 
@@ -105,11 +105,11 @@ Must:
   @fn-rhai_err_str (gate `rhai`, @core::marker::must_use porté avec le même message exact,
     même règle) : conversion directe
     @std::string::String → @std::boxed::Box de @rhai::EvalAltResult, sans chaîne.
-  Déclarations de modules, 20 au total (18 publics, @crate::hbs_json et `rt` privés),
-    exactement deux familles. Sans gate (toujours
+  Déclarations de modules, publics comme privés (les deux privés : @crate::hbs_json, `rt`).
+    Sans gate (toujours
     compilés) : @mod @crate::chrono, @crate::client_name, @crate::hashes, @crate::password,
     @crate::semver, @crate::yaml. Gated, chacune avec sa clause `doc(cfg)` : @crate::key
-    (`crypto`) ; @crate::engine et @crate::glob (`rhai` — gate `rhai`, PAS `fs`, intention figée : @crate::glob ne touche pas au disque, à dire
+    (`crypto`) ; @crate::cancel, @crate::engine et @crate::glob (`rhai` — gate `rhai`, PAS `fs`, intention figée : @crate::glob ne touche pas au disque, à dire
     dans la rustdoc du module) ;
     @crate::hbs (`hbs`) et @crate::hbs_json (`hbs`, PRIVÉ, seule déclaration sans doc ni
     `doc(cfg)`) ; @crate::http et @crate::http_mock (`http`) ; @crate::oci et @crate::oci_mock
@@ -319,7 +319,7 @@ Tasks:
     face ShellOutput de `shell_run` n'y figurant pas, et y documenter l'assomption unix seul.
     Tâche jumelle de « Documenter le risque d'exécution de commandes » de ./src/shell.sdd et de
     la description de feature portée par ./vyvil-core.sdd, à cocher dans le même commit.
-  [ ] Déclarer `cancel` dans ./lib.rs : `#[cfg(feature = "rhai")]` + `cfg_attr(docsrs,
+  [x] Déclarer `cancel` dans ./lib.rs : `#[cfg(feature = "rhai")]` + `cfg_attr(docsrs,
     doc(cfg(feature = "rhai")))` + `pub mod cancel;` avec une ligne de rustdoc, sans ré-export
     racine. Jumelle de « Créer ./cancel.rs » de ./cancel.sdd, cochée dans le même commit.
     À la clôture, reprendre les décomptes d'`Exposes` et de `Purpose` (déclarations de modules,

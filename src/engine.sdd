@@ -353,7 +353,7 @@ Handles:
     les modules câblés qui l'exigent (`http`, `k8s`) ne sont justement pas câblés ici.
 
 Tasks:
-  [ ] Scinder les seize noms communs en trois groupes publics (issue #18) : rendre publics
+  [x] Scinder les seize noms communs en trois groupes publics (issue #18) : rendre publics
     @crate::engine::core_pure_rhai_register, @crate::engine::core_host_rhai_register,
     @crate::engine::core_sleep_rhai_register et
     @crate::engine::fs_rhai_register selon la partition du `Must`, `new_bare` les appelant dans

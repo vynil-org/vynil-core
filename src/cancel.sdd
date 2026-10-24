@@ -75,7 +75,7 @@ Handles:
     l'appelant natif la voit au plus tard à sa tranche suivante.
 
 Tasks:
-  [ ] Créer ./cancel.rs depuis les Scenario ci-dessous et le déclarer dans ./lib.rs (module
+  [x] Créer ./cancel.rs depuis les Scenario ci-dessous et le déclarer dans ./lib.rs (module
     `pub`, sous `#[cfg(feature = "rhai")]` + `cfg_attr(docsrs, doc(cfg(feature = "rhai")))`
     comme `engine`) : tests d'abord. Tâche jumelle de « Déclarer `cancel` » de ./lib.sdd,
     cochée dans le même commit. À cocher AVANT les tâches « annulation » de ./rt.sdd et

@@ -47,33 +47,17 @@ pub fn url_encode(arg: &str) -> String {
     form_urlencoded::byte_serialize(arg.as_bytes()).collect::<String>()
 }
 
-fn core_common_rhai_register(engine: &mut Engine) {
+/// Registers the **pure** group of the sixteen common helpers: functions that compute on
+/// their arguments alone and grant no host access (`basename`/`dirname` split a string,
+/// they never touch the disk) — `sha256`, `url_encode`, `to_decimal`, `base64_decode`,
+/// `base64_encode`, `json_encode`, `json_encode_escape`, `json_decode`, `basename`, `dirname`.
+///
+/// Additive and idempotent: callable alone on a fresh [`Engine`], in any order with the
+/// other `core_*_rhai_register` groups, and registers nothing outside the names above.
+pub fn core_pure_rhai_register(engine: &mut Engine) {
     engine
         .register_fn("sha256", |v: String| sha256::digest(v))
-        .register_fn("log_debug", |s: ImmutableString| tracing::debug!("{s}"))
-        .register_fn("log_info", |s: ImmutableString| tracing::info!("{s}"))
-        .register_fn("log_warn", |s: ImmutableString| tracing::warn!("{s}"))
-        .register_fn("log_error", |s: ImmutableString| tracing::error!("{s}"))
         .register_fn("url_encode", url_encode)
-        .register_fn("sleep", |seconds: i64| {
-            if let Ok(seconds) = u64::try_from(seconds)
-                && seconds > 0
-            {
-                std::thread::sleep(std::time::Duration::from_secs(seconds));
-            }
-        })
-        .register_fn("get_env", |var: ImmutableString| -> RhaiRes<ImmutableString> {
-            match std::env::var_os(var.to_string()) {
-                // variable absente → chaîne vide (les défauts sont un cas d'usage)
-                None => Ok(String::new().into()),
-                // présente mais non UTF-8 → erreur explicite, jamais le repli silencieux
-                Some(value) => value.into_string().map(Into::into).map_err(|_| {
-                    rhai_err(Error::Other(format!(
-                        "get_env received a non-UTF-8 value for variable {var:?}"
-                    )))
-                }),
-            }
-        })
         .register_fn("to_decimal", |val: ImmutableString| -> RhaiRes<u32> {
             // toute chaîne non octale est une erreur, jamais un `0` indiscernable du `0` légitime
             u32::from_str_radix(val.as_str(), 8).map_err(|_| {
@@ -104,8 +88,7 @@ fn core_common_rhai_register(engine: &mut Engine) {
         })
         .register_fn("json_decode", |val: ImmutableString| -> RhaiRes<Dynamic> {
             serde_json::from_str(val.as_ref()).map_err(|e| rhai_err(Error::SerializationError(e)))
-        });
-    engine
+        })
         .register_fn("basename", |name: String| -> ImmutableString {
             Path::new(&name)
                 .file_name()
@@ -124,11 +107,59 @@ fn core_common_rhai_register(engine: &mut Engine) {
         });
 }
 
+/// Registers the **host** group of the sixteen common helpers: what a script reads from the
+/// process environment (`get_env`) and writes into its logs (`log_debug`, `log_info`,
+/// `log_warn`, `log_error`).
+///
+/// Additive and idempotent: callable alone on a fresh [`Engine`], in any order with the
+/// other `core_*_rhai_register` groups, and registers nothing outside the names above.
+pub fn core_host_rhai_register(engine: &mut Engine) {
+    engine
+        .register_fn("log_debug", |s: ImmutableString| tracing::debug!("{s}"))
+        .register_fn("log_info", |s: ImmutableString| tracing::info!("{s}"))
+        .register_fn("log_warn", |s: ImmutableString| tracing::warn!("{s}"))
+        .register_fn("log_error", |s: ImmutableString| tracing::error!("{s}"))
+        .register_fn("get_env", |var: ImmutableString| -> RhaiRes<ImmutableString> {
+            match std::env::var_os(var.to_string()) {
+                // variable absente → chaîne vide (les défauts sont un cas d'usage)
+                None => Ok(String::new().into()),
+                // présente mais non UTF-8 → erreur explicite, jamais le repli silencieux
+                Some(value) => value.into_string().map(Into::into).map_err(|_| {
+                    rhai_err(Error::Other(format!(
+                        "get_env received a non-UTF-8 value for variable {var:?}"
+                    )))
+                }),
+            }
+        });
+}
+
+/// Registers the **waiting** group of the sixteen common helpers: `sleep` only.
+///
+/// It grants no authority over anything — it blocks, it reads and writes nothing — which is
+/// why it does not travel with the host group. Additive and idempotent: callable alone on a
+/// fresh [`Engine`], in any order with the other `core_*_rhai_register` groups, and registers
+/// nothing outside that name.
+pub fn core_sleep_rhai_register(engine: &mut Engine) {
+    engine.register_fn("sleep", |seconds: i64| {
+        if let Ok(seconds) = u64::try_from(seconds)
+            && seconds > 0
+        {
+            std::thread::sleep(std::time::Duration::from_secs(seconds));
+        }
+    });
+}
+
 /// Filesystem access exposed to Rhai scripts: read/write/copy files, create and list
-/// directories. Gated behind the `fs` feature since consumers embedding untrusted or
-/// multi-tenant scripts may not want to grant filesystem access on the host running them.
+/// directories on the host disk, with no chroot. Gated behind the `fs` feature since
+/// consumers embedding untrusted or multi-tenant scripts may not want to grant filesystem
+/// access on the host running them.
+///
+/// Additive and idempotent like [`core_pure_rhai_register`], [`core_host_rhai_register`]
+/// and [`core_sleep_rhai_register`]: callable alone on a fresh [`Engine`], registering
+/// nothing outside `file_read`, `file_write`, `file_copy`, `create_dir`, `read_dir`,
+/// `is_file`, `is_dir`.
 #[cfg(feature = "fs")]
-fn fs_rhai_register(engine: &mut Engine) {
+pub fn fs_rhai_register(engine: &mut Engine) {
     engine
         .register_fn("file_read", |name: String| -> RhaiRes<ImmutableString> {
             std::fs::read_to_string(name)
@@ -211,7 +242,9 @@ impl Script {
         script.engine.set_module_resolver(resolver);
         script.engine.set_max_expr_depths(256, 128);
         script.engine.set_max_call_levels(512);
-        core_common_rhai_register(&mut script.engine);
+        core_pure_rhai_register(&mut script.engine);
+        core_host_rhai_register(&mut script.engine);
+        core_sleep_rhai_register(&mut script.engine);
         #[cfg(feature = "fs")]
         fs_rhai_register(&mut script.engine);
         chrono_rhai_register(&mut script.engine);
@@ -235,6 +268,11 @@ impl Script {
     }
 
     /// Inject `assert` and `import_run`/`import_template` shims (called by `new_bare`).
+    ///
+    /// The shims' skip path calls `log_debug`, registered by [`core_host_rhai_register`].
+    /// A consumer building an engine by hand must register the host group before calling
+    /// this (which also grants `get_env`), or register its own `log_debug` before this if
+    /// `get_env` is not wanted; without it the shims fail with an unknown-function error.
     ///
     /// The shims are one long Rhai source each by design (they must be compiled as a single
     /// global module), which keeps this function verbose.
@@ -1818,5 +1856,270 @@ fn run(args) { return "fallback/1"; }
             err.to_string().contains("k8s_resource"),
             "l'échec doit porter le nom k8s_resource, obtenu : {err}"
         );
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // Tâche « Scinder les seize noms communs en trois groupes publics » (issue #18)
+    // — Scenario « appartenance des fonctions à leur groupe », « moteur à groupe
+    // unique » et « new_bare inchangé ». L'introspection de l'engine (le « l'ensemble
+    // de ses noms de fonctions est lu » du Scenario) passe par `collect_fn_metadata`,
+    // sous la feature `internals` de `@rhai` activée dans ce graphe ; la baseline est
+    // un `Engine::new` lu de la même façon, hors packages standard.
+    // ════════════════════════════════════════════════════════════════════════════
+
+    /// Groupe PUR du `Must` de ./engine.sdd : calcul sur les arguments, aucun accès hôte.
+    const PUR: [&str; 10] = [
+        "sha256",
+        "url_encode",
+        "to_decimal",
+        "base64_decode",
+        "base64_encode",
+        "json_encode",
+        "json_encode_escape",
+        "json_decode",
+        "basename",
+        "dirname",
+    ];
+    /// Groupe HÔTE du `Must` : ce que le script lit de l'environnement et écrit dans les journaux.
+    const HOTE: [&str; 5] = ["get_env", "log_debug", "log_info", "log_warn", "log_error"];
+    /// Groupe ATTENTE du `Must` : `sleep` seul (ne voyage pas avec le groupe hôte).
+    const ATTENTE: [&str; 1] = ["sleep"];
+    /// Les seize noms communs de `new_bare`, énumérés depuis le `Must` (union des trois groupes).
+    const SEIZE: [&str; 16] = [
+        "sha256",
+        "url_encode",
+        "to_decimal",
+        "base64_decode",
+        "base64_encode",
+        "json_encode",
+        "json_encode_escape",
+        "json_decode",
+        "basename",
+        "dirname",
+        "get_env",
+        "log_debug",
+        "log_info",
+        "log_warn",
+        "log_error",
+        "sleep",
+    ];
+
+    /// Introspection de l'engine : noms de fonctions enregistrés sur lui, hors packages
+    /// standard de `@rhai` (pas de contexte d'appel, `include_standard_packages` à `false`).
+    fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    /// Les noms qu'un enregistreur de groupe ajoute à un `Engine::new` vierge par rapport à
+    /// sa baseline : exactement ce que le groupe accorde, rien hors des noms de son groupe.
+    fn names_added_by(register: impl Fn(&mut Engine)) -> std::collections::BTreeSet<String> {
+        let mut engine = Engine::new();
+        register(&mut engine);
+        let apres = registered_names(&engine);
+        let avant = registered_names(&Engine::new());
+        apres.difference(&avant).cloned().collect()
+    }
+
+    fn set_of(noms: &[&'static str]) -> std::collections::BTreeSet<String> {
+        noms.iter().map(|nom| (*nom).to_string()).collect()
+    }
+
+    /// Scenario « appartenance des fonctions à leur groupe » : chaque groupe enregistré à la
+    /// fois sur un `Engine::new` vierge rend exactement ses noms (diff sur la baseline :
+    /// aucun effet hors des noms de son groupe), les trois ensembles sont deux à deux
+    /// disjoints et leur union (hors `fs`) est celle des seize noms communs ; l'appel
+    /// répété est idempotent.
+    #[test]
+    fn scenario_appartenance_des_fonctions_a_leur_groupe() {
+        assert_eq!(names_added_by(core_pure_rhai_register), set_of(&PUR));
+        assert_eq!(names_added_by(core_host_rhai_register), set_of(&HOTE));
+        assert_eq!(names_added_by(core_sleep_rhai_register), set_of(&ATTENTE));
+
+        let pur = set_of(&PUR);
+        let hote = set_of(&HOTE);
+        let attente = set_of(&ATTENTE);
+        assert!(
+            pur.is_disjoint(&hote) && pur.is_disjoint(&attente) && hote.is_disjoint(&attente),
+            "les trois groupes sont deux à deux disjoints"
+        );
+        let union: std::collections::BTreeSet<String> = pur.union(&hote).chain(&attente).cloned().collect();
+        assert_eq!(
+            union,
+            set_of(&SEIZE),
+            "l'union des trois groupes (hors fs) est les seize noms"
+        );
+
+        let mut engine = Engine::new();
+        core_pure_rhai_register(&mut engine);
+        let apres_un_appel = registered_names(&engine);
+        core_pure_rhai_register(&mut engine);
+        assert_eq!(
+            registered_names(&engine),
+            apres_un_appel,
+            "l'appel répété est idempotent"
+        );
+    }
+
+    /// Scenario « appartenance des fonctions à leur groupe », moitié `fs` (double porte) :
+    /// `fs_rhai_register` rend exactement les sept noms qu'elle accorde, rien d'autre, et
+    /// l'appel répété est idempotent.
+    #[cfg(feature = "fs")]
+    #[test]
+    fn scenario_appartenance_des_fonctions_a_leur_groupe_fs() {
+        let noms = [
+            "file_read",
+            "file_write",
+            "file_copy",
+            "create_dir",
+            "read_dir",
+            "is_file",
+            "is_dir",
+        ];
+        assert_eq!(names_added_by(fs_rhai_register), set_of(&noms));
+        let mut engine = Engine::new();
+        fs_rhai_register(&mut engine);
+        let apres_un_appel = registered_names(&engine);
+        fs_rhai_register(&mut engine);
+        assert_eq!(
+            registered_names(&engine),
+            apres_un_appel,
+            "l'appel répété est idempotent"
+        );
+    }
+
+    /// Scenario « moteur à groupe unique » : le groupe PUR seul sur un `Engine::new` résout
+    /// `json_encode` et rend `get_env`/`log_info` en fonction inconnue ; ajouter le groupe
+    /// hôte (sans `add_common`) résout `log_info` et `get_env` — les groupes sont additifs et
+    /// n'en supposent aucun autre. Écart mesuré à la tâche (signalé, non supposé) : le `sleep`
+    /// que le Scenario dit « fonction inconnue » ne peut pas l'être sur un `Engine::new` — le
+    /// package standard `@rhai` (`LangPackageCore`) fournit un `sleep(FLOAT)` natif sur tout
+    /// `Engine::new` et `@rhai` coercit INT vers FLOAT. Le contrat « le groupe attente
+    /// n'expose `sleep` qu'avec lui » est donc vérifié en deux faces vraies : le PUR
+    /// n'enregistre rien hors de ses noms (notamment pas `sleep`), et sur un engine
+    /// réellement vierge (`Engine::new_raw`, sans package standard) `sleep(1)` est bien
+    /// fonction inconnue — pendant que `log_info` y résout dès le groupe hôte ajouté.
+    #[test]
+    fn scenario_moteur_a_groupe_unique() {
+        let mut engine = Engine::new();
+        core_pure_rhai_register(&mut engine);
+        let mut s = Script {
+            engine,
+            ctx: Scope::new(),
+        };
+        assert_eq!(
+            s.eval("json_encode(#{a: 1})").unwrap().into_string().unwrap(),
+            r#"{"a":1}"#,
+            "le groupe PUR seul résout json_encode sur un engine vierge"
+        );
+        for (appel, nom) in [(r#"get_env("PATH")"#, "get_env"), ("log_info(\"x\")", "log_info")] {
+            let err = s
+                .eval(appel)
+                .expect_err(&format!("{nom} doit être fonction inconnue sans son groupe"));
+            assert!(matches!(err, Error::RhaiError(_)), "got {err:?}");
+            assert!(
+                err.to_string().contains(nom),
+                "l'erreur doit porter le nom {nom}, got {err}"
+            );
+        }
+        let apres = registered_names(&s.engine);
+        let avant = registered_names(&Engine::new());
+        assert!(
+            apres.difference(&avant).all(|nom| PUR.contains(&nom.as_str())),
+            "le PUR n'a rien accordé hors de ses noms, notamment pas sleep"
+        );
+        // Face réellement vierge (sans package standard) : là seulement, le `sleep(1)` du
+        // Scenario est fonction inconnue — écart consigné dans la rustdoc du test.
+        let mut sans_standard = Script {
+            engine: Engine::new_raw(),
+            ctx: Scope::new(),
+        };
+        core_pure_rhai_register(&mut sans_standard.engine);
+        let err = sans_standard
+            .eval("sleep(1)")
+            .expect_err("sleep doit être fonction inconnue sans le groupe attente, engine sans standard");
+        assert!(matches!(err, Error::RhaiError(_)), "got {err:?}");
+        assert!(
+            err.to_string().contains("sleep"),
+            "l'erreur doit porter le nom sleep, got {err}"
+        );
+        core_host_rhai_register(&mut s.engine);
+        assert!(
+            s.eval("log_info(\"x\")").unwrap().is_unit(),
+            "log_info résout et rend l'unité dès le groupe hôte accordé"
+        );
+        assert_eq!(
+            s.eval(r#"get_env("VYVIL_ABSENT_GROUPE_UNIQUE")"#)
+                .unwrap()
+                .to_string(),
+            "",
+            "get_env résout une fois le groupe hôte accordé (absente reste la chaîne vide)"
+        );
+        core_host_rhai_register(&mut sans_standard.engine);
+        assert!(
+            sans_standard.eval("log_info(\"x\")").unwrap().is_unit(),
+            "le groupe hôte est additif même sur un engine sans package standard"
+        );
+        let err = sans_standard.eval("sleep(1)").unwrap_err();
+        assert!(
+            err.to_string().contains("sleep"),
+            "sleep reste fonction inconnue sans le groupe attente, got {err}"
+        );
+    }
+
+    /// Scenario « `new_bare` inchangé » : après la scission, chacun des seize noms communs
+    /// répond comme avant avec ses sémantiques verrouillées, et l'introspection confirme
+    /// que `new_bare` enregistre toujours les seize (la verrou d'union du test
+    /// d'appartenance certifie qu'aucun nom n'a été ajouté ni retiré aux groupes).
+    #[test]
+    fn scenario_new_bare_inchange_apres_la_scission() {
+        let mut s = make_script();
+        for appel in [
+            r#"sha256("hello")"#,
+            r#"url_encode("a b")"#,
+            r#"to_decimal("7")"#,
+            r#"base64_decode("aGk=")"#,
+            r#"base64_encode("hi")"#,
+            "json_encode(#{})",
+            "json_encode_escape(#{})",
+            r#"json_decode("{}")"#,
+            r#"basename("/a")"#,
+            r#"dirname("/a/b")"#,
+            r#"get_env("VYVIL_ABSENT_NEW_BARE_SCISION")"#,
+            "log_debug(\"x\")",
+            "log_info(\"x\")",
+            "log_warn(\"x\")",
+            "log_error(\"x\")",
+            "sleep(0)",
+        ] {
+            assert!(
+                s.eval(appel).is_ok(),
+                "{appel} doit résoudre comme avant la scission"
+            );
+        }
+        assert_eq!(
+            s.eval(r#"sha256("hello")"#).unwrap().to_string(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            "sémantique de sha256 inchangée"
+        );
+        assert_eq!(
+            s.eval(r#"to_decimal("755")"#).unwrap().cast::<u32>(),
+            493,
+            "sémantique de to_decimal inchangée"
+        );
+        assert_eq!(
+            s.eval(r#"url_encode("hello world")"#).unwrap().to_string(),
+            "hello+world",
+            "sémantique de url_encode inchangée"
+        );
+        let noms = registered_names(&s.engine);
+        for nom in SEIZE {
+            assert!(
+                noms.contains(nom),
+                "new_bare enregistre toujours {nom} après la scission"
+            );
+        }
     }
 }

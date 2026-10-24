@@ -380,6 +380,10 @@ pub mod key;
 
 #[cfg(feature = "rhai")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rhai")))]
+/// Cooperative cancellation of blocking native calls (`CancelToken` + thread-scoped `scope`).
+pub mod cancel;
+#[cfg(feature = "rhai")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rhai")))]
 /// Rhai scripting engine ([`engine::Script`]) and its registered helpers.
 pub mod engine;
 #[cfg(feature = "rhai")]
