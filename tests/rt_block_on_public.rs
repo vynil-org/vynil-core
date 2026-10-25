@@ -58,8 +58,8 @@ async fn external_cancel_multi_thread_abandons_the_future() {
     assert!(canceller.join().is_ok(), "le fil d'annulation doit se terminer");
 
     assert!(
-        matches!(&out, Err(Error::Other(msg)) if msg == "cancelled"),
-        "annulation attendue : Error::Other(\"cancelled\"), obtenu {out:?}"
+        matches!(&out, Err(Error::Cancelled)),
+        "annulation attendue : Error::Cancelled, obtenu {out:?}"
     );
     assert!(
         elapsed < Duration::from_millis(500),
@@ -90,8 +90,8 @@ fn external_cancel_without_runtime_abandons_the_future() {
     assert!(canceller.join().is_ok(), "le fil d'annulation doit se terminer");
 
     assert!(
-        matches!(&out, Err(Error::Other(msg)) if msg == "cancelled"),
-        "annulation attendue : Error::Other(\"cancelled\"), obtenu {out:?}"
+        matches!(&out, Err(Error::Cancelled)),
+        "annulation attendue : Error::Cancelled, obtenu {out:?}"
     );
     assert!(
         elapsed < Duration::from_millis(500),

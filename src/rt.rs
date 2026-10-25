@@ -55,7 +55,7 @@ use crate::{Error, Result, cancel};
 ///
 /// # Errors
 ///
-/// - [`Error::Other`] `cancelled` when the token of the thread is cancelled, before or during
+/// - [`Error::Cancelled`] when the token of the thread is cancelled, before or during
 ///   the execution, whatever the strategy;
 /// - [`Error::Other`] `requires a multi-thread tokio runtime` when a `current_thread` runtime
 ///   is running on the calling thread (`fut` is then not executed);
@@ -75,7 +75,7 @@ pub fn block_on<F: Future>(fut: F) -> Result<F::Output> {
     // whichever strategy would have run.
     let token = cancel::current();
     if token.as_ref().is_some_and(cancel::CancelToken::is_cancelled) {
-        return Err(Error::Other("cancelled".to_string()));
+        return Err(Error::Cancelled);
     }
     if let Ok(handle) = Handle::try_current() {
         return match handle.runtime_flavor() {
@@ -108,7 +108,7 @@ async fn drive<F: Future>(fut: F, token: Option<cancel::CancelToken>) -> Result<
     tokio::select! {
         biased;
         out = fut => Ok(out),
-        () = wait_for_cancel(token) => Err(Error::Other("cancelled".to_string())),
+        () = wait_for_cancel(token) => Err(Error::Cancelled),
     }
 }
 
@@ -221,7 +221,7 @@ mod tests {
 
     // ── Scenario « annulation avant l'appel » ──
     // Jeton déjà annulé, portée ouverte : le futur ne doit pas être interrogé du tout
-    // (drapeau observable), l'erreur est `cancelled`. Joué hors de tout runtime ; le
+    // (drapeau observable), l'erreur est `Error::Cancelled`. Joué hors de tout runtime ; le
     // jumeau multi_thread ci-dessous couvre l'autre face.
     #[test]
     fn cancelled_token_before_call_errors_without_polling_outside_runtime() {
@@ -236,8 +236,8 @@ mod tests {
             })
         });
         match res {
-            Err(Error::Other(msg)) => assert_eq!(msg, "cancelled", "texte exact attendu"),
-            other => panic!("Error::Other « cancelled » attendu, rendu : {other:?}"),
+            Err(Error::Cancelled) => {}
+            other => panic!("Error::Cancelled attendu, rendu : {other:?}"),
         }
         assert!(
             !ran.get(),
@@ -261,8 +261,8 @@ mod tests {
             })
         });
         match res {
-            Err(Error::Other(msg)) => assert_eq!(msg, "cancelled", "texte exact attendu"),
-            other => panic!("Error::Other « cancelled » attendu, rendu : {other:?}"),
+            Err(Error::Cancelled) => {}
+            other => panic!("Error::Cancelled attendu, rendu : {other:?}"),
         }
         assert!(
             !ran.get(),
@@ -294,8 +294,8 @@ mod tests {
         elapsed: std::time::Duration,
     ) {
         match res {
-            Err(Error::Other(msg)) => assert_eq!(msg, "cancelled", "texte exact attendu"),
-            other => panic!("Error::Other « cancelled » attendu, rendu : {other:?}"),
+            Err(Error::Cancelled) => {}
+            other => panic!("Error::Cancelled attendu, rendu : {other:?}"),
         }
         assert!(
             dropped.get(),

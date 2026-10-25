@@ -146,7 +146,7 @@ Tasks:
     compilé avec la seule feature `rt`, `cfg(feature = "rt")`). Tâche jumelle de « Déclarer `rt`
     public » de ./lib.sdd et de « Exposer la feature `rt` » de ../vyvil-core.sdd, cochée dans le
     même commit. Prérequis : « Lever la porte `rhai` de ./cancel.rs » de ./cancel.sdd coché.
-  [ ] Rendre l'annulation @variant-Error::Cancelled dans ./rt.rs et ./tests/rt_block_on_public.rs (revue de la
+  [x] Rendre l'annulation @variant-Error::Cancelled dans ./rt.rs et ./tests/rt_block_on_public.rs (revue de la
     PR #24) : les deux sorties `cancelled` de `block_on` (jeton annulé à l'entrée, annulé pendant
     l'attente), la section `# Errors` de la rustdoc et les trois tests de ./rt.rs, plus les deux
     assertions du binaire d'intégration, passent de `Error::Other("cancelled")` à

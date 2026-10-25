@@ -177,7 +177,7 @@ travels on its own and not with the host group.
 
 | Signature | Returns | Notes |
 |---|---|---|
-| `sleep(seconds: int)` | `()` | Blocks the current thread for `seconds`; a non-positive value returns immediately. Under an open cancellation scope it sleeps in 25 ms slices and raises `cancelled` (section 15). For hand-rolled poll loops (`get` + check + `sleep`) when `<K8sObject>.wait_for` doesn't fit |
+| `sleep(seconds: int)` | `()` | Blocks the current thread for `seconds`; a non-positive value returns immediately. Under an open cancellation scope it sleeps in 25 ms slices and raises `Error::Cancelled` (section 15). For hand-rolled poll loops (`get` + check + `sleep`) when `<K8sObject>.wait_for` doesn't fit |
 
 ### Script-level helpers (`add_common`)
 
@@ -528,8 +528,9 @@ All parameters are `string`.
 
 ## 15. Cancellation — `cancel::CancelToken` and `cancel::scope`
 
-Module `vynil_core::cancel`, compiled without any feature (no new error variant — the
-cancellation error is `Error::Other` of text `cancelled`). It lets a consumer driving a
+Module `vynil_core::cancel`, compiled without any feature. The cancellation error is the
+variant `Error::Cancelled`, displayed `CANCEL-001 operation cancelled` (match on the variant,
+not on the text). It lets a consumer driving a
 script (typically an LLM session) interrupt the crate's *blocking native calls* — `sleep`
 (feature `rhai`) and the network waits made by `http`, `oci`, `s3` and `k8s` through the
 crate's shared async → sync bridge — without waiting for them to return.
@@ -549,7 +550,7 @@ call finishes.
 | `cancel::scope(&token, closure)` | Installs the token on the **current thread** for the duration of `closure` and returns the closure's value; the thread's previous token (or its absence) is restored on exit, normal return *or* panic alike. Nested scopes stack — the innermost wins while it lasts |
 
 A native call reads the token of the thread it runs on: already cancelled at entry, it
-starts nothing and returns the `cancelled` error (a Rhai error a script can catch with
+starts nothing and returns `Error::Cancelled` (a Rhai error a script can catch with
 `try`); cancelled during a wait, it returns within one 25 ms slice — the common wait slice
 shared by `sleep` and the bridge — and a pending network future is *dropped*, not continued
 in the background. `sleep(0)` and `sleep(-3)` are immediate no-ops with nothing to cancel
@@ -573,7 +574,7 @@ runtime: `block_in_place`; no runtime: a temporary `current_thread` runtime, a f
 pays one runtime per call; `current_thread` runtime: an explicit error, the future is never
 polled) and the same token reading: a token installed on the calling thread by `scope` makes
 `block_on` refuse an already-cancelled future, or abandon a running one within one 25 ms
-slice, with `Error::Other` of text `cancelled`. The `cancel` module is read without `rhai`, so
+slice, with `Error::Cancelled`. The `cancel` module is read without `rhai`, so
 `rt` alone is enough to honour the token. Time driver reminder: with a token installed, the
 calling runtime must be built with `enable_all()` (or `enable_time()`), otherwise the check
 panics; the temporary runtime of the fallback always has it.

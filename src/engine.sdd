@@ -484,7 +484,7 @@ Tasks:
   [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : `rhai::Engine::on_progress` en texte brut dans la rustdoc. Jumelle de « Tendre les
     lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
 
-  [ ] Rendre l'annulation de `sleep` @variant-Error::Cancelled dans ./engine.rs (revue de la PR #24) :
+  [x] Rendre l'annulation de `sleep` @variant-Error::Cancelled dans ./engine.rs (revue de la PR #24) :
     `rhai_err(Error::Cancelled)` au lieu de `Error::Other("cancelled")` ; les deux tests
     « sleep annulé » assertent le message de la variante. Tâche jumelle de « Ajouter
     @variant-Error::Cancelled » de ./lib.sdd.

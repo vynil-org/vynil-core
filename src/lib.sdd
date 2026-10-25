@@ -296,7 +296,7 @@ Tasks:
   [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : la table des features et les sections de la rustdoc racine ne lient plus `engine`, `hbs`, `http`, `http_mock` ni `Error::OpenSSL`. Jumelle de « Tendre les
     lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
 
-  [ ] Ajouter @variant-Error::Cancelled dans ./lib.rs (revue de la PR #24) : variante unité NON gated,
+  [x] Ajouter @variant-Error::Cancelled dans ./lib.rs (revue de la PR #24) : variante unité NON gated,
     `#[error("CANCEL-001 operation cancelled")]`, rustdoc de l'enum à trois identifiants stables
     (`KEY-ALGO-001`, `KEY-OPENSSL-001`, `CANCEL-001`), les décomptes de variantes des tests de
     ./lib.rs à 29 / 16 non gated. Tests d'abord (Display exact, présence sans aucune feature).

@@ -102,7 +102,7 @@ Tasks:
     `#[allow(dead_code)]`. Tests d'abord depuis le Scenario « sans aucune feature » ; les sept tests
     existants restent verts, ceux qui lisent `current()` suivent la porte de la lecture. Tâche
     jumelle de « Déclarer `cancel` sans gate » de ./lib.sdd, cochée dans le même commit.
-  [ ] Rendre l'annulation @variant-Error::Cancelled (revue de la PR #24) : la rustdoc du module et
+  [x] Rendre l'annulation @variant-Error::Cancelled (revue de la PR #24) : la rustdoc du module et
     ses renvois parlent de la variante dédiée et non plus de `Error::Other` de texte `cancelled`.
     Tâche jumelle de « Ajouter @variant-Error::Cancelled » de ./lib.sdd, cochée dans le même commit.
 

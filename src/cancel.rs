@@ -5,8 +5,8 @@
 //! script operations; a native call that sleeps or waits on the network does not. A
 //! [`CancelToken`](crate::cancel::CancelToken) installed for the duration of an evaluation by
 //! [`scope`](crate::cancel::scope) is read by those
-//! native calls, which then return an error (crate-wide: [`Error::Other`] of text
-//! `cancelled`) instead of waiting.
+//! native calls, which then return an error (crate-wide: [`Error::Cancelled`], displayed
+//! `CANCEL-001 operation cancelled`) instead of waiting.
 //!
 //! The token is carried by the calling thread (thread-local), not by a parameter: the
 //! native functions and the `block_on` callers have no signature to change, and the
