@@ -92,19 +92,25 @@ Raises:
   @variant-Error::Stdio si le runtime temporaire ne peut pas être construit.
   @variant-Error::Other `cancelled` quand le jeton du fil est annulé, avant ou pendant
     l'exécution, quelle que soit la stratégie.
-  Aucune panique dans aucun cas.
+  Aucune panique de ce module, hormis le cas du runtime sans pilote de temps décrit aux Handles.
 
 Handles:
   Appel imbriqué : un `block_on` lancé depuis le runtime temporaire d'un `block_on` extérieur
     rencontre un runtime `current_thread` et rend l'erreur explicite plutôt que de paniquer.
   Jeton annulé depuis un autre fil pendant que le fil appelant attend : le fil appelant est
-    rendu en moins de 100 ms (tranche de 25 ms, marge d'ordonnancement), le futur est détruit.
+    rendu en moins de 500 ms (tranche de 25 ms, marge d'ordonnancement CI), le futur est détruit.
   Jeton installé sur un AUTRE fil que celui de l'appel : ignoré (le jeton est par fil,
     ./cancel.sdd) ; sur `spawn_blocking` ou une tâche, le consommateur ouvre sa portée dedans.
+  Runtime du consommateur construit sans le pilote de temps (ni `enable_time` ni `enable_all`) :
+    avec un jeton installé, `tokio::time::interval` panique (« timers are disabled ») — cas non pris
+    en charge, documenté en rustdoc de `block_on` ; le consommateur construit son runtime avec
+    `enable_all()`. Sans jeton aucun minuteur n'est touché, la voie « aucun runtime » active tout.
   Futur qui panique lui-même : la panique du futur traverse (c'est celle de l'appelant), le
     module n'en ajoute aucune.
 
 Tasks:
+  [ ] Documenter dans la rustdoc de `block_on` (./rt.rs) le runtime sans pilote de temps sous jeton (Handles ci-dessus) :
+    le consommateur construit son runtime avec `enable_all()`. Documentation seule, aucun test.
   [x] Honorer le jeton d'annulation dans ./rt.rs (issue #21), selon le `Must` ci-dessus : tests
     d'abord depuis les quatre Scenario « annulation » ; signature de `block_on` et appelants
     inchangés. Prérequis : « Créer ./cancel.rs » de ./cancel.sdd coché. Les tests d'attente

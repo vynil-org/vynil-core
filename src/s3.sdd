@@ -232,6 +232,13 @@ Tasks:
     pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
     d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
     un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
+  [ ] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+    la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
+    type de retour (absent quand la fonction rend l'unité), tous écrits comme rhai les affiche
+    (`string`, non `String`/`ImmutableString`). Tests d'abord : pour chaque fonction du jumeau et de
+    l'enregistreur, comparer à la signature que rhai génère seul (`_: type` et `-> type`), noms exceptés.
+    Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
+    commit.
 
 Scenario: s3 reste hors de new_bare même feature activée
   Given la crate compilée avec `s3` (donc `rhai` avec)
@@ -363,4 +370,9 @@ Scenario: fonctions documentées sous metadata (s3)
     (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
   Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
     pas seulement leurs types
+  And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
+    entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
+    entrée ; les types sont ceux que rhai affiche pour la même fonction enregistrée sans
+    `with_params_info` (`string`, `i64`, `bool`…), de sorte que `gen_fn_signatures` rend par exemple
+    `sha256(text: string) -> string` et jamais une signature sans retour
   And sans la feature, les mêmes tests de comportement passent sans différence

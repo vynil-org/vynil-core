@@ -141,7 +141,7 @@ pub(crate) fn register_type_at<T: Variant + Clone>(target: &mut Target<'_>, name
 /// noms global, la cible décide entre l'engine (`rhai::FuncRegistration::register_into_engine`)
 /// et le module (`rhai::FuncRegistration::set_into_module`). Le dot nu `obj.propriété`
 /// résout l'accesseur des deux faces (les fonctions du module statique portent l'espace
-/// de noms global). Seul `k8s` pose des accessemurs : porté sous la feature qui l'emploie
+/// de noms global). Seul `k8s` pose des accesseurs : porté sous la feature qui l'emploie
 /// (qui implique `rhai`), la porte de compilation effective de sa copie privée d'origine.
 #[cfg(feature = "k8s")]
 pub(crate) fn register_get_at<A: 'static, const X: bool, R: Variant + Clone, const FALLIBLE: bool, FUNC>(
@@ -425,7 +425,7 @@ fn core_sleep_fns(target: &mut Target<'_>) {
         "sleep",
         &[
             "/// Block the thread for `seconds` whole seconds; zero and negatives are immediate no-ops.",
-            "/// No ceiling. With a cancel token installed for the thread ([`crate::cancel::scope`]),",
+            "/// No ceiling. With a cancel token installed for the calling thread by the host,",
             "/// waits in slices of 25 ms and fails with `cancelled` once the flag is seen — entry included.",
         ],
         &["seconds: i64"],

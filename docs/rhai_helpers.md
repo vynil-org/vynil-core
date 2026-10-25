@@ -554,6 +554,12 @@ shared by `sleep` and the bridge — and a pending network future is *dropped*, 
 in the background. `sleep(0)` and `sleep(-3)` are immediate no-ops with nothing to cancel
 and succeed even under a cancelled token.
 
+**What is not cancellable:** only `sleep` and the network waits go through the token. Calls that
+block on a *child process* — `shell_run` / `shell_output` (feature `shell`) and `sign_image`
+(`cosign`, feature `oci`) — do not read it and return only when the process ends. A runtime
+built without the time driver (neither `enable_time()` nor `enable_all()`) panics inside
+`block_on` as soon as a token is installed; build the consumer's runtime with `enable_all()`.
+
 **What does not cross threads:** the token is thread-local. A `scope` opened on one thread
 is visible to native calls made on *that* thread only — another thread, a `tokio::task::spawn`
 task or a `tokio::task::spawn_blocking` closure does not inherit it. A consumer evaluating on

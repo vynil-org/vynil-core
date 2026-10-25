@@ -19,6 +19,9 @@
 //! inherit it. A consumer evaluating on another thread opens its own scope on that
 //! thread.
 //!
+//! **Not cancellable**: calls that block on a child process (`shell_run`, `shell_output`,
+//! `sign_image` through `cosign`) never read the token and return when the process ends.
+//!
 //! This module depends on neither tokio nor rhai: `Arc<AtomicBool>` and a thread-local
 //! are enough, and `sleep` only exists under the `rhai` feature — this module's own gate.
 

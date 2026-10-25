@@ -30,10 +30,15 @@ use crate::{Error, Result, cancel};
 ///
 /// If the calling thread carries a cancellation token (installed by
 /// [`crate::cancel::scope`]), it is honoured in all three strategies: a token
-/// already cancelled at entry refuses `fut` unpollled — before the strategy is
+/// already cancelled at entry refuses `fut` unpolled — before the strategy is
 /// even chosen — and one cancelled while `fut` runs abandons (drops) it and
 /// returns [`Error::Other`] “cancelled” within one [`cancel::WAIT_SLICE`] — see
 /// [`drive`]. Without a token the path is exactly the token-less one.
+///
+/// With a token installed, the calling runtime must have its time driver enabled
+/// (`enable_all()` or `enable_time()`): the cancellation check ticks a
+/// `tokio::time::interval`, which panics on a runtime built without one. Without a
+/// token no timer is touched.
 ///
 /// `fut` need not be `Send`: it is always driven on the calling thread. If the
 /// temporary runtime cannot be built (e.g. descriptor exhaustion), [`Error::Stdio`]

@@ -12,7 +12,11 @@ Purpose:
     les soixante appelants de `block_on` et les fonctions natives n'ont ainsi aucune signature à
     changer, et l'évaluation Rhai, synchrone, reste sur le fil qui l'a lancée (y compris sous
     @tokio::task::block_in_place). Ce module ne dépend ni de @tokio ni de la porte réseau :
-    `sleep` n'existe que sous `rhai`.
+    `sleep` n'existe que sous `rhai`. Périmètre arrêté (revue de 0.9.0) : seuls `sleep` et
+    @crate::rt::block_on, donc les attentes réseau de http/oci/s3/k8s, sont annulables ; les
+    appels qui bloquent sur un PROCESSUS FILS — `shell_run`/`shell_output` (./shell.rs) et
+    `sign_image` (cosign, ./oci.rs) — ne lisent pas le jeton et ne rendent la main qu'à la fin du
+    processus. Décision du développeur principal : à documenter, non à corriger.
 
 Owns:
   ./cancel.rs
