@@ -287,6 +287,9 @@ Tasks:
     ./lib.rs (hors `default`, n'implique pas `rhai`, tire `tokio`) et à la liste de `References`
     (`Cargo.toml`). Jumelle de « Exposer `block_on` » de ./rt.sdd et de « Exposer la feature `rt` » de
     ../vyvil-core.sdd, cochée dans le même commit.
+
+  [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : la table des features et les sections de la rustdoc racine ne lient plus `engine`, `hbs`, `http`, `http_mock` ni `Error::OpenSSL`. Jumelle de « Tendre les
+    lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   mocks publics, module `password` ungated, gate `rhai` de `glob`, `error_chain` sans gate.

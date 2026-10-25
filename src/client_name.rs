@@ -1,7 +1,7 @@
 //! Global client identity used as HTTP `User-Agent` and Kubernetes field-manager.
 //!
 //! The consuming application **must** call `set_client_name` once at startup.
-//! Any [`crate::http::RestClient`] or `k8s` call before that panics with an actionable message.
+//! Any `crate::http::RestClient` or `k8s` call before that panics with an actionable message.
 
 use std::sync::OnceLock;
 

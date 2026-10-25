@@ -13,10 +13,10 @@
 //!
 //! | Feature | Default | What it adds |
 //! |---------|---------|--------------|
-//! | `rhai` | ✅ | [`engine::Script`] engine + every other module's Rhai bindings |
-//! | `hbs` | ✅ | [`hbs::HandleBars`] engine |
+//! | `rhai` | ✅ | `engine::Script` engine + every other module's Rhai bindings |
+//! | `hbs` | ✅ | `hbs::HandleBars` engine |
 //! | `hbs-scripting` | ✅ | `register_helper_dir` / `rhai_register_helper_dir` (`handlebars/script_helper`). Implies `hbs` + `rhai`. Keep it separate because `script_helper` pulls `smartstring` which breaks `String + &String` in some graphs (see `hbs` docs) |
-//! | `http` | ✅ | [`http::RestClient`] (reqwest) + [`http_mock::RestClientMock`]. Implies `rhai` |
+//! | `http` | ✅ | `http::RestClient` (reqwest) + `http_mock::RestClientMock`. Implies `rhai` |
 //! | `crypto` | ✅ | `argon_hash` / `bcrypt_hash` / `gen_private_key` helpers (Handlebars). In Rhai: the `Argon` type via `new_argon` with its `.hash` method, plus `bcrypt_hash` / `gen_private_key` |
 //! | `k8s` | ❌ | Generic K8s handlers (`k8s::K8sGeneric`, `k8s::K8sObject`, …) + mocks. Implies `rhai` |
 //! | `oci` | ❌ | `oci::Registry` + OCI mock. Implies `rhai` |
@@ -68,7 +68,7 @@ assert_eq!(out, "Hello world!");
 //! assert!(vynil_core::client_name_is_set());
 //! ```
 //!
-//! # Rhai helpers (injected by [`engine::Script::new_bare`])
+//! # Rhai helpers (injected by `engine::Script::new_bare`)
 //!
 //! Common: `sha256`, `log_debug/info/warn/error`, `url_encode`, `get_env`, `to_decimal`,
 //! `base64_encode/decode`, `json_encode/decode`, `basename`, `dirname`.
@@ -83,9 +83,9 @@ assert_eq!(out, "Hello world!");
 //!
 //! Scripts also get `assert` and `import_run` / `import_template` shims for optional imports.
 //!
-//! # Handlebars helpers (injected by [`hbs::HandleBars::new`])
+//! # Handlebars helpers (injected by `hbs::HandleBars::new`)
 //!
-//! See [`hbs::CORE_HBS_HELPERS`] for the full list. Highlights: `base64_encode/decode`,
+//! See `hbs::CORE_HBS_HELPERS` for the full list. Highlights: `base64_encode/decode`,
 //! `url_encode`, `to_decimal`, `header_basic`, `crc32_hash`, `argon_hash`/`bcrypt_hash`/`gen_private_key`
 //! (feature `crypto`), `gen_password*` (feature `password`), plus the `handlebars_misc_helpers`
 //! set and the vendored `json_to_str` / `str_to_json` / `json_query` family.
@@ -130,7 +130,7 @@ use thiserror::Error;
 ///
 /// Two Display texts embed a raw searchable code, frozen in the format string and exposed
 /// with no constant (settled decision): `KEY-ALGO-001` ([`Error::UnsupportedKeyAlgorithm`],
-/// ungated) and `KEY-OPENSSL-001` ([`Error::OpenSSL`], feature `crypto`). They are stable
+/// ungated) and `KEY-OPENSSL-001` (`Error::OpenSSL`, feature `crypto`). They are stable
 /// identifiers meant to be searched for by consumers — part of the API contract.
 #[derive(Error, Debug)]
 pub enum Error {

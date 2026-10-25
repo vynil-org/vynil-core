@@ -316,11 +316,14 @@ jobs:
 
       # Lints rustdoc (tooling.sdd, lockstep des quatre emplacements) : RUSTDOCFLAGS
       # « -D warnings » promeut les warnings rustdoc (liens intra-doc cassés, fences de
-      # doctest invalides…) en erreurs. Porte `--all-features` seule, décision du
-      # développeur principal : sous portes réduites, les liens de la doc de crate
-      # pointeraient vers des modules gated absents.
+      # doctest invalides…) en erreurs. Default puis `--all-features` ici ; les graphes
+      # réduits sont joués par `cargo hack doc --each-feature` dans `feature-matrix`
+      # (issue #25 : un lien vers un item gated est du texte brut, jamais un lien résolu).
       - name: rustdoc lints
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+        run: |
+          set -e
+          RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+          RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
   # Règle d'isolation de chaque feature (tooling.sdd) : --each-feature compile et linte
   # chaque feature seule, y compris les gates qu'aucune des listes explicites des jobs
@@ -354,3 +357,8 @@ jobs:
 
       - name: cargo hack clippy --each-feature
         run: cargo hack clippy --each-feature --no-dev-deps -- -D warnings
+
+      # Lints rustdoc sur chaque graphe isolé (issue #25) : les liens intra-doc de la
+      # doc de crate se résolvent sous chaque feature seule et sous `--no-default-features`.
+      - name: cargo hack doc --each-feature
+        run: RUSTDOCFLAGS="-D warnings" cargo hack doc --each-feature --no-dev-deps --no-deps

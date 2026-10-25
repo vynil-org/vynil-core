@@ -368,7 +368,7 @@ pub async fn verify_tag_in_registry(
 /// Returns a Rhai error wrapping [`Error::Stdio`] if the file cannot be read,
 /// [`Error::SerializationError`] if it is not valid JSON and, for a malformed `auth`,
 /// [`Error::Base64DecodeError`], [`Error::UTF8`] or [`Error::Other`] `docker config auth is
-/// not user:pass` — the same typed errors as [`resolve_registry_auth`], never a fallback.
+/// not user:pass` — the same typed errors as `resolve_registry_auth`, never a fallback.
 // signature imposée par l'API Rhai (vyvil-core.sdd)
 #[allow(clippy::needless_pass_by_value)]
 pub fn get_auth_from_file(path: String, registry: String) -> RhaiRes<Dynamic> {

@@ -69,7 +69,9 @@ cargo clippy --all-features --all-targets -- -D warnings
 cargo hack check --each-feature --no-dev-deps
 cargo hack clippy --each-feature --no-dev-deps -- -D warnings
 cargo +nightly fmt -- --check
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+RUSTDOCFLAGS="-D warnings" cargo hack doc --each-feature --no-dev-deps --no-deps
 ```
 
 - `clippy` : zéro warning toléré (dette purgée, harnais en `deny`, voir `tooling.sdd`) ;

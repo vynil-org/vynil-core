@@ -1,7 +1,7 @@
 //! Cooperative cancellation of the crate's blocking native calls (`sleep` in `engine`,
 //! `rt::block_on`) for a consumer driving a Rhai script (typically an LLM session).
 //!
-//! [`rhai::Engine::on_progress`] only gets the hand between two
+//! `rhai::Engine::on_progress` only gets the hand between two
 //! script operations; a native call that sleeps or waits on the network does not. A
 //! [`CancelToken`](crate::cancel::CancelToken) installed for the duration of an evaluation by
 //! [`scope`](crate::cancel::scope) is read by those

@@ -67,12 +67,13 @@ Must:
     exécution, et non parce que `feature-matrix` ne le fait pas — celui-ci n'isole qu'une feature
     à la fois et ne peut donc ni `hbs,crypto` ni une porte à deux features.
   Lancer dans le même job `clippy`, en étape dédiée, les lints rustdoc
-    `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features` : la fence d'un doctest de la
-    doc de crate est du contrat exécutable, et seule `--all-features` est tendue (sous portes
-    réduites, la doc de crate lie des modules gated absents — dette acceptée, `../../tooling.sdd`).
+    `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` (default) puis `cargo doc --no-deps
+    --all-features` : la fence d'un doctest de la doc de crate est du contrat exécutable, et les
+    liens de la doc de crate se résolvent sous chaque graphe (`../../tooling.sdd`, issue #25).
   Compiler et linter chaque feature isolément par une REGLE et non une liste, dans un job dédié
     `feature-matrix` : installer `cargo-hack` puis lancer `cargo hack check --each-feature
-    --no-dev-deps` et `cargo hack clippy --each-feature --no-dev-deps -- -D warnings`, de sorte
+    --no-dev-deps`, `cargo hack clippy --each-feature --no-dev-deps -- -D warnings` et
+    `RUSTDOCFLAGS="-D warnings" cargo hack doc --each-feature --no-dev-deps --no-deps`, de sorte
     que les gates hors de la matrice explicite (`fs`, `shell`, `password`, `crypto`, `http`,
     `hbs` sans `rhai`, `rhai` seul, `hbs-scripting`) soient compilées seules et que l'invariant
     d'isolabilité de `hbs` soit vérifié en CI (`../../tooling.sdd`, règle actée).
@@ -158,6 +159,12 @@ Tasks:
     ../../tooling.sdd, cochée avec elle : ajouter l'entrée `rt` (`args: "--no-default-features
     --features rt"`) au matrix du job `test` et `rt` à la boucle explicite du job `clippy` de
     ./test.yml, commentaires à l'état.
+
+  [x] Tendre les lints rustdoc à tous les graphes (issue #25) : l'étape `rustdoc lints` du job `clippy`
+    joue `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` puis `--all-features` ; le job
+    `feature-matrix` gagne l'étape `cargo hack doc --each-feature --no-dev-deps --no-deps` sous le même
+    `RUSTDOCFLAGS`. Jumelle de « Tendre les lints rustdoc à tous les graphes de features » de
+    ../../tooling.sdd, cochée dans le même commit.
 
 Scenario: PR sans approbation d'un autre owner
   Given une PR ouverte par l'un des deux owners, checks verts

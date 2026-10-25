@@ -283,6 +283,12 @@ Tasks:
     ./.opencode/agents/validator.md — la porte `--no-default-features --features rt` (test et
     clippy). Jumelle de « Ajouter la porte `rt` » de ./tooling.sdd, cochée dans le même commit.
 
+  [x] Reprendre la batterie rustdoc (issue #25) : ./AGENTS.md et ./.opencode/agents/validator.md passent de
+    `cargo doc --no-deps --all-features` seule aux trois commandes `cargo doc --no-deps`,
+    `--all-features` et `cargo hack doc --each-feature --no-dev-deps --no-deps` (sous
+    `RUSTDOCFLAGS="-D warnings"`). Jumelle de « Tendre les lints rustdoc à tous les graphes de
+    features » de ./tooling.sdd, cochée dans le même commit.
+
 Done when:
   Chaque fichier de `src/` est couvert par une spec revue (`Owns` groupé admis pour les mocks),
     et la batterie harnais passe avec `-- -D warnings`.

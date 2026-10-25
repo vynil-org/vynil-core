@@ -101,6 +101,9 @@ Tasks:
     existants restent verts, ceux qui lisent `current()` suivent la porte de la lecture. Tâche
     jumelle de « Déclarer `cancel` sans gate » de ./lib.sdd, cochée dans le même commit.
 
+  [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : `rhai::Engine::on_progress` en texte brut dans la rustdoc. Jumelle de « Tendre les
+    lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
+
 Scenario: sans portée, aucun jeton
   Given un fil sur lequel aucune portée n'est ouverte
   When la lecture du jeton courant est appelée

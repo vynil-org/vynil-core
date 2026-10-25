@@ -480,6 +480,9 @@ Tasks:
     du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
     Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
     commit.
+
+  [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : `rhai::Engine::on_progress` en texte brut dans la rustdoc. Jumelle de « Tendre les
+    lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   arités fermées des shims (`assert(cond, mess)`, `import_*`), snapshot `ctx.clone()` de
