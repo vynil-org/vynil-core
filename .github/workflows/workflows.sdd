@@ -159,6 +159,11 @@ Tasks:
     ../../tooling.sdd, cochée avec elle : ajouter l'entrée `rt` (`args: "--no-default-features
     --features rt"`) au matrix du job `test` et `rt` à la boucle explicite du job `clippy` de
     ./test.yml, commentaires à l'état.
+  [ ] Part jumelle de « Jouer `specdd lint` en CI » de ../../tooling.sdd, cochée dans le même commit :
+    dans le job `fmt` de ./test.yml, l'étape de contrôle de forme devient `actions/setup-node` (Node
+    22), `npm install --global specdd@1.2.0` (version épinglée) puis `specdd lint` à la racine du
+    dépôt, rougissant sur toute erreur de syntaxe `.sdd` (code de sortie 1) ; le script Python et
+    ses fixtures disparaissent de ce fichier.
 
   [x] Tendre les lints rustdoc à tous les graphes (issue #25) : l'étape `rustdoc lints` du job `clippy`
     joue `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` puis `--all-features` ; le job

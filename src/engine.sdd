@@ -104,7 +104,7 @@ Must:
     la valeur est strictement positive — 0 et négatifs sont des no-op immédiats, sans plafond
     (le script d'un opérateur peut légitimement attendre) ; quand le fil porte un jeton
     d'annulation (@crate::cancel::scope, ./cancel.sdd, issue #21) il dort par tranches de 25 ms
-    au plus et rend @variant-Error::Other `cancelled` (via @crate::rhai_err) dès que le jeton est
+    au plus et rend @variant-Error::Cancelled (via @crate::rhai_err, message `CANCEL-001 operation cancelled`) dès que le jeton est
     vu annulé, jeton déjà annulé à l'entrée compris (pour une durée strictement positive) —
     ce n'est PAS un appel à @rhai::Engine::on_progress, qui ne peut pas s'exécuter pendant un
     appel natif ; sans jeton le comportement est l'ancien, un seul @std::thread::sleep ; `get_env` rend la chaîne vide quand
@@ -345,7 +345,7 @@ Handles:
   La persistance entre évaluations d'un même Script : données d'entrée par `set_dynamic`
     (nom homonyme écrasé via `set_or_push`), variables `let` de scripts précédents visibles
     des suivants, snapshot figé du ctx pour les modules `add_code`.
-  `sleep` annulé (jeton d'annulation du fil, ./cancel.sdd) : rend l'erreur `cancelled` au plus
+  `sleep` annulé (jeton d'annulation du fil, ./cancel.sdd) : rend l'erreur @variant-Error::Cancelled au plus
     une tranche (25 ms) après l'annulation, sans attendre la durée demandée ; un script qui
     l'attrape par `try` continue, la fin du script restant la décision de
     @rhai::Engine::on_progress du consommateur.
@@ -483,6 +483,11 @@ Tasks:
 
   [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : `rhai::Engine::on_progress` en texte brut dans la rustdoc. Jumelle de « Tendre les
     lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
+
+  [ ] Rendre l'annulation de `sleep` @variant-Error::Cancelled dans ./engine.rs (revue de la PR #24) :
+    `rhai_err(Error::Cancelled)` au lieu de `Error::Other("cancelled")` ; les deux tests
+    « sleep annulé » assertent le message de la variante. Tâche jumelle de « Ajouter
+    @variant-Error::Cancelled » de ./lib.sdd.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   arités fermées des shims (`assert(cond, mess)`, `import_*`), snapshot `ctx.clone()` de
@@ -672,10 +677,10 @@ Scenario: new_bare inchangé
 Scenario: sleep annulé
   Given un jeton installé par @crate::cancel::scope et un script `sleep(30)`
   When un autre fil annule le jeton 100 ms après le début de l'évaluation
-  Then l'évaluation rend une erreur de texte `cancelled` en moins de 500 ms
+  Then l'évaluation rend une erreur dont le message contient `cancelled` (@variant-Error::Cancelled) en moins de 500 ms
   Given un jeton déjà annulé à l'entrée
   When le script évalue `sleep(30)`
-  Then l'erreur `cancelled` est rendue immédiatement
+  Then l'erreur @variant-Error::Cancelled est rendue immédiatement
   When le script évalue `sleep(0)` ou `sleep(-3)` avec ce même jeton
   Then l'évaluation réussit : un no-op n'a rien à annuler
   Given aucune portée ouverte

@@ -24,8 +24,10 @@ Owns:
   ./cancel.rs
 
 References:
-  ./lib.rs — déclarant : `pub mod cancel;` SANS gate (issue #23 ; jusque-là sous `rhai`). Aucune variante @Error
-    nouvelle : l'annulation est @variant-Error::Other de texte `cancelled`.
+  ./lib.rs — déclarant : `pub mod cancel;` SANS gate (issue #23 ; jusque-là sous `rhai`). L'annulation est la
+    variante dédiée @variant-Error::Cancelled (./lib.sdd, `CANCEL-001 operation cancelled`), que
+    ./rt.sdd et ./engine.sdd rendent : un consommateur la distingue par `matches!`, sans comparer de
+    chaîne.
   ./rt.sdd, ./engine.sdd — les deux lecteurs du jeton (@crate::rt::block_on et la fonction de
     script `sleep`).
   Issue vynil-org/vynil-core#21.
@@ -100,6 +102,9 @@ Tasks:
     `#[allow(dead_code)]`. Tests d'abord depuis le Scenario « sans aucune feature » ; les sept tests
     existants restent verts, ceux qui lisent `current()` suivent la porte de la lecture. Tâche
     jumelle de « Déclarer `cancel` sans gate » de ./lib.sdd, cochée dans le même commit.
+  [ ] Rendre l'annulation @variant-Error::Cancelled (revue de la PR #24) : la rustdoc du module et
+    ses renvois parlent de la variante dédiée et non plus de `Error::Other` de texte `cancelled`.
+    Tâche jumelle de « Ajouter @variant-Error::Cancelled » de ./lib.sdd, cochée dans le même commit.
 
   [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : `rhai::Engine::on_progress` en texte brut dans la rustdoc. Jumelle de « Tendre les
     lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
