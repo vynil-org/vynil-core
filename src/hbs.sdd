@@ -138,15 +138,24 @@ Must:
     aucun consommateur ne les utilise) : le module privé `core_helpers` porte
     `#[allow(missing_docs)]` justifié, ses items sont `pub(crate)` et rien n'en est ré-exporté ;
     @crate::hbs::CORE_HBS_HELPERS reste la seule publication de leurs noms.
-  Offrir @crate::hbs::HandleBars::new_restricted (issue vynil-org/vynil-core#13) : le moteur
-    de @crate::hbs::HandleBars::new moins exactement les six helpers qui touchent l'hôte —
-    `read_to_str` (lit un fichier), `env_var` (lit l'environnement du processus),
-    `canonicalize` (résout le système de fichiers) et `parent`, `file_name`, `extension` (qui
-    canonicalisent leur entrée avant de la découper, mesuré sur handlebars_misc_helpers 0.17.0
-    path_helpers.rs : ce sont des sondes d'existence de fichier). Retrait par
-    @handlebars::Handlebars::unregister_helper APRÈS la composition de `new` : les deux
-    constructeurs ne divergent jamais sur les autres helpers. Un helper retiré n'est plus
-    résolu : l'appel d'un template échoue en @variant-Error::HbsRenderError (mode strict hérité).
+  Offrir @crate::hbs::HandleBars::new_restricted (issues vynil-org/vynil-core#13 et #27) : un
+    moteur construit par LISTE D'AUTORISATION, et non en retirant des helpers de
+    @crate::hbs::HandleBars::new. Il part de @handlebars::Handlebars::new (helpers natifs et
+    de casse), en mode strict et sans échappement comme `new`, n'y enregistre que les groupes
+    sûrs de handlebars_misc_helpers (`string`, `regex`, `uuid`, `jsonnet`, chacun par sa fonction
+    `register`) puis les helpers du cœur vynil, par la même fonction privée que `new`
+    (JSON/JMESPath, `concat`, `to_decimal`, `base64_*`, `header_basic`, `url_encode`,
+    `crc32_hash` et les helpers gated `crypto` / `password`) : les deux constructeurs ne
+    divergent jamais sur les helpers du cœur. Aucun helper qui touche l'hôte n'est enregistré —
+    `read_to_str` (lit un fichier), `env_var` (lit l'environnement du processus), `canonicalize`
+    (résout le système de fichiers), `parent`, `file_name`, `extension` (qui canonicalisent leur
+    entrée avant de la découper, mesuré sur handlebars_misc_helpers 0.17.0 path_helpers.rs : des
+    sondes d'existence de fichier), `http_get` et `gitignore_io` (réseau, feature amont
+    `http_attohttpc` que le graphe d'un consommateur peut activer) : un helper hôte ajouté en amont
+    par une montée de version ou par une feature activée ailleurs dans le graphe ne passe donc plus
+    sans bruit. Un helper non enregistré n'est pas résolu : l'appel d'un template échoue en
+    @variant-Error::HbsRenderError (mode strict). Le jeu de helpers d'un `new_restricted` est
+    celui des versions 0.8 et 0.9 : aucun changement observable pour un consommateur.
     @crate::hbs::CORE_HBS_HELPERS reste informatif et ne distingue pas les deux constructeurs.
     La garantie porte sur le moteur tel que rendu : @crate::hbs::HandleBars::engine_mut et
     `register_helper_dir` laissent l'appelant ré-enregistrer ce qu'il veut, à sa charge.
@@ -293,8 +302,8 @@ Handles:
 Tasks:
   [x] Implémenter @crate::hbs::HandleBars::new_restricted (issue #13) : `new()` puis
     `unregister_helper` des six noms du `Must` ; rustdoc nommant les six helpers et la
-    réserve d'`engine_mut`. Tests d'abord depuis le `Scenario` « new_restricted retire les six
-    helpers hôte ». Tâche jumelle de ./docs.sdd (page ../docs/handlebars_helpers.md) — les
+    réserve d'`engine_mut`. Tests d'abord depuis le `Scenario` (renommé « new_restricted n'enregistre
+    aucun helper hôte » par la tâche de l'issue #27). Tâche jumelle de ./docs.sdd (page ../docs/handlebars_helpers.md) — les
     deux coches dans le même commit.
   [x] Convertir les Scenario en tests passants : ./hbs.rs ne compte à ce jour que trois
     verrous — les deux d'`argon_hash` et celui de `bcrypt_hash` sur la borne 71/72, tous trois
@@ -383,6 +392,15 @@ Tasks:
     # les helpers à secret nomment ce qu'ils attendent (« password », « username »), les
     # génériques nomment « parameter » ; uniformiser sur un texte unique doucherait la
     # précision des premiers. Le `Must` décrit le patron tel quel et reste la forme liante.
+
+  [x] Construire @crate::hbs::HandleBars::new_restricted par liste d'autorisation (issue #27) :
+    extraire des enregistrements du cœur vynil de `new` une fonction privée partagée, et bâtir
+    `new_restricted` depuis `Handlebars::new()` + les quatre groupes sûrs + cette fonction, au lieu
+    de `new()` puis `unregister_helper`. Rustdoc du constructeur reprise (liste d'autorisation,
+    helpers réseau). Le jeu observable ne change pas : les tests du Scenario « new_restricted
+    n'enregistre aucun helper hôte » restent verts, deux tests s'ajoutent (noms réseau, groupes
+    retenus). Tâche jumelle de ./docs.sdd (page ../docs/handlebars_helpers.md) et du CHANGELOG,
+    cochées dans le même commit.
 
 Scenario: new compose les trois couches et les deux réglages hérités
   Given un @crate::hbs::HandleBars construit par @crate::hbs::HandleBars::new sous `hbs`
@@ -548,7 +566,7 @@ Scenario: les portes isolent hbs de rhai
   Then les deux méthodes `*.rhai` s'ajoutent seules à l'état précédent ; sans `hbs`, le module
     entier n'existe pas et @crate::HandleBars (racine) non plus
 
-Scenario: new_restricted retire les six helpers hôte
+Scenario: new_restricted n'enregistre aucun helper hôte
   Given un @crate::hbs::HandleBars construit par @crate::hbs::HandleBars::new_restricted
   When un template appelle tour à tour `read_to_str`, `env_var`, `canonicalize`, `parent`,
     `file_name` et `extension` sur une valeur quelconque (un fichier réel pour `read_to_str`,
@@ -557,4 +575,8 @@ Scenario: new_restricted retire les six helpers hôte
   And les helpers conservés répondent comme sous `new` : `to_upper_case`, `base64_encode`,
     `str_to_json` et `concat` rendent la même sortie
   And le même template rendu par @crate::hbs::HandleBars::new lit bien le fichier et la variable
-    (le contraste prouve que le retrait est l'effet du constructeur, pas du template)
+    (le contraste prouve que l'absence est l'effet du constructeur, pas du template)
+  And `http_get` et `gitignore_io` échouent de même en @variant-Error::HbsRenderError (noms
+    figés ; la garantie structurelle est que le constructeur ne les enregistre jamais)
+  And chaque groupe retenu (casse, `string`, `regex`, `jsonnet`, JSON/JMESPath, `base64_*`,
+    `url_encode`, `crc32_hash`, `to_decimal`, `header_basic`, `eq`) rend la même sortie que sous `new`

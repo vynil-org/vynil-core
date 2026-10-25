@@ -49,6 +49,10 @@ functions carry introspection metadata, and the blocking native calls became can
   `sleep` stays behind `rhai`.
 - The `rhai` dependency floor is raised to `1.23.3` — the oldest version exposing
   `FuncRegistration::with_comments` / `with_params_info`, verified by compiling against it.
+- `HandleBars::new_restricted()` is now built from an allow-list (only helpers that cannot reach
+  the host are registered) instead of removing six helpers from `new()`: a host helper added
+  upstream, such as `http_get` / `gitignore_io`, is never registered. The registered set is
+  unchanged, and consumers no longer need an exclusion list of their own (#27).
 
 No behaviour change for consumers that only call `Script::new_bare` (vynil, kuberest): the
 same names with the same semantics are registered, and the frozen order of the new public
