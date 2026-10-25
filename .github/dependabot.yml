@@ -13,3 +13,9 @@ updates:
       interval: "weekly"
     labels:
       - "cargo"
+    groups:
+      kube-stack:
+        patterns:
+          - "kube"
+          - "kube-*"
+          - "k8s-openapi"
