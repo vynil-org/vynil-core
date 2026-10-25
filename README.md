@@ -47,6 +47,7 @@ crate's blocking native calls (`sleep`, network waits) interruptable per thread,
 | `shell` | off | Shell command execution | — |
 | `password` | off | `gen_password`/`gen_password_alphanum` (off by default to avoid a name collision with a consumer's own password semantics) | — |
 | `metadata` | off | Rhai introspection metadata: `///` comments + parameter names on registered script functions, consumed by `gen_fn_signatures`/`gen_fn_metadata_to_json`. Implies `rhai` — metadata alone has no engine to register on. Pure metadata: registrations behave identically without it | `rhai/metadata` |
+| `rt` | off | Async → sync bridge `rt::block_on` for consumers calling async code from synchronous Rhai natives (public; `http`, `oci`, `s3` and `k8s` depend on it). Does not imply `rhai` | `tokio` |
 
 ```toml
 # default: Rhai + Handlebars + HTTP + crypto helpers, same as previous releases

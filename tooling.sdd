@@ -243,7 +243,7 @@ Tasks:
     `[ ]`, suites de tâches distinctes, têtes de clause à deux espaces suivies d'un repli à
     quatre. Verrouiller le contrôle par ses propres cas rouges (une faute de chaque classe, plus
     chaque cas limite) avant de le rendre bloquant.
-  [ ] Ajouter la porte `--no-default-features --features rt` (test et clippy `--all-targets --
+  [x] Ajouter la porte `--no-default-features --features rt` (test et clippy `--all-targets --
     -D warnings`) à la batterie (issue #23) : elle joue le seul graphe où `rt` existe sans `rhai`
     (le module `cancel` ungated lu par le pont, le binaire d'intégration de ./src/rt.sdd) ;
     `cargo hack --each-feature` ne compile que la face, pas ce verrou d'exécution. Jumelle de

@@ -1,7 +1,8 @@
-//! Internal async → sync bridge shared by the network-facing modules (`http`, `oci`,
-//! `s3`, `k8s`), which expose synchronous functions to Rhai scripts while every
-//! network call underneath is `tokio`-async. One bridge, one strategy table (see
-//! [`block_on`]), no panic escaping towards the host.
+//! Async → sync bridge, shared by the network-facing modules (`http`, `oci`, `s3`, `k8s`),
+//! which expose synchronous functions to Rhai scripts while every network call underneath
+//! is `tokio`-async, and public (feature `rt`) for consumers doing the same. One bridge, one
+//! strategy table (see [`crate::rt::block_on`]), no panic escaping towards the host. The module knows
+//! nothing of Rhai: callers convert the error themselves.
 
 use std::future::Future;
 
@@ -12,39 +13,64 @@ use tokio::{
 
 use crate::{Error, Result, cancel};
 
-/// Drive `fut` to completion from a synchronous (script) caller and return its
-/// output, without ever panicking the host.
+/// Drive `fut` to completion from a synchronous caller and return its output, without
+/// ever panicking the host.
 ///
-/// Strategy, in this order, decided from [`Handle::try_current`]:
+/// This is the bridge for native functions called from a synchronous Rhai script (MCP or
+/// inference calls of a consumer, the `http`/`oci`/`s3`/`k8s` modules, …): the script
+/// cannot `.await`, so the async work runs here, to completion, on the calling thread.
 ///
-/// - a **multi-thread** tokio runtime is running on this thread: block the current
-///   thread with [`block_in_place`] and drive `fut` through the live [`Handle`]
-///   (the runtime's worker threads keep making progress meanwhile);
-/// - **no runtime** on this thread: build a temporary `current_thread` runtime with
-///   `enable_all`, drive `fut` on it, then drop the runtime on return. This path is
-///   a *fallback* — it pays a runtime construction per call; in production scripts
-///   run inside the consumer's own runtime and this branch is never reached;
-/// - a **`current_thread`** runtime is running: [`block_in_place`] would panic
-///   there, so `fut` is never polled and [`Error::Other`] “requires a multi-thread
-///   tokio runtime” is returned instead.
+/// # Strategy
 ///
-/// If the calling thread carries a cancellation token (installed by
-/// [`crate::cancel::scope`]), it is honoured in all three strategies: a token
-/// already cancelled at entry refuses `fut` unpolled — before the strategy is
-/// even chosen — and one cancelled while `fut` runs abandons (drops) it and
-/// returns [`Error::Other`] “cancelled” within one [`cancel::WAIT_SLICE`] — see
-/// [`drive`]. Without a token the path is exactly the token-less one.
+/// Chosen in this order, from [`Handle::try_current`]:
 ///
-/// With a token installed, the calling runtime must have its time driver enabled
-/// (`enable_all()` or `enable_time()`): the cancellation check ticks a
-/// `tokio::time::interval`, which panics on a runtime built without one. Without a
-/// token no timer is touched.
+/// - a **multi-thread** tokio runtime is running on this thread: the thread is blocked with
+///   [`block_in_place`] and `fut` is driven through the live [`Handle`] (the runtime's
+///   worker threads keep making progress meanwhile);
+/// - **no runtime** on this thread: a temporary `current_thread` runtime is built with
+///   `enable_all`, `fut` is driven on it, and the runtime is dropped on return. This is a
+///   *fallback*: it pays one runtime construction per call. In production, scripts run
+///   inside the consumer's own runtime and this branch is not reached;
+/// - a **`current_thread`** runtime is running: [`block_in_place`] would panic there, so
+///   `fut` is never polled and an error is returned instead.
 ///
-/// `fut` need not be `Send`: it is always driven on the calling thread. If the
-/// temporary runtime cannot be built (e.g. descriptor exhaustion), [`Error::Stdio`]
-/// is returned. A panic raised by `fut` itself propagates untouched — it belongs to
-/// the caller; this module never adds one.
-pub(crate) fn block_on<F: Future>(fut: F) -> Result<F::Output> {
+/// # Cancellation
+///
+/// If the calling thread carries a [`CancelToken`](crate::cancel::CancelToken) installed by
+/// [`cancel::scope`], it is honoured in all three strategies, without any change to this
+/// signature:
+///
+/// - a token already cancelled at entry refuses `fut` unpolled, before a strategy is chosen;
+/// - a token cancelled while `fut` runs makes `block_on` abandon (drop) `fut`, not leave it
+///   running in the background, and return the error within one 25 ms slice.
+///
+/// The check is a `tokio::select!` between `fut` and a periodic re-read of the flag, on the
+/// same runtime (no thread, no extra task). Without a token the path is exactly the
+/// token-less one, and no timer is touched.
+///
+/// **With a token installed, the calling runtime must have its time driver enabled**
+/// (`enable_all()` or `enable_time()`): the check ticks a `tokio::time::interval`, which
+/// panics on a runtime built without one. A consumer building its own runtime calls
+/// `enable_all()`. The temporary runtime of the fallback always has it.
+///
+/// # Errors
+///
+/// - [`Error::Other`] `cancelled` when the token of the thread is cancelled, before or during
+///   the execution, whatever the strategy;
+/// - [`Error::Other`] `requires a multi-thread tokio runtime` when a `current_thread` runtime
+///   is running on the calling thread (`fut` is then not executed);
+/// - [`Error::Stdio`] when the temporary runtime of the fallback cannot be built (descriptor
+///   exhaustion, for example).
+///
+/// # Trait bounds
+///
+/// `fut` need not be [`Send`]: it is always driven on the calling thread.
+///
+/// # Panics
+///
+/// This function adds no panic of its own. A panic raised by `fut` propagates untouched, as
+/// does the panic of a token-aware call on a runtime without a time driver (see above).
+pub fn block_on<F: Future>(fut: F) -> Result<F::Output> {
     // The thread's token, read once: cancelled at entry, nothing is polled —
     // whichever strategy would have run.
     let token = cancel::current();

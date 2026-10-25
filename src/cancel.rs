@@ -23,15 +23,17 @@
 //! `sign_image` through `cosign`) never read the token and return when the process ends.
 //!
 //! This module depends on neither tokio nor rhai: `Arc<AtomicBool>` and a thread-local
-//! are enough, and `sleep` only exists under the `rhai` feature — this module's own gate.
+//! are enough. It compiles without any feature; the readers of the token are `sleep` (under
+//! `rhai`) and `rt::block_on` (under `rt`), and the reading functions exist only where one
+//! of them is compiled.
 
+#[cfg(any(feature = "rhai", feature = "rt"))] use std::time::Duration;
 use std::{
     cell::RefCell,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
 };
 
 thread_local! {
@@ -142,6 +144,7 @@ pub fn scope<R>(token: &CancelToken, f: impl FnOnce() -> R) -> R {
 /// Read by the crate's blocking native calls (`sleep`, `block_on`); cancellation is
 /// never decided here — the module only carries the flag, stopping the script stays the
 /// consumer's call (`rhai::Engine::on_progress`).
+#[cfg(any(feature = "rhai", feature = "rt"))]
 pub(crate) fn current() -> Option<CancelToken> {
     CURRENT.try_with(|cell| cell.borrow().clone()).ok().flatten()
 }
@@ -149,21 +152,23 @@ pub(crate) fn current() -> Option<CancelToken> {
 /// Common wait slice of 25 ms: the bound on a native call's cancellation latency,
 /// shared by `sleep` and `block_on` — each waits at most this long before re-reading
 /// [`current`] and its flag.
+#[cfg(any(feature = "rhai", feature = "rt"))]
 pub(crate) const WAIT_SLICE: Duration = Duration::from_millis(25);
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{panic, thread};
 
     /// Le jeton courant du fil est-il (un clone de) `token`, c'est-à-dire désigne-t-il le même
     /// drapeau ?
+    #[cfg(any(feature = "rhai", feature = "rt"))]
     fn installed_is(token: &CancelToken) -> bool {
         current().is_some_and(|seen| Arc::ptr_eq(&seen.flag, &token.flag))
     }
 
     // ── Scenario « sans portée, aucun jeton » ──
     #[test]
+    #[cfg(any(feature = "rhai", feature = "rt"))]
     fn no_scope_no_token() {
         assert!(
             current().is_none(),
@@ -173,6 +178,7 @@ mod tests {
 
     // ── Scenario « la portée installe puis rétablit » ──
     #[test]
+    #[cfg(any(feature = "rhai", feature = "rt"))]
     fn scope_installs_then_restores() {
         let t1 = CancelToken::new();
         let value = scope(&t1, || {
@@ -194,6 +200,7 @@ mod tests {
 
     // ── Scenario « portées imbriquées » ──
     #[test]
+    #[cfg(any(feature = "rhai", feature = "rt"))]
     fn nested_scopes_innermost_wins_then_restores_outer() {
         let t1 = CancelToken::new();
         let t2 = CancelToken::new();
@@ -213,9 +220,10 @@ mod tests {
 
     // ── Scenario « la portée se rétablit sur panique » ──
     #[test]
+    #[cfg(any(feature = "rhai", feature = "rt"))]
     fn scope_restores_on_panic() {
         let t1 = CancelToken::new();
-        let res = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             scope(&t1, || panic!("boom de la fermeture"));
         }));
         assert!(
@@ -230,10 +238,11 @@ mod tests {
 
     // ── Scenario « le jeton ne traverse pas les fils » ──
     #[test]
+    #[cfg(any(feature = "rhai", feature = "rt"))]
     fn token_does_not_cross_threads() {
         let t1 = CancelToken::new();
         let (child_saw_token, outer_still_installed) = scope(&t1, || {
-            let child = thread::spawn(|| current().is_some());
+            let child = std::thread::spawn(|| current().is_some());
             let child_saw_token = child.join().expect("le fil B rend sa main");
             (child_saw_token, installed_is(&t1))
         });
@@ -270,9 +279,15 @@ mod tests {
         assert!(!format!("{t:?}").is_empty(), "CancelToken porte Debug");
         assert!(!t.clone().is_cancelled(), "Clone, comme Default : non annulé");
         assert!(!CancelToken::default().is_cancelled(), "Default est non annulé");
+    }
+
+    // ── Tranche d'attente commune : 25 ms (borne de latence partagée par sleep et block_on) ──
+    #[test]
+    #[cfg(any(feature = "rhai", feature = "rt"))]
+    fn wait_slice_is_25_ms() {
         assert_eq!(
             WAIT_SLICE,
-            std::time::Duration::from_millis(25),
+            Duration::from_millis(25),
             "la tranche d'attente commune fait 25 ms (borne de latence partagée par sleep et block_on)"
         );
     }

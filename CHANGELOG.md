@@ -31,6 +31,12 @@ functions carry introspection metadata, and the blocking native calls became can
 - **Cancellation** (#21): `cancel::CancelToken` + `cancel::scope` — a thread-local token the
   crate's blocking native calls read, completing `Engine::on_progress` (which only gets the
   hand between two script operations, never inside a native call).
+- **Feature `rt`** (#23): off by default, pulls `tokio` only and does not imply `rhai`. Under
+  it, the async → sync bridge `rt::block_on` is public (`vynil_core::rt::block_on`, same
+  signature, same strategies and cancellation as before) for consumers that call async code
+  from synchronous Rhai native functions: a multi-thread runtime is blocked on in place, a
+  runtime-less thread gets a temporary `current_thread` runtime, a `current_thread` runtime
+  gets an explicit error. `http`, `oci`, `s3` and `k8s` now depend on `rt` instead of `tokio`.
 
 ### Changed
 
@@ -38,6 +44,9 @@ functions carry introspection metadata, and the blocking native calls became can
   now honour the thread's cancel token: they wait in 25 ms slices and return an error of text
   `cancelled` as soon as the token is cancelled (the pending future is dropped, not left
   running). Without an open scope the behaviour is unchanged.
+- `cancel` is compiled without any feature (#23): `cancel::CancelToken` and `cancel::scope`
+  are available under `--no-default-features`, as is the token read by `rt::block_on`. Only
+  `sleep` stays behind `rhai`.
 - The `rhai` dependency floor is raised to `1.23.3` — the oldest version exposing
   `FuncRegistration::with_comments` / `with_params_info`, verified by compiling against it.
 

@@ -129,6 +129,7 @@ identical: the documentation is pure metadata, with no second copy of the regist
 | `http` *(default, implies `rhai`)* | `RestClient` (HTTP) | **no** — manual |
 | `s3` *(implies `rhai`)* | `s3_get_yaml`, `s3_list_keys` | **no** — manual |
 | `metadata` *(implies `rhai`)* | introspection metadata on registered script functions — `///` comments + parameter names (`gen_fn_signatures`, `gen_fn_metadata_to_json`, see above) | n/a — pure metadata, registers nothing of its own |
+| `rt` | public async → sync bridge `rt::block_on` for consumers (see section 15); pulls `tokio` only, does not imply `rhai` | n/a — no Rhai registration |
 
 ---
 
@@ -527,11 +528,11 @@ All parameters are `string`.
 
 ## 15. Cancellation — `cancel::CancelToken` and `cancel::scope`
 
-Lives behind the `rhai` feature (module `vynil_core::cancel`; no new error variant — the
+Module `vynil_core::cancel`, compiled without any feature (no new error variant — the
 cancellation error is `Error::Other` of text `cancelled`). It lets a consumer driving a
 script (typically an LLM session) interrupt the crate's *blocking native calls* — `sleep`
-and the network waits made by `http`, `oci`, `s3` and `k8s` through the crate's shared
-async → sync bridge — without waiting for them to return.
+(feature `rhai`) and the network waits made by `http`, `oci`, `s3` and `k8s` through the
+crate's shared async → sync bridge — without waiting for them to return.
 
 **Relation to `rhai::Engine::on_progress`:** the progress callback only gets the hand
 *between* two script operations; a native call that sleeps or waits on the network doesn't
@@ -564,3 +565,15 @@ built without the time driver (neither `enable_time()` nor `enable_all()`) panic
 is visible to native calls made on *that* thread only — another thread, a `tokio::task::spawn`
 task or a `tokio::task::spawn_blocking` closure does not inherit it. A consumer evaluating on
 such a thread opens its own `scope` there.
+
+**The public bridge (feature `rt`, no `rhai`):** a consumer whose own native functions call
+async code from a synchronous Rhai script uses `vynil_core::rt::block_on(future)` — the same
+function the `http`, `oci`, `s3` and `k8s` modules use, with the same strategies (multi-thread
+runtime: `block_in_place`; no runtime: a temporary `current_thread` runtime, a fallback that
+pays one runtime per call; `current_thread` runtime: an explicit error, the future is never
+polled) and the same token reading: a token installed on the calling thread by `scope` makes
+`block_on` refuse an already-cancelled future, or abandon a running one within one 25 ms
+slice, with `Error::Other` of text `cancelled`. The `cancel` module is read without `rhai`, so
+`rt` alone is enough to honour the token. Time driver reminder: with a token installed, the
+calling runtime must be built with `enable_all()` (or `enable_time()`), otherwise the check
+panics; the temporary runtime of the fallback always has it.

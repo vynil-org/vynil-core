@@ -52,6 +52,7 @@ cargo test --no-default-features --features hbs,crypto
 cargo test --no-default-features --features rhai,shell
 cargo test --no-default-features --features rhai,fs
 cargo test --no-default-features --features rhai,password
+cargo test --no-default-features --features rt
 cargo clippy --all-targets -- -D warnings
 cargo clippy --no-default-features --features k8s --all-targets -- -D warnings
 cargo clippy --no-default-features --features oci --all-targets -- -D warnings
@@ -63,6 +64,7 @@ cargo clippy --no-default-features --features hbs,crypto --all-targets -- -D war
 cargo clippy --no-default-features --features rhai,shell --all-targets -- -D warnings
 cargo clippy --no-default-features --features rhai,fs --all-targets -- -D warnings
 cargo clippy --no-default-features --features rhai,password --all-targets -- -D warnings
+cargo clippy --no-default-features --features rt --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo hack check --each-feature --no-dev-deps
 cargo hack clippy --each-feature --no-dev-deps -- -D warnings

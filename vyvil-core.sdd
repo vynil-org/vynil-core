@@ -273,12 +273,12 @@ Tasks:
     clause amendée de « Documenter les fonctions enregistrées » ci-dessus. Tâche portée par les treize specs
     de ./src/ qui ont un enregistreur documenté (une tâche jumelle chacune), cochée quand toutes le sont ;
     la 0.9.0 ne se tague pas avant.
-  [ ] Exposer la feature `rt` dans ./Cargo.toml (issue #23) : `rt = ["dep:tokio"]`, commentée comme ses
+  [x] Exposer la feature `rt` dans ./Cargo.toml (issue #23) : `rt = ["dep:tokio"]`, commentée comme ses
     voisines (ce qu'elle active, pourquoi elle n'implique pas `rhai`), hors `default` ; `http`,
     `oci`, `s3` et `k8s` remplacent `"dep:tokio"` par `"rt"`. Vérifier `cargo hack check
     --each-feature --no-dev-deps` et son pendant clippy, plus `cargo test --all-features`.
     Tâche jumelle de « Déclarer `rt` public » de ./src/lib.sdd, cochée dans le même commit.
-  [ ] Reprendre le CHANGELOG 0.9.0 et la batterie (issue #23) : ./CHANGELOG.md — `Added` : la feature
+  [x] Reprendre le CHANGELOG 0.9.0 et la batterie (issue #23) : ./CHANGELOG.md — `Added` : la feature
     `rt` et `rt::block_on` publics ; `Changed` : `cancel` compilé sans feature ; ./AGENTS.md et
     ./.opencode/agents/validator.md — la porte `--no-default-features --features rt` (test et
     clippy). Jumelle de « Ajouter la porte `rt` » de ./tooling.sdd, cochée dans le même commit.

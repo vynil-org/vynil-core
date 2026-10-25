@@ -37,8 +37,6 @@ References:
     (@oci-client → @reqwest) — une chaîne qui peut changer sans que notre contrat change.
 
 Must:
-  Être `pub(crate)` seulement : la fonction `block_on` n'est jamais exportée, aucun consommateur
-    de la crate ne la voit.
   Choisir sa stratégie dans cet ordre, par @tokio::runtime::Handle::try_current :
     runtime courant de saveur multi-thread (@tokio::runtime::Handle::runtime_flavor) →
     @tokio::task::block_in_place autour de @tokio::runtime::Handle::block_on ; aucun runtime →
@@ -141,7 +139,7 @@ Tasks:
     transférable (décision du développeur principal, découpage de la campagne).
     Dans les `LazyLock` de ./k8s.rs (`CLIENT`, `RAW_CLIENT`, `CACHE`), l'erreur de `block_on`
     reste un `expect` (panic d'infrastructure acceptée, ./k8s.sdd).
-  [ ] Exposer `block_on` (issue #23) : `pub fn` sous la feature `rt`, rustdoc d'API publique selon le
+  [x] Exposer `block_on` (issue #23) : `pub fn` sous la feature `rt`, rustdoc d'API publique selon le
     `Must` (section `# Errors` pour `missing_errors_doc`, rendu sous `RUSTDOCFLAGS="-D warnings"`),
     sans changer la signature ni le corps. Tests d'abord depuis les deux Scenario « consommateur
     externe » ci-dessous, joués par un binaire d'intégration (../tests/rt_block_on_public.rs,

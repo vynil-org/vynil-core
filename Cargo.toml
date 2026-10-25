@@ -52,13 +52,13 @@ default = ["http", "crypto", "rhai", "hbs", "hbs-scripting"]
 # RhaiRes), not a plain Rust API with a Rhai wrapper on top like the other modules below — so
 # unlike them it isn't independently rhai-optional, at least until a consumer actually needs
 # "k8s without rhai".
-k8s = ["dep:kube", "dep:k8s-openapi", "dep:tokio", "rhai"]
+k8s = ["dep:kube", "dep:k8s-openapi", "rt", "rhai"]
 # Registry::push_image et al. take/return rhai types (Map, ImmutableString) directly in their
 # core signatures, same reasoning as k8s above.
-oci = ["dep:oci-client", "dep:tokio", "rhai"]
+oci = ["dep:oci-client", "rt", "rhai"]
 # s3_get_yaml/s3_list_keys are RhaiRes-typed from the start, no plain-Rust equivalent — same
 # reasoning as k8s above.
-s3 = ["dep:object_store", "dep:futures", "dep:tokio", "rhai"]
+s3 = ["dep:object_store", "dep:futures", "rt", "rhai"]
 # Filesystem access from Rhai scripts (file_read/file_write/file_copy/create_dir/read_dir/is_file/is_dir).
 fs = []
 # Shell command execution (run/get_out always available under this feature alone; the
@@ -73,7 +73,7 @@ password = []
 # RestClient stores its headers as a rhai::Map internally rather than wrapping a plain-Rust type,
 # so it isn't independently rhai-optional either. RestClientMock (src/http_mock.rs) is a Rhai-only
 # test double on top of it.
-http = ["dep:reqwest", "dep:schemars", "dep:tokio", "rhai", "dep:rustls-pki-types"]
+http = ["dep:reqwest", "dep:schemars", "rt", "rhai", "dep:rustls-pki-types"]
 # openssl-backed key generation (src/key.rs) + argon2/bcrypt password hashing (src/hashes.rs),
 # used unconditionally by the "always" Handlebars helpers (argon_hash/bcrypt_hash/gen_private_key)
 # when "hbs" is on. The Rhai bindings in both modules additionally need "rhai".
@@ -96,6 +96,11 @@ hbs-scripting = ["hbs", "rhai", "handlebars?/script_helper"]
 # default: pure metadata, registrations behave identically without it. Implies `rhai` like
 # k8s/oci/s3/http -- metadata alone, with no engine to register on, makes no sense.
 metadata = ["rhai", "rhai/metadata"]
+# Async -> sync bridge `rt::block_on` (src/rt.rs), public for consumers that call async code from
+# a synchronous Rhai script (native MCP or inference functions). It pulls `tokio` and nothing else:
+# it does not imply `rhai`, the bridge never touches Rhai types. `http`, `oci`, `s3` and `k8s`
+# depend on it instead of `tokio` directly.
+rt = ["dep:tokio"]
 
 [dependencies]
 rhai = { version = "1.23.3", features = ["sync", "serde", "internals"], optional = true }

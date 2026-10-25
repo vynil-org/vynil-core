@@ -191,8 +191,8 @@ Exposes:
     (rhai), @fn-client_name_is_set, @fn-get_client_name, @fn-set_client_name,
     @struct-Semver, @struct-Script (rhai), @struct-HandleBars (hbs) ; + @fn-update_cache
     seulement sous `k8s`.
-  18 modules publics (6 sans gate + 12 gated), dont les trois mock http_mock/oci_mock/
-    k8s_mock publics hors `cfg(test)` ; deux modules privés seulement : @crate::hbs_json et `rt`.
+  20 modules publics (7 sans gate + 13 gated), dont les trois mock http_mock/oci_mock/
+    k8s_mock publics hors `cfg(test)` ; un seul module privé : @crate::hbs_json.
 
 Accepts:
   @fn-error_chain — un @core::error::Error derrière `dyn` : accepte TOUT type
@@ -278,10 +278,10 @@ Tasks:
     fichier est `Owns` de ./rt.sdd — la tâche est exécutée dans la même opération que la tâche de
     ./rt.sdd, sur autorisation explicite du développeur principal (exception same-operation du
     bootstrap, pas un transfert d'`Owns`).
-  [ ] Déclarer `cancel` sans gate dans ./lib.rs (issue #23) : retirer `#[cfg(feature = "rhai")]` et le
+  [x] Déclarer `cancel` sans gate dans ./lib.rs (issue #23) : retirer `#[cfg(feature = "rhai")]` et le
     `cfg_attr(docsrs, doc(cfg(...)))` de `pub mod cancel;`, mettre à jour sa ligne de rustdoc.
     Jumelle de « Lever la porte `rhai` de ./cancel.rs » de ./cancel.sdd, cochée dans le même commit.
-  [ ] Déclarer `rt` public dans ./lib.rs (issue #23) : `#[cfg(feature = "rt")]` +
+  [x] Déclarer `rt` public dans ./lib.rs (issue #23) : `#[cfg(feature = "rt")]` +
     `cfg_attr(docsrs, doc(cfg(feature = "rt")))` + `pub mod rt;` avec une ligne de rustdoc, à la place
     du `mod rt;` privé et de son `any(...)` ; ajouter la feature `rt` à la table de doc des features de
     ./lib.rs (hors `default`, n'implique pas `rhai`, tire `tokio`) et à la liste de `References`

@@ -184,7 +184,7 @@ Tasks:
     les fils (./src/cancel.sdd, ./src/rt.sdd). Jumelle des tâches des specs citées, cochée dans
     le même commit que la dernière d'entre elles ; les extraits `vynil-core = ...` passent de
     `0.8` à `0.9` avec la tâche « Livrer 0.9.0 » de ./vyvil-core.sdd.
-  [ ] Documenter `rt` et `cancel` sans feature (issue #23) : la feature `rt` et `vynil_core::rt::block_on` dans
+  [x] Documenter `rt` et `cancel` sans feature (issue #23) : la feature `rt` et `vynil_core::rt::block_on` dans
     ./docs/rhai_helpers.md (table des features, section 15 : le pont public, le jeton lu sans `rhai`,
     l'exigence du pilote de temps) et dans ./README.md (table des features). Jumelle des tâches
     « Exposer `block_on` » de ./src/rt.sdd et « Lever la porte `rhai` de ./cancel.rs » de ./src/cancel.sdd,

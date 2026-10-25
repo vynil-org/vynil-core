@@ -71,6 +71,10 @@ jobs:
             args: "--no-default-features --features rhai,fs"
           - name: rhai-password
             args: "--no-default-features --features rhai,password"
+          # `rt` seul : seule porte où le pont public `rt::block_on` (issue #23) se compile sans
+          # `rhai` ; joue le consommateur externe de ./tests/rt_block_on_public.rs.
+          - name: rt
+            args: "--no-default-features --features rt"
     steps:
       - uses: actions/checkout@v7
 
@@ -279,7 +283,7 @@ jobs:
       # missing_docs warn) + `-D warnings` pour les warnings rustc hors [lints]. Ce job rejoue
       # en explicite, entre le `--all-targets` par défaut et le `--all-features`, les portes
       # `k8s`, `oci`, `s3`, `k8s,oci,s3`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`,
-      # `rhai,fs` et `rhai,password`. Les
+      # `rhai,fs` et `rhai,password`, ainsi que `rt` (pont public sans `rhai`). Les
       # quatre premières parce que les analyses pedantic (pureté de `must_use_candidate`, etc.)
       # dépendent du graphe de features et qu'un lint peut ne se déclencher que sur une
       # combinaison (voir ../../tooling.sdd) ; `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`,
@@ -305,7 +309,7 @@ jobs:
         run: |
           set -e
           cargo clippy --all-targets -- -D warnings
-          for features in k8s oci s3 k8s,oci,s3 crypto rhai hbs,crypto rhai,shell rhai,fs rhai,password; do
+          for features in k8s oci s3 k8s,oci,s3 crypto rhai hbs,crypto rhai,shell rhai,fs rhai,password rt; do
             cargo clippy --no-default-features --features "$features" --all-targets -- -D warnings
           done
           cargo clippy --all-features --all-targets -- -D warnings

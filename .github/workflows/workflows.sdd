@@ -154,7 +154,7 @@ Tasks:
     cas rouges avant d'être rendue bloquante. La contractualisation du classifieur — ses cas
     limites, ses faux positifs à éviter — est portée par ../../tooling.sdd ; cet `Owns` ne tient
     que la part ./test.yml.
-  [ ] Porte jumelle de « Ajouter la porte `--no-default-features --features rt` à la batterie » de
+  [x] Porte jumelle de « Ajouter la porte `--no-default-features --features rt` à la batterie » de
     ../../tooling.sdd, cochée avec elle : ajouter l'entrée `rt` (`args: "--no-default-features
     --features rt"`) au matrix du job `test` et `rt` à la boucle explicite du job `clippy` de
     ./test.yml, commentaires à l'état.

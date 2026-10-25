@@ -94,7 +94,7 @@ Tasks:
     comme `engine`) : tests d'abord. Tâche jumelle de « Déclarer `cancel` » de ./lib.sdd,
     cochée dans le même commit. À cocher AVANT les tâches « annulation » de ./rt.sdd et
     ./engine.sdd, qui lisent ce module.
-  [ ] Lever la porte `rhai` de ./cancel.rs (issue #23) : le module se compile sans aucune feature ;
+  [x] Lever la porte `rhai` de ./cancel.rs (issue #23) : le module se compile sans aucune feature ;
     les lectures `pub(crate)` `current()` et `WAIT_SLICE` passent sous
     `#[cfg(any(feature = "rhai", feature = "rt"))]` (leurs seuls lecteurs), sans
     `#[allow(dead_code)]`. Tests d'abord depuis le Scenario « sans aucune feature » ; les sept tests
