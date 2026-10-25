@@ -80,7 +80,7 @@ fn key_fns(target: &mut Target<'_>) {
             "/// PEM PKCS8 private key for `algo` (`ed25519` or `rsa`, case-insensitive), RSA at 4096 bits.",
             "/// Errors `KEY-ALGO-001` on an unknown algo, `KEY-OPENSSL-001` when OpenSSL refuses to generate.",
         ],
-        &["algo: &str"],
+        &["algo: string", "string"],
         |algo: &str| -> crate::RhaiRes<String> {
             gen_private_key(algo, DEFAULT_RSA_BITS).map_err(|e| format!("{e}").into())
         },
@@ -92,7 +92,7 @@ fn key_fns(target: &mut Target<'_>) {
             "/// PEM PKCS8 private key for `algo` at `bits` — the size reaches RSA, `ed25519` never reads it.",
             "/// Errors `unsupported key size: <bits>` on a size outside u32, before any dispatch; else the same texts as the unary form.",
         ],
-        &["algo: &str", "bits: i64"],
+        &["algo: string", "bits: i64", "string"],
         |algo: &str, bits: i64| -> crate::RhaiRes<String> {
             let Ok(bits) = u32::try_from(bits) else {
                 return Err(format!("unsupported key size: {bits}").into());
@@ -873,6 +873,88 @@ mod tests {
                 &e,
                 r#"gen_private_key("ed25519", -1)"#,
                 "unsupported key size: -1",
+            );
+        }
+    }
+}
+
+#[cfg(all(test, feature = "metadata", feature = "crypto"))]
+mod signatures_documentees {
+    use super::*;
+
+    /// Signatures attendues du groupe `key`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("gen_private_key", "gen_private_key(algo: string) -> string"),
+        (
+            "gen_private_key",
+            "gen_private_key(algo: string, bits: i64) -> string",
+        ),
+    ];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        key_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", key_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        key_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
             );
         }
     }

@@ -135,7 +135,7 @@ fn hashes_fns(target: &mut Target<'_>) {
         target,
         "crc32_hash",
         &["/// CRC-32 (IEEE) of `text` over its raw UTF-8 bytes; deterministic, salt-free, never fails."],
-        &["text: ImmutableString"],
+        &["text: string", "u32"],
         |s: ImmutableString| crate::hashes::crc32_hash(s.to_string()),
     );
 }
@@ -179,7 +179,7 @@ fn crypto_hashes_fns(target: &mut Target<'_>) {
             "/// bcrypt hash of `text` at the fixed `bcrypt::DEFAULT_COST` (12), fresh salt per call.",
             "/// Errors on 72 bytes or more (no silent truncation) and on entropy failure.",
         ],
-        &["text: ImmutableString"],
+        &["text: string", "string"],
         |s: ImmutableString| crate::hashes::bcrypt_hash(s.to_string()).map_err(rhai_err),
     );
     register_at(
@@ -189,7 +189,7 @@ fn crypto_hashes_fns(target: &mut Target<'_>) {
             "/// A fresh Argon hasher: one random 16-byte salt drawn at construction, never redrawn.",
             "/// Errors when the system entropy source fails. Never panics.",
         ],
-        &[],
+        &["Argon"],
         || -> RhaiRes<Argon> { Argon::new().map_err(rhai_err) },
     );
     register_at(
@@ -199,7 +199,7 @@ fn crypto_hashes_fns(target: &mut Target<'_>) {
             "/// Full PHC argon2id hash of `password`, replaying the salt fixed at `new_argon()` time.",
             "/// Errors on argon2 hashing failure; the instance itself is never mutated.",
         ],
-        &["argon: &mut Argon", "password: String"],
+        &["argon: &mut Argon", "password: string", "string"],
         Argon::rhai_hash,
     );
 }
@@ -1076,5 +1076,161 @@ mod jumeaux_module_hashes {
             names_added_by_module(super::crypto_hashes_module()),
             "sans `metadata`, les deux ensembles de noms restent égaux"
         );
+    }
+}
+
+#[cfg(all(test, feature = "metadata"))]
+mod signatures_documentees {
+    use super::*;
+
+    /// Signatures attendues du groupe `hashes`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[("crc32_hash", "crc32_hash(text: string) -> u32")];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        hashes_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", hashes_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        hashes_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
+            );
+        }
+    }
+}
+
+#[cfg(all(test, feature = "metadata", feature = "crypto"))]
+mod signatures_documentees_crypto {
+    use super::*;
+
+    /// Signatures attendues du groupe `crypto_hashes`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("bcrypt_hash", "bcrypt_hash(text: string) -> string"),
+        ("new_argon", "new_argon() -> Argon"),
+        ("hash", "hash(argon: &mut Argon, password: string) -> string"),
+    ];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        crypto_hashes_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", crypto_hashes_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        crypto_hashes_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
+            );
+        }
     }
 }

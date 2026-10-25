@@ -195,28 +195,28 @@ fn core_pure_fns(target: &mut Target<'_>) {
         target,
         "sha256",
         &["/// SHA-256 digest of `text`, lowercase hexadecimal. No errors."],
-        &["text: String"],
+        &["text: string", "string"],
         |v: String| sha256::digest(v),
     );
     register_at(
         target,
         "url_encode",
         &["/// Percent-encode `text` for a URL query string (space becomes `+`). No errors."],
-        &["text: String"],
+        &["text: string", "string"],
         url_encode,
     );
     register_at(
         target,
         "to_decimal",
         &["/// Decode octal text such as `\"755\"` into 493; errors on any non-octal string."],
-        &["text: String"],
+        &["text: string", "u32"],
         to_decimal_fn,
     );
     register_at(
         target,
         "base64_decode",
         &["/// Decode padded base64 `text` into UTF-8; errors on invalid base64 or non-UTF-8."],
-        &["text: String"],
+        &["text: string", "string"],
         |val: ImmutableString| -> RhaiRes<ImmutableString> {
             base64_decode(val.as_str())
                 .map_err(rhai_err)
@@ -227,14 +227,14 @@ fn core_pure_fns(target: &mut Target<'_>) {
         target,
         "base64_encode",
         &["/// Encode `text` in standard padded base64 alphabet. Cannot fail."],
-        &["text: String"],
+        &["text: string", "string"],
         |val: ImmutableString| -> ImmutableString { STANDARD.encode(val.to_string()).into() },
     );
     register_at(
         target,
         "json_encode",
         &["/// Serialize `value` to a compact JSON string; errors when it cannot be serialized."],
-        &["value: Dynamic"],
+        &["value: Dynamic", "string"],
         |val: Dynamic| -> RhaiRes<ImmutableString> {
             serde_json::to_string(&val)
                 .map_err(|e| rhai_err(Error::SerializationError(e)))
@@ -245,7 +245,7 @@ fn core_pure_fns(target: &mut Target<'_>) {
         target,
         "json_encode_escape",
         &["/// JSON of `value` with enclosing quotes escaped — nested one level; errors on failure."],
-        &["value: Dynamic"],
+        &["value: Dynamic", "string"],
         |val: Dynamic| -> RhaiRes<ImmutableString> {
             let str = serde_json::to_string(&val).map_err(|e| rhai_err(Error::SerializationError(e)))?;
             Ok(format!("{str:?}").into())
@@ -255,7 +255,7 @@ fn core_pure_fns(target: &mut Target<'_>) {
         target,
         "json_decode",
         &["/// Parse the JSON `text` into a Rhai value; errors on invalid JSON."],
-        &["text: String"],
+        &["text: string", "Dynamic"],
         |val: ImmutableString| -> RhaiRes<Dynamic> {
             serde_json::from_str(val.as_ref()).map_err(|e| rhai_err(Error::SerializationError(e)))
         },
@@ -264,14 +264,14 @@ fn core_pure_fns(target: &mut Target<'_>) {
         target,
         "basename",
         &["/// File name of `path` — string split, no disk access; absent or non-UTF-8 yields empty."],
-        &["path: String"],
+        &["path: string", "string"],
         basename_fn,
     );
     register_at(
         target,
         "dirname",
         &["/// Parent directory of `path` — string split, no disk access; absent yields empty."],
-        &["path: String"],
+        &["path: string", "string"],
         dirname_fn,
     );
 }
@@ -338,28 +338,28 @@ fn core_host_fns(target: &mut Target<'_>) {
         target,
         "log_debug",
         &["/// Log `message` at debug level. Returns the unit."],
-        &["message: String"],
+        &["message: string"],
         |s: ImmutableString| tracing::debug!("{s}"),
     );
     register_at(
         target,
         "log_info",
         &["/// Log `message` at info level. Returns the unit."],
-        &["message: String"],
+        &["message: string"],
         |s: ImmutableString| tracing::info!("{s}"),
     );
     register_at(
         target,
         "log_warn",
         &["/// Log `message` at warning level. Returns the unit."],
-        &["message: String"],
+        &["message: string"],
         |s: ImmutableString| tracing::warn!("{s}"),
     );
     register_at(
         target,
         "log_error",
         &["/// Log `message` at error level. Returns the unit."],
-        &["message: String"],
+        &["message: string"],
         |s: ImmutableString| tracing::error!("{s}"),
     );
     register_at(
@@ -369,7 +369,7 @@ fn core_host_fns(target: &mut Target<'_>) {
             "/// Value of environment variable `var`; the empty string when absent (defaults are a use case).",
             "/// Errors when the variable exists but is not valid UTF-8.",
         ],
-        &["var: String"],
+        &["var: string", "string"],
         |var: ImmutableString| -> RhaiRes<ImmutableString> {
             match std::env::var_os(var.to_string()) {
                 // variable absente → chaîne vide (les défauts sont un cas d'usage)
@@ -498,7 +498,7 @@ fn fs_fns(target: &mut Target<'_>) {
             "/// Read `path` as a UTF-8 string.",
             "/// Errors on I/O failure or on bytes that are not valid UTF-8.",
         ],
-        &["path: String"],
+        &["path: string", "string"],
         |name: String| -> RhaiRes<ImmutableString> {
             std::fs::read_to_string(name)
                 .map_err(|e| rhai_err(Error::Stdio(e)))
@@ -513,7 +513,7 @@ fn fs_fns(target: &mut Target<'_>) {
             "/// Parent directories are NOT created — only `create_dir` does that.",
             "/// Errors on I/O failure.",
         ],
-        &["path: String", "content: String"],
+        &["path: string", "content: string"],
         |name: String, content: String| -> RhaiRes<()> {
             std::fs::write(name, content).map_err(|e| rhai_err(Error::Stdio(e)))
         },
@@ -525,7 +525,7 @@ fn fs_fns(target: &mut Target<'_>) {
             "/// Copy `source` to `destination`, overwriting the destination; the source stays.",
             "/// Errors on I/O failure.",
         ],
-        &["source: String", "destination: String"],
+        &["source: string", "destination: string"],
         |source: String, dest: String| -> RhaiRes<()> {
             std::fs::copy(source, dest)
                 .map_err(|e| rhai_err(Error::Stdio(e)))
@@ -539,7 +539,7 @@ fn fs_fns(target: &mut Target<'_>) {
             "/// Create `path` with all missing parents, recursively and idempotently.",
             "/// Errors on I/O failure.",
         ],
-        &["path: String"],
+        &["path: string"],
         |name: String| -> RhaiRes<()> {
             std::fs::create_dir_all(name).map_err(|e| rhai_err(Error::Stdio(e)))
         },
@@ -551,7 +551,7 @@ fn fs_fns(target: &mut Target<'_>) {
             "/// Full paths of the entries of `path` as an array of strings, unspecified order.",
             "/// Errors on I/O failure or on a non-UTF-8 entry path — never an empty string slipped in.",
         ],
-        &["path: String"],
+        &["path: string", "array"],
         |name: String| -> RhaiRes<rhai::Array> {
             let mut res = rhai::Array::new();
             for entry in std::fs::read_dir(name).map_err(|e| rhai_err(Error::Stdio(e)))? {
@@ -575,14 +575,14 @@ fn fs_fns(target: &mut Target<'_>) {
         target,
         "is_file",
         &["/// Whether `path` is a regular file; broken paths yield `false`, never an error."],
-        &["path: String"],
+        &["path: string", "bool"],
         |name: String| -> bool { Path::new(&name).is_file() },
     );
     register_at(
         target,
         "is_dir",
         &["/// Whether `path` is a directory; broken paths yield `false`, never an error."],
-        &["path: String"],
+        &["path: string", "bool"],
         |name: String| -> bool { Path::new(&name).is_dir() },
     );
 }
@@ -2808,7 +2808,13 @@ fn run(args) { return "fallback/1"; }
     /// Scenario « fonctions documentées sous metadata ».
     #[cfg(feature = "metadata")]
     fn engine_quatre_groupes() -> Engine {
-        let mut engine = Engine::new();
+        engine_quatre_groupes_sur(Engine::new())
+    }
+
+    /// Les quatre enregistreurs posés sur un engine donné (`Engine::new` pour le Scenario,
+    /// `Engine::new_raw` pour la complétude : sans natifs, la liste est celle du groupe).
+    #[cfg(feature = "metadata")]
+    fn engine_quatre_groupes_sur(mut engine: Engine) -> Engine {
         core_pure_rhai_register(&mut engine);
         core_host_rhai_register(&mut engine);
         core_sleep_rhai_register(&mut engine);
@@ -2911,6 +2917,131 @@ fn run(args) { return "fallback/1"; }
                         .iter()
                         .all(|p| p["name"].as_str().unwrap_or_default() != "_"),
                 "les paramètres de {nom} doivent être nommés, got {entree}"
+            );
+        }
+    }
+
+    /// Signature attendue pour chaque fonction des quatre groupes, sous `metadata`
+    /// (`gen_fn_signatures(false)`) : les noms de paramètres viennent des listes des
+    /// enregistreurs, les types et le retour sont des choix de contrat, pas une sortie de
+    /// rhai relevée : vocabulaire du script (`string`, jamais `String`/`ImmutableString`),
+    /// retour fallible déballé à son type de succès, `array` comme `type_of` le rend en
+    /// script. Les types natifs de rhai s'écrivent en minuscules (`map`, `array`, `string`,
+    /// `i64`, `bool`, `Fn`), `Dynamic` reste tel quel, un type enregistré garde son nom.
+    /// Une fonction qui rend l'unité n'a pas de `-> `.
+    #[cfg(feature = "metadata")]
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("sha256", "sha256(text: string) -> string"),
+        ("url_encode", "url_encode(text: string) -> string"),
+        ("to_decimal", "to_decimal(text: string) -> u32"),
+        ("base64_decode", "base64_decode(text: string) -> string"),
+        ("base64_encode", "base64_encode(text: string) -> string"),
+        ("json_encode", "json_encode(value: Dynamic) -> string"),
+        (
+            "json_encode_escape",
+            "json_encode_escape(value: Dynamic) -> string",
+        ),
+        ("json_decode", "json_decode(text: string) -> Dynamic"),
+        ("basename", "basename(path: string) -> string"),
+        ("dirname", "dirname(path: string) -> string"),
+        ("log_debug", "log_debug(message: string)"),
+        ("log_info", "log_info(message: string)"),
+        ("log_warn", "log_warn(message: string)"),
+        ("log_error", "log_error(message: string)"),
+        ("get_env", "get_env(var: string) -> string"),
+        ("sleep", "sleep(seconds: i64)"),
+    ];
+
+    /// Signatures du groupe `fs` sous sa porte (même contrat que `SIGNATURES_ATTENDUES`).
+    #[cfg(all(feature = "metadata", feature = "fs"))]
+    const SIGNATURES_ATTENDUES_FS: &[(&str, &str)] = &[
+        ("file_read", "file_read(path: string) -> string"),
+        ("file_write", "file_write(path: string, content: string)"),
+        ("file_copy", "file_copy(source: string, destination: string)"),
+        ("create_dir", "create_dir(path: string)"),
+        ("read_dir", "read_dir(path: string) -> array"),
+        ("is_file", "is_file(path: string) -> bool"),
+        ("is_dir", "is_dir(path: string) -> bool"),
+    ];
+
+    /// Chaque fonction des quatre groupes est signée exactement comme rhai la signe sans
+    /// `with_params_info` : mêmes types de paramètres, même `-> type` de retour (absent quand
+    /// la fonction rend l'unité), noms de paramètres de la liste.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn scenario_signatures_documentees_meme_types_que_rhai() {
+        let engine = engine_quatre_groupes();
+        let signatures = engine.gen_fn_signatures(false);
+        let attendues = SIGNATURES_ATTENDUES.iter().copied();
+        #[cfg(feature = "fs")]
+        let attendues = attendues.chain(SIGNATURES_ATTENDUES_FS.iter().copied());
+        for (nom, attendue) in attendues {
+            let signature = signatures
+                .iter()
+                .find(|s| s.starts_with(&format!("{nom}(")))
+                .unwrap_or_else(|| panic!("{nom} absente des signatures : {signatures:?}"));
+            assert_eq!(
+                signature, attendue,
+                "signature de {nom} : types et retour comme rhai sans `with_params_info`"
+            );
+        }
+    }
+
+    /// Garde de la complétude : `Engine::new_raw` ne porte aucune fonction signée, sinon la
+    /// liste des groupes sur ce moteur ne serait pas la leur seule.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn scenario_engine_raw_sans_natifs_signes() {
+        assert!(
+            Engine::new_raw().gen_fn_signatures(false).is_empty(),
+            "Engine::new_raw doit être vierge de signatures"
+        );
+    }
+
+    /// Complétude des quatre groupes : les signatures que les enregistreurs posent sur un
+    /// `Engine::new_raw` (sans natifs, garde testé ci-dessous) égalent en nombre la taille
+    /// des deux tables. Pas de soustraction à une base : une fonction de groupe signée
+    /// comme un natif reste comptée. Une fonction ajoutée à un groupe sans entrée de table
+    /// fait échouer ce test.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        let ajoutees = engine_quatre_groupes_sur(Engine::new_raw())
+            .gen_fn_signatures(false)
+            .len();
+        #[cfg(feature = "fs")]
+        let attendues = SIGNATURES_ATTENDUES.len() + SIGNATURES_ATTENDUES_FS.len();
+        #[cfg(not(feature = "fs"))]
+        let attendues = SIGNATURES_ATTENDUES.len();
+        assert_eq!(
+            ajoutees, attendues,
+            "fonctions des quatre groupes ajoutées à l'engine : {ajoutees}, entrées de table : {attendues}"
+        );
+    }
+
+    /// Le retour de `sha256` est écrit dans le vocabulaire de rhai, sans `String`, et jamais
+    /// absent : `sha256(text: string) -> string`.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn scenario_sha256_signature_exacte() {
+        let engine = engine_quatre_groupes();
+        let signatures = engine.gen_fn_signatures(false);
+        assert!(
+            signatures.contains(&"sha256(text: string) -> string".to_string()),
+            "sha256 doit être signée `sha256(text: string) -> string`, signatures : {signatures:?}"
+        );
+    }
+
+    /// Aucune signature des quatre groupes n'écrit `String` ni `ImmutableString` : le
+    /// vocabulaire est celui de rhai.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let engine = engine_quatre_groupes();
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
             );
         }
     }

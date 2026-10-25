@@ -232,11 +232,13 @@ Tasks:
     pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
     d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
     un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
-  [ ] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
     la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
-    type de retour (absent quand la fonction rend l'unité), tous écrits comme rhai les affiche
-    (`string`, non `String`/`ImmutableString`). Tests d'abord : pour chaque fonction du jumeau et de
-    l'enregistreur, comparer à la signature que rhai génère seul (`_: type` et `-> type`), noms exceptés.
+    type de retour (absent quand la fonction rend l'unité), écrits dans le vocabulaire du script
+    (`string`, non `String`/`ImmutableString` ; type de succès déballé pour une fonction fallible).
+    Tests d'abord : une table de signatures attendues, écrite à la main, comparée par égalité à
+    `gen_fn_signatures` pour l'enregistreur ET le jumeau ; un test de complétude (nombre de fonctions
+    du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
     Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
     commit.
 
@@ -372,7 +374,11 @@ Scenario: fonctions documentées sous metadata (s3)
     pas seulement leurs types
   And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
     entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
-    entrée ; les types sont ceux que rhai affiche pour la même fonction enregistrée sans
-    `with_params_info` (`string`, `i64`, `bool`…), de sorte que `gen_fn_signatures` rend par exemple
-    `sha256(text: string) -> string` et jamais une signature sans retour
+    entrée, écrit dans le vocabulaire du SCRIPT et non celui de Rust : `string` (pour `String` comme
+    pour `ImmutableString`), `i64`, `u32`, `bool`, `Dynamic`, `array`, `map` — les types natifs de rhai
+    s'écrivent comme `type_of` en script, donc en minuscules, y compris en retour —, le nom du type
+    enregistré tel quel (`K8sGeneric`, `RestClient`) ;
+    une fonction fallible (`RhaiRes<T>`) porte le type de succès `T` déballé, jamais le `Result<…>` brut
+    que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
+    une signature sans retour
   And sans la feature, les mêmes tests de comportement passent sans différence

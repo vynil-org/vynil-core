@@ -1300,14 +1300,14 @@ fn http_fns(target: &mut Target<'_>) {
         target,
         "new_http_client",
         &["/// New HTTP client whose requests target `base` (joined literally as `base/path`). No errors."],
-        &["base: &str"],
+        &["base: string", "RestClient"],
         RestClient::new,
     );
     register_at(
         target,
         "new_client",
         &["/// Twin of `new_http_client` — same construction, same type `RestClient`."],
-        &["base: &str"],
+        &["base: string", "RestClient"],
         RestClient::new,
     );
     register_at(
@@ -1321,7 +1321,7 @@ fn http_fns(target: &mut Target<'_>) {
         target,
         "set_baseurl",
         &["/// Points later requests at `base` (void twin of the chainable Rust builder)."],
-        &["client: &mut RestClient", "base: String"],
+        &["client: &mut RestClient", "base: string"],
         RestClient::baseurl_rhai,
     );
     register_at(
@@ -1331,7 +1331,7 @@ fn http_fns(target: &mut Target<'_>) {
             "/// Stores a PEM CA added as a rustls trust root; an invalid PEM fails only at the",
             "/// first request, when the client is built — never in the setter.",
         ],
-        &["client: &mut RestClient", "ca: &str"],
+        &["client: &mut RestClient", "ca: string"],
         RestClient::set_server_ca,
     );
     register_at(
@@ -1341,7 +1341,7 @@ fn http_fns(target: &mut Target<'_>) {
             "/// Stores the client PEM `cert` then `key` used to build the mTLS identity",
             "/// (key before cert in the concatenated PEM); validated at the first request.",
         ],
-        &["client: &mut RestClient", "cert: &str", "key: &str"],
+        &["client: &mut RestClient", "cert: string", "key: string"],
         RestClient::set_mtls,
     );
     register_at(
@@ -1351,7 +1351,7 @@ fn http_fns(target: &mut Target<'_>) {
             "/// Adds one header sent on every request; a name already present is replaced",
             "/// WITHOUT REGARD TO CASE — the last value and the last case win.",
         ],
-        &["client: &mut RestClient", "key: String", "value: String"],
+        &["client: &mut RestClient", "key: string", "value: string"],
         RestClient::add_header_rhai,
     );
     register_at(
@@ -1368,14 +1368,14 @@ fn http_fns(target: &mut Target<'_>) {
         target,
         "add_header_bearer",
         &["/// Sets `Authorization: Bearer <token>`."],
-        &["client: &mut RestClient", "token: &str"],
+        &["client: &mut RestClient", "token: string"],
         RestClient::add_header_bearer,
     );
     register_at(
         target,
         "add_header_basic",
         &["/// Sets `Authorization: Basic` over standard base64 of `username:password`."],
-        &["client: &mut RestClient", "username: &str", "password: &str"],
+        &["client: &mut RestClient", "username: string", "password: string"],
         RestClient::add_header_basic,
     );
     register_at(
@@ -1385,14 +1385,14 @@ fn http_fns(target: &mut Target<'_>) {
             "/// Sends a real HEAD; renders the map {code, headers} only — no body is read,",
             "/// and any non-2xx status still returns Ok.",
         ],
-        &["client: &mut RestClient", "path: String"],
+        &["client: &mut RestClient", "path: string", "map"],
         RestClient::rhai_head,
     );
     register_at(
         target,
         "http_head",
         &["/// Alias of `head` — same real HEAD, same {code, headers} map."],
-        &["client: &mut RestClient", "path: String"],
+        &["client: &mut RestClient", "path: string", "map"],
         RestClient::rhai_head,
     );
     register_at(
@@ -1402,28 +1402,28 @@ fn http_fns(target: &mut Target<'_>) {
             "/// GET on `base/path`; map {code, headers, body, json} — a non-2xx status still",
             "/// returns Ok, an invalid JSON body falls back silently to the empty map.",
         ],
-        &["client: &mut RestClient", "path: String"],
+        &["client: &mut RestClient", "path: string", "map"],
         RestClient::rhai_get,
     );
     register_at(
         target,
         "http_get",
         &["/// Alias of `get`."],
-        &["client: &mut RestClient", "path: String"],
+        &["client: &mut RestClient", "path: string", "map"],
         RestClient::rhai_get,
     );
     register_at(
         target,
         "delete",
         &["/// DELETE on `base/path`; map {code, headers, body, json}; any status stays Ok."],
-        &["client: &mut RestClient", "path: String"],
+        &["client: &mut RestClient", "path: string", "map"],
         RestClient::rhai_delete,
     );
     register_at(
         target,
         "http_delete",
         &["/// Alias of `delete`."],
-        &["client: &mut RestClient", "path: String"],
+        &["client: &mut RestClient", "path: string", "map"],
         RestClient::rhai_delete,
     );
     register_at(
@@ -1432,56 +1432,56 @@ fn http_fns(target: &mut Target<'_>) {
         &[
             "/// DELETE sending the serialized body of `val`; a 404 renders as a success like any other status.",
         ],
-        &["client: &mut RestClient", "path: String", "val: Dynamic"],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_delete_with_body,
     );
     register_at(
         target,
         "http_delete_with_body",
         &["/// Alias of `delete_with_body`."],
-        &["client: &mut RestClient", "path: String", "val: Dynamic"],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_delete_with_body,
     );
     register_at(
         target,
         "patch",
         &["/// PATCH sending `val` (a string raw, anything else as JSON); map {code, headers, body, json}."],
-        &["client: &mut RestClient", "path: String", "val: Dynamic"],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_patch,
     );
     register_at(
         target,
         "http_patch",
         &["/// Alias of `patch`."],
-        &["client: &mut RestClient", "path: String", "val: Dynamic"],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_patch,
     );
     register_at(
         target,
         "post",
         &["/// POST sending `val` (a string raw, anything else as JSON); map {code, headers, body, json}."],
-        &["client: &mut RestClient", "path: String", "val: Dynamic"],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_post,
     );
     register_at(
         target,
         "http_post",
         &["/// Alias of `post`."],
-        &["client: &mut RestClient", "path: String", "val: Dynamic"],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_post,
     );
     register_at(
         target,
         "put",
         &["/// PUT sending `val` (a string raw, anything else as JSON); map {code, headers, body, json}."],
-        &["client: &mut RestClient", "path: String", "val: Dynamic"],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_put,
     );
     register_at(
         target,
         "http_put",
         &["/// Alias of `put`."],
-        &["client: &mut RestClient", "path: String", "val: Dynamic"],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_put,
     );
     register_at(
@@ -1491,14 +1491,14 @@ fn http_fns(target: &mut Target<'_>) {
             "/// POSTs the map `val` as application/x-www-form-urlencoded — scalar values only,",
             "/// a composite one is refused; a stored Content-Type header is dropped (any case).",
         ],
-        &["client: &mut RestClient", "path: String", "val: Map"],
+        &["client: &mut RestClient", "path: string", "val: map", "map"],
         RestClient::rhai_post_form,
     );
     register_at(
         target,
         "http_post_form",
         &["/// Alias of `post_form`."],
-        &["client: &mut RestClient", "path: String", "val: Map"],
+        &["client: &mut RestClient", "path: string", "val: map", "map"],
         RestClient::rhai_post_form,
     );
     register_at(
@@ -1508,7 +1508,12 @@ fn http_fns(target: &mut Target<'_>) {
             "/// GETs the absolute `url` (auth `\"\"` anonymous, `bearer` or `basic`, case-insensitive;",
             "/// any other auth_type errors before connecting) and renders the YAML body as a Rhai value.",
         ],
-        &["url: String", "auth_type: String", "credential: String"],
+        &[
+            "url: string",
+            "auth_type: string",
+            "credential: string",
+            "Dynamic",
+        ],
         http_get_yaml,
     );
     register_at(
@@ -1517,14 +1522,14 @@ fn http_fns(target: &mut Target<'_>) {
         &[
             "/// First value of header `name` (case-insensitive) in a response `headers` vector, unit when absent.",
         ],
-        &["headers: Array", "name: String"],
+        &["headers: array", "name: string", "Dynamic"],
         headers_get,
     );
     register_at(
         target,
         "headers_has",
         &["/// Whether header `name` is present in a response `headers` vector, case-insensitively."],
-        &["headers: Array", "name: String"],
+        &["headers: array", "name: string", "bool"],
         headers_has,
     );
 }
@@ -3427,5 +3432,174 @@ mod jumeau_module_http {
             names_added_by_module(http_module()),
             "sans `metadata`, les deux ensembles de noms restent égaux"
         );
+    }
+}
+
+#[cfg(all(test, feature = "metadata", feature = "http"))]
+mod signatures_documentees {
+    use super::*;
+
+    /// Signatures attendues du groupe `http`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("new_http_client", "new_http_client(base: string) -> RestClient"),
+        ("new_client", "new_client(base: string) -> RestClient"),
+        ("headers_reset", "headers_reset(client: &mut RestClient)"),
+        (
+            "set_baseurl",
+            "set_baseurl(client: &mut RestClient, base: string)",
+        ),
+        (
+            "set_server_ca",
+            "set_server_ca(client: &mut RestClient, ca: string)",
+        ),
+        (
+            "set_mtls_cert_key",
+            "set_mtls_cert_key(client: &mut RestClient, cert: string, key: string)",
+        ),
+        (
+            "add_header",
+            "add_header(client: &mut RestClient, key: string, value: string)",
+        ),
+        ("add_header_json", "add_header_json(client: &mut RestClient)"),
+        (
+            "add_header_bearer",
+            "add_header_bearer(client: &mut RestClient, token: string)",
+        ),
+        (
+            "add_header_basic",
+            "add_header_basic(client: &mut RestClient, username: string, password: string)",
+        ),
+        ("head", "head(client: &mut RestClient, path: string) -> map"),
+        (
+            "http_head",
+            "http_head(client: &mut RestClient, path: string) -> map",
+        ),
+        ("get", "get(client: &mut RestClient, path: string) -> map"),
+        (
+            "http_get",
+            "http_get(client: &mut RestClient, path: string) -> map",
+        ),
+        ("delete", "delete(client: &mut RestClient, path: string) -> map"),
+        (
+            "http_delete",
+            "http_delete(client: &mut RestClient, path: string) -> map",
+        ),
+        (
+            "delete_with_body",
+            "delete_with_body(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "http_delete_with_body",
+            "http_delete_with_body(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "patch",
+            "patch(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "http_patch",
+            "http_patch(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "post",
+            "post(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "http_post",
+            "http_post(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "put",
+            "put(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "http_put",
+            "http_put(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "post_form",
+            "post_form(client: &mut RestClient, path: string, val: map) -> map",
+        ),
+        (
+            "http_post_form",
+            "http_post_form(client: &mut RestClient, path: string, val: map) -> map",
+        ),
+        (
+            "http_get_yaml",
+            "http_get_yaml(url: string, auth_type: string, credential: string) -> Dynamic",
+        ),
+        (
+            "headers_get",
+            "headers_get(headers: array, name: string) -> Dynamic",
+        ),
+        ("headers_has", "headers_has(headers: array, name: string) -> bool"),
+    ];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        http_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", http_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        http_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
+            );
+        }
     }
 }

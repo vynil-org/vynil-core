@@ -108,7 +108,7 @@ fn chrono_fns(target: &mut Target<'_>) {
         target,
         "date_now",
         &["/// Current local date-time, frozen at call time, as a DateTimeHandler. No errors."],
-        &[],
+        &["DateTimeHandler"],
         DateTimeHandler::now,
     );
     register_at(
@@ -118,7 +118,7 @@ fn chrono_fns(target: &mut Target<'_>) {
             "/// Render the instant frozen in `handler` with a `chrono` strftime pattern `fmt`.",
             "/// Errors when an item of `fmt` cannot be rendered, any partial output being lost.",
         ],
-        &["handler: DateTimeHandler", "fmt: String"],
+        &["handler: &mut DateTimeHandler", "fmt: string", "string"],
         DateTimeHandler::rhai_format,
     );
 }
@@ -915,6 +915,89 @@ mod tests {
                 names_added_by(chrono_rhai_register),
                 set_of(&["date_now", "format"]),
                 "sans `metadata`, les noms accordés sont identiques"
+            );
+        }
+    }
+}
+
+#[cfg(all(test, feature = "metadata"))]
+mod signatures_documentees {
+    use super::*;
+
+    /// Signatures attendues du groupe `chrono`, écrites à la main depuis les closures :
+    /// `date_now` rend un `DateTimeHandler` sans erreur, `format` a pour receveur
+    /// `handler: &mut DateTimeHandler` et rend la chaîne déballée de son `RhaiRes`.
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("date_now", "date_now() -> DateTimeHandler"),
+        (
+            "format",
+            "format(handler: &mut DateTimeHandler, fmt: string) -> string",
+        ),
+    ];
+
+    /// Signatures que le groupe ajoute à la base, par l'enregistreur direct sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        chrono_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le groupe ajoute à la base, par le jumeau module enregistré sous `m`
+    /// (préfixe `m::` retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", chrono_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or(s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        chrono_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
             );
         }
     }

@@ -26,7 +26,7 @@ functions carry introspection metadata, and the blocking native calls became can
 - **Feature `metadata`** (#22): off by default, implies `rhai`. Under it, each registered
   script function carries its `///` comment and its parameter names through
   `rhai::FuncRegistration`, surfaced by `Engine::gen_fn_signatures` and
-  `Engine::gen_fn_metadata_to_json` (`docComments`, named `params`). Registrations behave
+  `Engine::gen_fn_metadata_to_json` (`docComments`, named `params`, return type in script vocabulary). Registrations behave
   identically without it — documentation is pure metadata.
 - **Cancellation** (#21): `cancel::CancelToken` + `cancel::scope` — a thread-local token the
   crate's blocking native calls read, completing `Engine::on_progress` (which only gets the

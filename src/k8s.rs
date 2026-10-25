@@ -1858,7 +1858,7 @@ fn k8sgeneric_dynamicobject_fns(target: &mut Target<'_>) {
         target,
         "data",
         &["/// Cloned `data` map of the dynamic object, as a Rhai value."],
-        &["obj: &mut DynamicObject"],
+        &["obj: &mut DynamicObject", "Dynamic"],
         dynamic_object_data,
     );
 }
@@ -1870,21 +1870,21 @@ fn k8sgeneric_object_fns(target: &mut Target<'_>) {
         target,
         "kind",
         &["/// Runtime kind of the object's type meta; empty string when absent (list items)."],
-        &["obj: &mut K8sObject"],
+        &["obj: &mut K8sObject", "string"],
         K8sObject::get_kind,
     );
     register_get_at(
         target,
         "original_kind",
         &["/// Kind resolved when the handle was built; the reliable one."],
-        &["obj: &mut K8sObject"],
+        &["obj: &mut K8sObject", "string"],
         K8sObject::original_kind,
     );
     register_get_at(
         target,
         "metadata",
         &["/// The object's `metadata` as a Rhai value."],
-        &["obj: &mut K8sObject"],
+        &["obj: &mut K8sObject", "Dynamic"],
         K8sObject::get_metadata,
     );
     register_at(
@@ -1898,21 +1898,21 @@ fn k8sgeneric_object_fns(target: &mut Target<'_>) {
         target,
         "wait_condition",
         &["/// Waits until status.conditions[type=condition].status is \"True\", up to `timeout` seconds."],
-        &["obj: &mut K8sObject", "condition: String", "timeout: i64"],
+        &["obj: &mut K8sObject", "condition: string", "timeout: i64"],
         K8sObject::wait_condition,
     );
     register_at(
         target,
         "wait_status",
         &["/// Waits until the boolean `status.<prop>` is true, up to `timeout` seconds."],
-        &["obj: &mut K8sObject", "prop: String", "timeout: i64"],
+        &["obj: &mut K8sObject", "prop: string", "timeout: i64"],
         K8sObject::wait_status,
     );
     register_at(
         target,
         "wait_status_prop",
         &["/// Waits until the non-boolean `status.<prop>` carries a truthy value, up to `timeout` seconds."],
-        &["obj: &mut K8sObject", "prop: String", "timeout: i64"],
+        &["obj: &mut K8sObject", "prop: string", "timeout: i64"],
         K8sObject::wait_status_prop,
     );
     register_at(
@@ -1921,8 +1921,8 @@ fn k8sgeneric_object_fns(target: &mut Target<'_>) {
         &["/// Waits until `status.<prop>` equals the string `value`, up to `timeout` seconds."],
         &[
             "obj: &mut K8sObject",
-            "prop: String",
-            "value: String",
+            "prop: string",
+            "value: string",
             "timeout: i64",
         ],
         K8sObject::wait_status_string,
@@ -1933,7 +1933,7 @@ fn k8sgeneric_object_fns(target: &mut Target<'_>) {
         &[
             "/// Waits until `predicate` (evaluated on the full object at each watch event) returns true, up to `timeout` seconds.",
         ],
-        &["obj: &mut K8sObject", "predicate: FnPtr", "timeout: i64"],
+        &["obj: &mut K8sObject", "predicate: Fn", "timeout: i64"],
         K8sObject::wait_for,
     );
     register_at(
@@ -1955,14 +1955,14 @@ fn k8sgeneric_handle_fns(target: &mut Target<'_>) {
         &[
             "/// Resolves `name` (kind or plural, any case) as an all-namespaces handle; never fails on an unresolved kind.",
         ],
-        &["name: String"],
+        &["name: string", "K8sGeneric"],
         K8sGeneric::new_global,
     );
     register_at(
         target,
         "k8s_resource",
         &["/// Resolves `name` within namespace `ns` (empty treated as absent; no `default` ever)."],
-        &["name: String", "ns: String"],
+        &["name: string", "ns: string", "K8sGeneric"],
         K8sGeneric::new_ns,
     );
     register_at(
@@ -1971,14 +1971,14 @@ fn k8sgeneric_handle_fns(target: &mut Target<'_>) {
         &[
             "/// Resolves `name` by `api_version` (group split on '/'; without '/', the version is ignored) in `ns`.",
         ],
-        &["api_version: String", "name: String", "ns: String"],
+        &["api_version: string", "name: string", "ns: string", "K8sGeneric"],
         K8sGeneric::new_group_ns,
     );
     register_at(
         target,
         "list",
         &["/// Lists the resource: the complete docobject, unpaged."],
-        &["h: &mut K8sGeneric"],
+        &["h: &mut K8sGeneric", "Dynamic"],
         K8sGeneric::rhai_list,
     );
     register_at(
@@ -1987,7 +1987,7 @@ fn k8sgeneric_handle_fns(target: &mut Target<'_>) {
         &[
             "/// Lists with a label selector string passed verbatim to the server (invalid selectors fail server-side).",
         ],
-        &["h: &mut K8sGeneric", "labels: String"],
+        &["h: &mut K8sGeneric", "labels: string", "Dynamic"],
         K8sGeneric::rhai_list_labels,
     );
     register_at(
@@ -2007,28 +2007,28 @@ fn k8sgeneric_reads_fns(target: &mut Target<'_>) {
         target,
         "list_meta",
         &["/// Lists the PartialObjectMeta of the resource (complete docobject list)."],
-        &["h: &mut K8sGeneric"],
+        &["h: &mut K8sGeneric", "Dynamic"],
         K8sGeneric::rhai_list_meta,
     );
     register_at(
         target,
         "get",
         &["/// Gets `name` as the complete docobject; a 404 is an error, never None."],
-        &["h: &mut K8sGeneric", "name: String"],
+        &["h: &mut K8sGeneric", "name: string", "Dynamic"],
         K8sGeneric::rhai_get,
     );
     register_at(
         target,
         "get_meta",
         &["/// Gets the PartialObjectMeta of `name`; a 404 is an error."],
-        &["h: &mut K8sGeneric", "name: String"],
+        &["h: &mut K8sGeneric", "name: string", "Dynamic"],
         K8sGeneric::rhai_get_meta,
     );
     register_at(
         target,
         "get_obj",
         &["/// Gets a `K8sObject` handle bound to `name`."],
-        &["h: &mut K8sGeneric", "name: String"],
+        &["h: &mut K8sGeneric", "name: string", "K8sObject"],
         K8sGeneric::rhai_get_obj,
     );
 }
@@ -2040,21 +2040,21 @@ fn k8sgeneric_writes_fns(target: &mut Target<'_>) {
         target,
         "delete",
         &["/// Deletes `name` with Foreground propagation; a 404 is an error."],
-        &["h: &mut K8sGeneric", "name: String"],
+        &["h: &mut K8sGeneric", "name: string"],
         K8sGeneric::rhai_delete,
     );
     register_at(
         target,
         "create",
         &["/// Creates `data`, with `metadata.labels`/`ownerReferences` injected per the context providers."],
-        &["h: &mut K8sGeneric", "data: Dynamic"],
+        &["h: &mut K8sGeneric", "data: Dynamic", "Dynamic"],
         K8sGeneric::rhai_create,
     );
     register_at(
         target,
         "replace",
         &["/// PUTs `data` as `name` without reading the resourceVersion; a 409 conflict surfaces as is."],
-        &["h: &mut K8sGeneric", "name: String", "data: Dynamic"],
+        &["h: &mut K8sGeneric", "name: string", "data: Dynamic", "Dynamic"],
         K8sGeneric::rhai_replace,
     );
     register_at(
@@ -2063,7 +2063,7 @@ fn k8sgeneric_writes_fns(target: &mut Target<'_>) {
         &[
             "/// Server-side applies `data` to `name`: forced SSA, fieldManager = client name; no other patch kind exists.",
         ],
-        &["h: &mut K8sGeneric", "name: String", "data: Dynamic"],
+        &["h: &mut K8sGeneric", "name: string", "data: Dynamic", "Dynamic"],
         K8sGeneric::rhai_patch,
     );
     register_at(
@@ -2072,7 +2072,7 @@ fn k8sgeneric_writes_fns(target: &mut Target<'_>) {
         &[
             "/// Server-side applies `data` to `name`; an immutable-`Job` error on a completed Job returns the current object.",
         ],
-        &["h: &mut K8sGeneric", "name: String", "data: Dynamic"],
+        &["h: &mut K8sGeneric", "name: string", "data: Dynamic", "Dynamic"],
         K8sGeneric::rhai_apply,
     );
     register_at(
@@ -2081,14 +2081,14 @@ fn k8sgeneric_writes_fns(target: &mut Target<'_>) {
         &[
             "/// True when discovery resolved this kind at construction; says NOTHING about the object existing.",
         ],
-        &["h: &mut K8sGeneric"],
+        &["h: &mut K8sGeneric", "Dynamic"],
         K8sGeneric::rhai_exist,
     );
     register_get_at(
         target,
         "scope",
         &["/// `\"cluster\"` or `\"namespace\"` per the resolved resource's scope."],
-        &["h: &mut K8sGeneric"],
+        &["h: &mut K8sGeneric", "string"],
         K8sGeneric::rhai_get_scope,
     );
 }
@@ -2119,7 +2119,7 @@ fn k8sraw_fns(target: &mut Target<'_>) {
         target,
         "new_k8s_raw",
         &["/// Builds a `K8sRaw` bound to the shared raw client."],
-        &[],
+        &["K8sRaw"],
         K8sRaw::new,
     );
     register_at(
@@ -2128,7 +2128,7 @@ fn k8sraw_fns(target: &mut Target<'_>) {
         &[
             "/// GETs `url` verbatim (relative or absolute) and returns the JSON body only; a non-2xx is an error.",
         ],
-        &["raw: &mut K8sRaw", "url: String"],
+        &["raw: &mut K8sRaw", "url: string", "Dynamic"],
         K8sRaw::rhai_get_url,
     );
     register_at(
@@ -2137,7 +2137,7 @@ fn k8sraw_fns(target: &mut Target<'_>) {
         &[
             "/// GETs `/version` and returns the JSON body (script name of the API-version endpoint; no `get_api_version` alias).",
         ],
-        &["raw: &mut K8sRaw"],
+        &["raw: &mut K8sRaw", "Dynamic"],
         K8sRaw::rhai_get_api_version,
     );
     register_at(
@@ -2146,7 +2146,7 @@ fn k8sraw_fns(target: &mut Target<'_>) {
         &[
             "/// GETs `/apis` raw with the discovery Accept header — the discovery cache is NOT consulted, nothing is filtered.",
         ],
-        &["raw: &mut K8sRaw"],
+        &["raw: &mut K8sRaw", "Dynamic"],
         K8sRaw::rhai_get_api_resources,
     );
 }
@@ -2188,28 +2188,28 @@ fn k8sworkload_deploy_fns(target: &mut Target<'_>) {
         target,
         "get_deployment",
         &["/// Fetches the Deployment `name` in `namespace` (empty namespace treated as absent)."],
-        &["namespace: String", "name: String"],
+        &["namespace: string", "name: string", "K8sDeploy"],
         K8sDeploy::get_deployment,
     );
     register_get_at(
         target,
         "metadata",
         &["/// The Deployment's metadata rendered via JSON; absent → unit."],
-        &["d: &mut K8sDeploy"],
+        &["d: &mut K8sDeploy", "Dynamic"],
         K8sDeploy::get_metadata,
     );
     register_get_at(
         target,
         "spec",
         &["/// The Deployment's spec rendered via JSON; absent → unit."],
-        &["d: &mut K8sDeploy"],
+        &["d: &mut K8sDeploy", "Dynamic"],
         K8sDeploy::get_spec,
     );
     register_get_at(
         target,
         "status",
         &["/// The Deployment's status rendered via JSON; absent → unit."],
-        &["d: &mut K8sDeploy"],
+        &["d: &mut K8sDeploy", "Dynamic"],
         K8sDeploy::get_status,
     );
     register_at(
@@ -2232,28 +2232,28 @@ fn k8sworkload_daemonset_fns(target: &mut Target<'_>) {
         &[
             "/// Fetches the DaemonSet `name` in `namespace` (typo locked; empty namespace treated as absent).",
         ],
-        &["namespace: String", "name: String"],
+        &["namespace: string", "name: string", "K8sDaemonSet"],
         K8sDaemonSet::get_deamonset,
     );
     register_get_at(
         target,
         "metadata",
         &["/// The DaemonSet's metadata rendered via JSON; absent → unit."],
-        &["ds: &mut K8sDaemonSet"],
+        &["ds: &mut K8sDaemonSet", "Dynamic"],
         K8sDaemonSet::get_metadata,
     );
     register_get_at(
         target,
         "spec",
         &["/// The DaemonSet's spec rendered via JSON; absent → unit."],
-        &["ds: &mut K8sDaemonSet"],
+        &["ds: &mut K8sDaemonSet", "Dynamic"],
         K8sDaemonSet::get_spec,
     );
     register_get_at(
         target,
         "status",
         &["/// The DaemonSet's status rendered via JSON; absent → unit."],
-        &["ds: &mut K8sDaemonSet"],
+        &["ds: &mut K8sDaemonSet", "Dynamic"],
         K8sDaemonSet::get_status,
     );
     register_at(
@@ -2274,28 +2274,28 @@ fn k8sworkload_statefulset_fns(target: &mut Target<'_>) {
         target,
         "get_statefulset",
         &["/// Fetches the StatefulSet `name` in `namespace` (empty namespace treated as absent)."],
-        &["namespace: String", "name: String"],
+        &["namespace: string", "name: string", "K8sStatefulSet"],
         K8sStatefulSet::get_sts,
     );
     register_get_at(
         target,
         "metadata",
         &["/// The StatefulSet's metadata rendered via JSON; absent → unit."],
-        &["sts: &mut K8sStatefulSet"],
+        &["sts: &mut K8sStatefulSet", "Dynamic"],
         K8sStatefulSet::get_metadata,
     );
     register_get_at(
         target,
         "spec",
         &["/// The StatefulSet's spec rendered via JSON; absent → unit."],
-        &["sts: &mut K8sStatefulSet"],
+        &["sts: &mut K8sStatefulSet", "Dynamic"],
         K8sStatefulSet::get_spec,
     );
     register_get_at(
         target,
         "status",
         &["/// The StatefulSet's status rendered via JSON; absent → unit."],
-        &["sts: &mut K8sStatefulSet"],
+        &["sts: &mut K8sStatefulSet", "Dynamic"],
         K8sStatefulSet::get_status,
     );
     register_at(
@@ -2314,28 +2314,28 @@ fn k8sworkload_job_fns(target: &mut Target<'_>) {
         target,
         "get_job",
         &["/// Fetches the Job `name` in `namespace` (empty namespace treated as absent)."],
-        &["namespace: String", "name: String"],
+        &["namespace: string", "name: string", "K8sJob"],
         K8sJob::get_job,
     );
     register_get_at(
         target,
         "metadata",
         &["/// The Job's metadata rendered via JSON; absent → unit."],
-        &["j: &mut K8sJob"],
+        &["j: &mut K8sJob", "Dynamic"],
         K8sJob::get_metadata,
     );
     register_get_at(
         target,
         "spec",
         &["/// The Job's spec rendered via JSON; absent → unit."],
-        &["j: &mut K8sJob"],
+        &["j: &mut K8sJob", "Dynamic"],
         K8sJob::get_spec,
     );
     register_get_at(
         target,
         "status",
         &["/// The Job's status rendered via JSON; absent → unit."],
-        &["j: &mut K8sJob"],
+        &["j: &mut K8sJob", "Dynamic"],
         K8sJob::get_status,
     );
     register_at(
@@ -5885,5 +5885,354 @@ mod warn_tests {
             "le warn doit porter la famille E_DISCOVERY_WARN et nommer l'exception du pont, obtenu : {:?}",
             warns[0]
         );
+    }
+}
+
+#[cfg(all(test, feature = "metadata", feature = "k8s"))]
+mod signatures_documentees {
+    use super::*;
+
+    /// Signatures attendues du groupe `k8sgeneric`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("get$data", "get$data(obj: &mut DynamicObject) -> Dynamic"),
+        ("get$kind", "get$kind(obj: &mut K8sObject) -> string"),
+        (
+            "get$original_kind",
+            "get$original_kind(obj: &mut K8sObject) -> string",
+        ),
+        ("get$metadata", "get$metadata(obj: &mut K8sObject) -> Dynamic"),
+        ("delete", "delete(obj: &mut K8sObject)"),
+        (
+            "wait_condition",
+            "wait_condition(obj: &mut K8sObject, condition: string, timeout: i64)",
+        ),
+        (
+            "wait_status",
+            "wait_status(obj: &mut K8sObject, prop: string, timeout: i64)",
+        ),
+        (
+            "wait_status_prop",
+            "wait_status_prop(obj: &mut K8sObject, prop: string, timeout: i64)",
+        ),
+        (
+            "wait_status_string",
+            "wait_status_string(obj: &mut K8sObject, prop: string, value: string, timeout: i64)",
+        ),
+        (
+            "wait_for",
+            "wait_for(obj: &mut K8sObject, predicate: Fn, timeout: i64)",
+        ),
+        ("wait_deleted", "wait_deleted(obj: &mut K8sObject, timeout: i64)"),
+        ("k8s_resource", "k8s_resource(name: string) -> K8sGeneric"),
+        (
+            "k8s_resource",
+            "k8s_resource(name: string, ns: string) -> K8sGeneric",
+        ),
+        (
+            "k8s_resource",
+            "k8s_resource(api_version: string, name: string, ns: string) -> K8sGeneric",
+        ),
+        ("list", "list(h: &mut K8sGeneric) -> Dynamic"),
+        ("list", "list(h: &mut K8sGeneric, labels: string) -> Dynamic"),
+        ("update_k8s_crd_cache", "update_k8s_crd_cache()"),
+        ("list_meta", "list_meta(h: &mut K8sGeneric) -> Dynamic"),
+        ("get", "get(h: &mut K8sGeneric, name: string) -> Dynamic"),
+        (
+            "get_meta",
+            "get_meta(h: &mut K8sGeneric, name: string) -> Dynamic",
+        ),
+        (
+            "get_obj",
+            "get_obj(h: &mut K8sGeneric, name: string) -> K8sObject",
+        ),
+        ("delete", "delete(h: &mut K8sGeneric, name: string)"),
+        ("create", "create(h: &mut K8sGeneric, data: Dynamic) -> Dynamic"),
+        (
+            "replace",
+            "replace(h: &mut K8sGeneric, name: string, data: Dynamic) -> Dynamic",
+        ),
+        (
+            "patch",
+            "patch(h: &mut K8sGeneric, name: string, data: Dynamic) -> Dynamic",
+        ),
+        (
+            "apply",
+            "apply(h: &mut K8sGeneric, name: string, data: Dynamic) -> Dynamic",
+        ),
+        ("exist", "exist(h: &mut K8sGeneric) -> Dynamic"),
+        ("get$scope", "get$scope(h: &mut K8sGeneric) -> string"),
+    ];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        k8sgeneric_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", k8sgeneric_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        k8sgeneric_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
+            );
+        }
+    }
+}
+
+#[cfg(all(test, feature = "metadata", feature = "k8s"))]
+mod signatures_documentees_raw {
+    use super::*;
+
+    /// Signatures attendues du groupe `k8sraw`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("new_k8s_raw", "new_k8s_raw() -> K8sRaw"),
+        ("get_url", "get_url(raw: &mut K8sRaw, url: string) -> Dynamic"),
+        (
+            "get_cluster_version",
+            "get_cluster_version(raw: &mut K8sRaw) -> Dynamic",
+        ),
+        (
+            "get_api_resources",
+            "get_api_resources(raw: &mut K8sRaw) -> Dynamic",
+        ),
+    ];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        k8sraw_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", k8sraw_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        k8sraw_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
+            );
+        }
+    }
+}
+
+#[cfg(all(test, feature = "metadata", feature = "k8s"))]
+mod signatures_documentees_workload {
+    use super::*;
+
+    /// Signatures attendues du groupe `k8sworkload`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        (
+            "get_deployment",
+            "get_deployment(namespace: string, name: string) -> K8sDeploy",
+        ),
+        ("get$metadata", "get$metadata(d: &mut K8sDeploy) -> Dynamic"),
+        ("get$spec", "get$spec(d: &mut K8sDeploy) -> Dynamic"),
+        ("get$status", "get$status(d: &mut K8sDeploy) -> Dynamic"),
+        (
+            "wait_available",
+            "wait_available(d: &mut K8sDeploy, timeout: i64)",
+        ),
+        (
+            "get_deamonset",
+            "get_deamonset(namespace: string, name: string) -> K8sDaemonSet",
+        ),
+        ("get$metadata", "get$metadata(ds: &mut K8sDaemonSet) -> Dynamic"),
+        ("get$spec", "get$spec(ds: &mut K8sDaemonSet) -> Dynamic"),
+        ("get$status", "get$status(ds: &mut K8sDaemonSet) -> Dynamic"),
+        (
+            "wait_available",
+            "wait_available(ds: &mut K8sDaemonSet, timeout: i64)",
+        ),
+        (
+            "get_statefulset",
+            "get_statefulset(namespace: string, name: string) -> K8sStatefulSet",
+        ),
+        (
+            "get$metadata",
+            "get$metadata(sts: &mut K8sStatefulSet) -> Dynamic",
+        ),
+        ("get$spec", "get$spec(sts: &mut K8sStatefulSet) -> Dynamic"),
+        ("get$status", "get$status(sts: &mut K8sStatefulSet) -> Dynamic"),
+        (
+            "wait_available",
+            "wait_available(sts: &mut K8sStatefulSet, timeout: i64)",
+        ),
+        ("get_job", "get_job(namespace: string, name: string) -> K8sJob"),
+        ("get$metadata", "get$metadata(j: &mut K8sJob) -> Dynamic"),
+        ("get$spec", "get$spec(j: &mut K8sJob) -> Dynamic"),
+        ("get$status", "get$status(j: &mut K8sJob) -> Dynamic"),
+        ("wait_done", "wait_done(j: &mut K8sJob, timeout: i64)"),
+    ];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        k8sworkload_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", k8sworkload_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        k8sworkload_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
+            );
+        }
     }
 }

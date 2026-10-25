@@ -95,8 +95,8 @@ Must:
     commentaire `///` (ce qu'elle fait, ses erreurs, sa valeur) et le NOM de chacun de ses
     paramètres, par @rhai::FuncRegistration, et le TYPE DE RETOUR quand elle ne rend pas l'unité :
     dès qu'un enregistrement fixe les noms, rhai ne génère plus les types, la liste que l'on lui
-    passe est donc complète (paramètres puis retour) et écrite dans le vocabulaire de rhai
-    (`string`, `i64`, `bool`…). Sans la feature, le comportement est identique : la
+    passe est donc complète (paramètres puis retour) et écrite dans le vocabulaire du script
+    (`string`, `i64`, `bool`, `array`, `map`… ; type de succès déballé pour une fonction fallible). Sans la feature, le comportement est identique : la
     documentation n'est qu'une métadonnée.
   Exposer la feature `metadata` (issue vynil-org/vynil-core#22) : `metadata = ["rhai",
     "rhai/metadata"]`, hors `default`, qui active l'introspection Rhai (`gen_fn_signatures`,
@@ -264,7 +264,7 @@ Tasks:
     changement de comportement pour vynil et kuberest, qui n'appellent que `new_bare` : version
     mineure sous `1.0`. Le tag `v0.9.0` n'est posé qu'APRÈS le merge et la CI verte, le workflow
     `publish.yml` vérifiant tag et manifest.
-  [ ] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
     clause amendée de « Documenter les fonctions enregistrées » ci-dessus. Tâche portée par les treize specs
     de ./src/ qui ont un enregistreur documenté (une tâche jumelle chacune), cochée quand toutes le sont ;
     la 0.9.0 ne se tague pas avant.

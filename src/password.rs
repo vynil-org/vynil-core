@@ -159,7 +159,7 @@ fn password_fns(target: &mut Target<'_>) {
             "/// Random password of `len` chars, minimum one per class (lower/upper/digits/symbols).",
             "/// Negative `len` is clamped to 0 and refused; errors carry the raw PWD-SPEC text.",
         ],
-        &["len: i64"],
+        &["len: i64", "string"],
         |len: i64| -> crate::RhaiRes<String> {
             let length = usize::try_from(len.max(0)).unwrap_or(usize::MAX);
             generate(length, 1, 1, 1, 1).map_err(|e| format!("{e}").into())
@@ -173,7 +173,7 @@ fn password_fns(target: &mut Target<'_>) {
             "/// An absent key defaults to 1; a present non-integer is refused (PWD-SPEC-003, naming the key);",
             "/// 0 or negative excludes the class. Errors carry the raw PWD-SPEC text.",
         ],
-        &["len: i64", "spec: Map"],
+        &["len: i64", "spec: map", "string"],
         |len: i64, spec: Map| -> crate::RhaiRes<String> {
             let length = usize::try_from(len.max(0)).unwrap_or(usize::MAX);
             let read_min = |key: &str| -> crate::RhaiRes<usize> {
@@ -193,7 +193,7 @@ fn password_fns(target: &mut Target<'_>) {
             "/// Random alphanumeric password of `len` chars: minimums 1/1/1/0, so never a symbol.",
             "/// Negative `len` is clamped to 0 and refused; errors carry the raw PWD-SPEC text.",
         ],
-        &["len: i64"],
+        &["len: i64", "string"],
         |len: i64| -> crate::RhaiRes<String> {
             let length = usize::try_from(len.max(0)).unwrap_or(usize::MAX);
             generate(length, 1, 1, 1, 0).map_err(|e| format!("{e}").into())
@@ -1252,5 +1252,88 @@ mod jumeau_module_password {
             names_added_by_module(crate::password::password_module()),
             "sans `metadata`, les deux ensembles de noms restent égaux"
         );
+    }
+}
+
+#[cfg(all(test, feature = "metadata", feature = "password"))]
+mod signatures_documentees {
+    use super::*;
+
+    /// Signatures attendues du groupe `password`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("gen_password", "gen_password(len: i64) -> string"),
+        ("gen_password", "gen_password(len: i64, spec: map) -> string"),
+        (
+            "gen_password_alphanum",
+            "gen_password_alphanum(len: i64) -> string",
+        ),
+    ];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        password_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", password_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        password_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
+            );
+        }
     }
 }

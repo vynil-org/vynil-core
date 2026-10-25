@@ -144,7 +144,7 @@ fn yaml_fns(target: &mut Target<'_>) {
         target,
         "yaml_encode",
         &["/// YAML for `value`, sorted and newline-terminated; errors on blobs `serde_yaml` cannot render."],
-        &["value: Dynamic"],
+        &["value: Dynamic", "string"],
         |val: Dynamic| -> RhaiRes<ImmutableString> {
             serde_yaml::to_string(&val)
                 .map_err(|e| rhai_err(Error::YamlError(e.to_string())))
@@ -155,7 +155,7 @@ fn yaml_fns(target: &mut Target<'_>) {
         target,
         "yaml_encode",
         &["/// YAML for map `value` — same text as the `Dynamic` overload; errors on unrenderable values."],
-        &["value: Map"],
+        &["value: map", "string"],
         |val: Map| -> RhaiRes<ImmutableString> {
             serde_yaml::to_string(&val)
                 .map_err(|e| rhai_err(Error::YamlError(e.to_string())))
@@ -168,7 +168,7 @@ fn yaml_fns(target: &mut Target<'_>) {
         &[
             "/// Decodes one YAML document `text`; empty or null documents yield unit; errors on syntax, multi-document or refused keys.",
         ],
-        &["text: ImmutableString"],
+        &["text: string", "Dynamic"],
         |val: ImmutableString| -> RhaiRes<Dynamic> {
             serde_yaml::from_str::<serde_yaml::Value>(val.as_ref())
                 .map_err(|e| rhai_err(Error::YamlError(e.to_string())))
@@ -181,7 +181,7 @@ fn yaml_fns(target: &mut Target<'_>) {
         &[
             "/// One element per YAML document of `text`, unit for null documents; stops at the first error, documents already read are dropped.",
         ],
-        &["text: ImmutableString"],
+        &["text: string", "array"],
         |val: ImmutableString| -> RhaiRes<Vec<Dynamic>> {
             let mut result = Vec::new();
             for doc in serde_yaml::Deserializer::from_str(val.as_ref()) {
@@ -1550,6 +1550,87 @@ mod tests {
                 names_added_by_module(crate::yaml::yaml_module()),
                 set_of(&NOMS_YAML),
                 "sans `metadata`, le jumeau ajoute exactement les mêmes noms"
+            );
+        }
+    }
+}
+
+#[cfg(all(test, feature = "metadata"))]
+mod signatures_documentees {
+    use super::*;
+
+    /// Signatures attendues du groupe `yaml`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("yaml_encode", "yaml_encode(value: Dynamic) -> string"),
+        ("yaml_encode", "yaml_encode(value: map) -> string"),
+        ("yaml_decode", "yaml_decode(text: string) -> Dynamic"),
+        ("yaml_decode_multi", "yaml_decode_multi(text: string) -> array"),
+    ];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        yaml_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", yaml_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        yaml_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
             );
         }
     }

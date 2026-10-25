@@ -242,7 +242,7 @@ fn semver_fns(target: &mut Target<'_>) {
         &[
             "/// Parses `text` as a semantic version, optionally prefixed with a single `v`; errors on any other input.",
         ],
-        &["text: &str"],
+        &["text: string", "Semver"],
         Semver::rhai_parse,
     );
     register_at(
@@ -292,49 +292,49 @@ fn semver_fns(target: &mut Target<'_>) {
         target,
         "==",
         &["/// Equality of two versions — the remembered `v` flag counts for nothing."],
-        &["a: Semver", "b: Semver"],
+        &["a: Semver", "b: Semver", "bool"],
         |a: Semver, b: Semver| a == b,
     );
     register_at(
         target,
         "!=",
         &["/// Inequality of two versions — the remembered `v` flag counts for nothing."],
-        &["a: Semver", "b: Semver"],
+        &["a: Semver", "b: Semver", "bool"],
         |a: Semver, b: Semver| a != b,
     );
     register_at(
         target,
         "<",
         &["/// Standard semver ordering (prerelease < stable); the `v` flag counts for nothing."],
-        &["a: Semver", "b: Semver"],
+        &["a: Semver", "b: Semver", "bool"],
         |a: Semver, b: Semver| a < b,
     );
     register_at(
         target,
         ">",
         &["/// Standard semver ordering (prerelease < stable); the `v` flag counts for nothing."],
-        &["a: Semver", "b: Semver"],
+        &["a: Semver", "b: Semver", "bool"],
         |a: Semver, b: Semver| a > b,
     );
     register_at(
         target,
         "<=",
         &["/// Standard semver ordering (prerelease < stable); the `v` flag counts for nothing."],
-        &["a: Semver", "b: Semver"],
+        &["a: Semver", "b: Semver", "bool"],
         |a: Semver, b: Semver| a <= b,
     );
     register_at(
         target,
         ">=",
         &["/// Standard semver ordering (prerelease < stable); the `v` flag counts for nothing."],
-        &["a: Semver", "b: Semver"],
+        &["a: Semver", "b: Semver", "bool"],
         |a: Semver, b: Semver| a >= b,
     );
     register_at(
         target,
         "to_string",
         &["/// Renders the version, re-prefixing the `v` remembered at parse time."],
-        &["v: &mut Semver"],
+        &["v: &mut Semver", "string"],
         |s: &mut Semver| s.to_string(),
     );
 }
@@ -1536,5 +1536,95 @@ mod tests {
             names_added_by_module(semver_module()),
             "sans `metadata`, les deux ensembles de noms restent égaux"
         );
+    }
+}
+
+#[cfg(all(test, feature = "metadata"))]
+mod signatures_documentees {
+    use super::*;
+
+    /// Signatures attendues du groupe `semver`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("semver_from", "semver_from(text: string) -> Semver"),
+        ("inc_major", "inc_major(v: &mut Semver)"),
+        ("inc_minor", "inc_minor(v: &mut Semver)"),
+        ("inc_patch", "inc_patch(v: &mut Semver)"),
+        ("inc_beta", "inc_beta(v: &mut Semver)"),
+        ("inc_alpha", "inc_alpha(v: &mut Semver)"),
+        ("==", "==(a: Semver, b: Semver) -> bool"),
+        ("!=", "!=(a: Semver, b: Semver) -> bool"),
+        ("<", "<(a: Semver, b: Semver) -> bool"),
+        (">", ">(a: Semver, b: Semver) -> bool"),
+        ("<=", "<=(a: Semver, b: Semver) -> bool"),
+        (">=", ">=(a: Semver, b: Semver) -> bool"),
+        ("to_string", "to_string(v: &mut Semver) -> string"),
+    ];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        semver_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", semver_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        semver_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
+            );
+        }
     }
 }

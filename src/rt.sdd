@@ -109,7 +109,7 @@ Handles:
     module n'en ajoute aucune.
 
 Tasks:
-  [ ] Documenter dans la rustdoc de `block_on` (./rt.rs) le runtime sans pilote de temps sous jeton (Handles ci-dessus) :
+  [x] Documenter dans la rustdoc de `block_on` (./rt.rs) le runtime sans pilote de temps sous jeton (Handles ci-dessus) :
     le consommateur construit son runtime avec `enable_all()`. Documentation seule, aucun test.
   [x] Honorer le jeton d'annulation dans ./rt.rs (issue #21), selon le `Must` ci-dessus : tests
     d'abord depuis les quatre Scenario « annulation » ; signature de `block_on` et appelants
