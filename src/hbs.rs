@@ -11,8 +11,8 @@
 use crate::{Error, Result, hbs_json};
 #[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use handlebars::{Handlebars, handlebars_helper};
-use handlebars_misc_helpers::new_hbs;
+use handlebars::{Handlebars, handlebars_helper, no_escape};
+use handlebars_misc_helpers::{jsonnet_helpers, new_hbs, regex_helpers, string_helpers, uuid_helpers};
 use serde_json::Value;
 use std::{fs, path::PathBuf};
 use tracing::warn;
@@ -210,7 +210,44 @@ impl<'a> HandleBars<'a> {
     #[must_use]
     pub fn new() -> HandleBars<'static> {
         let mut engine = new_hbs();
-        hbs_json::register(&mut engine);
+        Self::register_core(&mut engine);
+        HandleBars { engine }
+    }
+
+    /// Create a restricted engine: strict mode and no escaping like [`HandleBars::new`], but only
+    /// the helpers that cannot reach the host.
+    ///
+    /// It is built from an allow-list, not by removing helpers from [`HandleBars::new`]: the
+    /// handlebars built-ins, the case helpers, the `handlebars_misc_helpers` groups `string`,
+    /// `regex`, `uuid` and `jsonnet`, and the vynil core helpers (`json_*`, `base64_*`,
+    /// `url_encode`, `to_decimal`, `header_basic`, `concat`, `crc32_hash`, and the gated
+    /// `argon_hash`, `bcrypt_hash`, `gen_private_key`, `gen_password*`). Every helper that reads
+    /// the filesystem, the process environment or the network (`read_to_str`, `env_var`,
+    /// `canonicalize`, `parent`, `file_name`, `extension`, `http_get`, `gitignore_io`, …) is never
+    /// registered, so a helper added upstream by a version bump or by a feature enabled elsewhere
+    /// in the dependency graph does not leak in. A template calling one of them fails with
+    /// [`Error::HbsRenderError`] (strict mode), and no host data is rendered.
+    ///
+    /// Intended for templates fed by untrusted third-party data. The restriction covers only
+    /// what this constructor registers: [`HandleBars::engine_mut`] and `register_helper_dir`
+    /// (feature `hbs-scripting`) let the caller register host helpers.
+    #[must_use]
+    pub fn new_restricted() -> HandleBars<'static> {
+        let mut engine = Handlebars::new();
+        engine.set_strict_mode(true);
+        engine.register_escape_fn(no_escape);
+        string_helpers::register(&mut engine);
+        regex_helpers::register(&mut engine);
+        uuid_helpers::register(&mut engine);
+        jsonnet_helpers::register(&mut engine);
+        Self::register_core(&mut engine);
+        HandleBars { engine }
+    }
+
+    /// Register the vynil core helpers shared by [`HandleBars::new`] and
+    /// [`HandleBars::new_restricted`], so the two constructors never diverge on them.
+    fn register_core(engine: &mut Handlebars<'_>) {
+        hbs_json::register(engine);
         engine.register_helper("concat", Box::new(concat));
         engine.register_helper("to_decimal", Box::new(to_decimal));
         engine.register_helper("base64_decode", Box::new(base64_decode));
@@ -228,34 +265,6 @@ impl<'a> HandleBars<'a> {
         #[cfg(feature = "password")]
         engine.register_helper("gen_password_alphanum", Box::new(gen_password_alphanum));
         engine.register_helper("crc32_hash", Box::new(crc32_hash));
-        HandleBars { engine }
-    }
-
-    /// Create an engine like [`HandleBars::new`], minus the six helpers that touch the host.
-    ///
-    /// Removed: `read_to_str` (reads a file), `env_var` (reads the process environment),
-    /// `canonicalize` (resolves the filesystem) and `parent`, `file_name`, `extension` (they
-    /// canonicalize their input first, so they probe file existence). A template calling one of
-    /// them fails with [`Error::HbsRenderError`] (strict mode), and no host data is rendered.
-    ///
-    /// Intended for templates fed by untrusted third-party data. The restriction covers only
-    /// what this constructor removes: [`HandleBars::engine_mut`] and `register_helper_dir`
-    /// (feature `hbs-scripting`) let the caller register those helpers again.
-    #[must_use]
-    pub fn new_restricted() -> HandleBars<'static> {
-        const HOST_HELPERS: [&str; 6] = [
-            "read_to_str",
-            "env_var",
-            "canonicalize",
-            "parent",
-            "file_name",
-            "extension",
-        ];
-        let mut hbs = HandleBars::new();
-        for name in HOST_HELPERS {
-            hbs.engine.unregister_helper(name);
-        }
-        hbs
     }
 
     /// Expose the inner [`Handlebars`] to register custom helpers or configuration.
@@ -957,7 +966,7 @@ mod composition_tests {
     }
 }
 
-/// Scénario « `new_restricted` retire les six helpers hôte » (`hbs.sdd`) : chacun des six
+/// Scénario « `new_restricted` n'enregistre aucun helper hôte » (`hbs.sdd`) : chacun des six
 /// helpers hôte échoue en `HbsRenderError` sous `new_restricted`, les quatre conservés
 /// répondent comme sous `new`, et le même template sous `new` lit fichier et variable (le
 /// contraste attribue le retrait au constructeur).
@@ -1002,6 +1011,27 @@ mod restricted_tests {
         }
     }
 
+    /// Contrat (liste d'autorisation, issue #27) : les helpers hôte que `handlebars_misc_helpers`
+    /// enregistrerait avec ses features par défaut (`http_get`, `gitignore_io`) échouent aussi sous
+    /// `new_restricted`. Ces deux noms sont inconnus sous `new` dans ce graphe (feature amont
+    /// coupée) : le test fige l'absence de nom, la garantie structurelle (jamais enregistrés) est
+    /// dans le constructeur.
+    #[test]
+    fn restricted_never_registers_network_helpers() {
+        for template in [
+            r#"{{ http_get "http://127.0.0.1:1/" }}"#,
+            r#"{{ gitignore_io "rust" }}"#,
+        ] {
+            let err = HandleBars::new_restricted()
+                .render(template, &json!({}))
+                .expect_err("a network helper must not be registered");
+            assert!(
+                matches!(err, Error::HbsRenderError(_)),
+                "{template} must fail as HbsRenderError, got {err:?}"
+            );
+        }
+    }
+
     /// Contrat : `to_upper_case`, `base64_encode`, `str_to_json` et `concat` rendent sous
     /// `new_restricted` la même sortie que sous `new`.
     #[test]
@@ -1016,6 +1046,28 @@ mod restricted_tests {
             .expect("kept helpers render under new_restricted");
         assert_eq!(restricted, expected);
         assert_eq!(restricted, r#"ABC|YWJj|{"a":1}|xy"#);
+    }
+
+    /// Contrat (liste d'autorisation) : chaque groupe retenu répond sous `new_restricted` comme
+    /// sous `new` — une omission de groupe dans la liste se verrait ici (casse, `string`,
+    /// `regex`, `jsonnet`, JSON/JMESPath, `base64_*`, `url_encode`, `crc32_hash`, `to_decimal`, `header_basic`, `eq`).
+    #[test]
+    fn restricted_allow_list_groups_answer_like_new() {
+        let template = concat!(
+            r#"{{ snakeCase "HelloWorld" }}|{{ trim "  x " }}|{{ replace "aXb" "X" "-" }}|"#,
+            r#"{{ first_non_empty "" "z" }}|{{ regex_is_match pattern="^a+$" on="aaa" }}|"#,
+            r#"{{#jsonnet}}{"a": 1 + 1}{{/jsonnet}}|{{ json_query "a" (str_to_json "{\"a\":3}") }}|"#,
+            r#"{{ url_encode "a b" }}|{{ crc32_hash "abc" }}|{{ to_decimal "010" }}|"#,
+            r#"{{ header_basic "u" "p" }}|{{ base64_decode "YWJj" }}|{{ eq 1 1 }}"#,
+        );
+        let data = json!({});
+        let expected = HandleBars::new()
+            .render(template, &data)
+            .expect("retained groups render under new");
+        let restricted = HandleBars::new_restricted()
+            .render(template, &data)
+            .expect("retained groups render under new_restricted");
+        assert_eq!(restricted, expected);
     }
 
     /// Contraste : le même template (lecture de fichier + variable d'environnement) sous `new`

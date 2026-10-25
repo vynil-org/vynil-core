@@ -39,18 +39,24 @@ compile time:
 
 ## Restricted engine: `HandleBars::new_restricted()`
 
-`HandleBars::new_restricted()` builds the same engine as `new()` minus the six helpers that
-read from the host:
+`HandleBars::new_restricted()` builds the engine from an **allow-list**: it registers only the
+helpers that cannot reach the host (the Handlebars built-ins and case helpers, the `string`,
+`regex`, `uuid` and `jsonnet` groups, and the vynil core helpers: JSON/JMESPath, `base64_*`,
+`url_encode`, `to_decimal`, `header_basic`, `concat`, `crc32_hash` and the feature-gated
+`crypto` / `password` ones). It does not start from `new()` and remove helpers, so a host helper
+added upstream by a dependency bump, or by a feature enabled elsewhere in your dependency graph,
+never leaks in. The helpers below are never registered:
 
-| Removed helper | Why it touches the host |
+| Never registered | Why it touches the host |
 |---|---|
 | `read_to_str` | Reads a file |
 | `env_var` | Reads the process environment |
 | `canonicalize` | Resolves the filesystem |
 | `parent`, `file_name`, `extension` | Canonicalize their input first, so they probe file existence |
+| `http_get`, `gitignore_io` | Make network requests (upstream feature `http_attohttpc`) |
 
-A template calling a removed helper fails with `Error::HbsRenderError` (strict mode) and renders
-no host data. Every other helper behaves as under `new()`.
+A template calling one of them fails with `Error::HbsRenderError` (strict mode) and renders
+no host data. Every registered helper behaves as under `new()`.
 
 Use it for templates fed by untrusted third-party data, where a template must not read files or
 environment variables of the process rendering it.

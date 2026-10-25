@@ -190,6 +190,12 @@ Tasks:
     « Exposer `block_on` » de ./src/rt.sdd et « Lever la porte `rhai` de ./cancel.rs » de ./src/cancel.sdd,
     cochée dans le même commit.
 
+  [x] ./docs/handlebars_helpers.md : reprendre la section `new_restricted` sur la construction par liste
+    d'autorisation (issue #27) — plus de « moins six helpers » : seuls les groupes sûrs sont
+    enregistrés, tout helper hôte (fichier, environnement, réseau) l'est jamais, y compris ceux
+    qu'une montée amont ou une feature du graphe ajouterait. Jumelle de « Construire new_restricted
+    par liste d'autorisation » de ./src/hbs.sdd, cochée dans le même commit.
+
 Done when:
   Les trois pages et ./README.md ne contiennent plus une phrase contredisant la spec d'un module,
     et chaque fait contracté visible d'un consommateur y trouve sa ligne ; l'intention bilingue
