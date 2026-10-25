@@ -38,11 +38,15 @@ Must:
     `validator`, et un job de ./.github/workflows/test.yml), parce que les fences de doc de crate
       et les liens internes sont du contrat exécutable : un `invalid_codeblock_attributes` laisse
       passer une doc qui ment sur le gate d'un doctest (décision actée).
-    Cette règle ne court que sur `--all-features` : sous portes réduites, la table des features et
-    les liens de modules de la doc de crate pointent vers des modules absents du graphe (5 liens
-    non résolus à `default`, 10 à 14 sous les portes isolées), ce qui n'est pas un mensonge pour
-    le consommateur — docs.rs build en toutes features, et c'est la porte des liens. Gate les
-    liens pour tendre la règle à toutes les portes serait un autre contrat, non voulu.
+    Cette règle court sur TOUS les graphes de features, pas sur `--all-features` seule (issue #25) :
+    `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps` (default), `cargo doc --no-deps --all-features`
+    et `cargo hack doc --each-feature --no-dev-deps --no-deps` (chaque feature isolée et
+    `--no-default-features`). Un lien intra-doc vers un item gated se rédige donc en texte brut
+    (backticks sans crochets), jamais en lien résolu : la rustdoc de la crate elle-même est
+    vérifiée dans le graphe réduit d'un consommateur qui n'active que `rt` ou `crypto`, et une
+    régression de lien propre à un graphe réduit ne passe plus inaperçue. Cette règle remplace la
+    décision antérieure « porte `--all-features` seule » (5 liens non résolus à `default`, 10 à 14
+    sous les portes isolées), qui laissait la dette en place.
   Tolérer la famille panic/unwrap uniquement sous `cfg(test)` via l'exemption portée par
     `src/lib.rs` à la racine du crate.
   Lancer le harnais sur chaque combinaison de features testée (défaut, chaque `k8s`/`oci`/`s3`
@@ -249,6 +253,16 @@ Tasks:
     `cargo hack --each-feature` ne compile que la face, pas ce verrou d'exécution. Jumelle de
     ./.github/workflows/workflows.sdd (entrée `rt` de la matrice et de la boucle clippy) et de
     « Reprendre le CHANGELOG 0.9.0 et la batterie » de ./vyvil-core.sdd, cochée dans le même commit.
+
+  [x] Tendre les lints rustdoc à tous les graphes de features (issue #25) : remplacer par du texte brut
+    les liens intra-doc vers des items gated (table des features et sections de ./src/lib.rs,
+    `password_module`, `resolve_registry_auth`, `Engine::gen_fn_signatures`, `rhai::Engine::on_progress`,
+    `crate::http::RestClient`), puis jouer `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`,
+    `cargo doc --no-deps --all-features` et `cargo hack doc --each-feature --no-dev-deps --no-deps`
+    à zéro erreur. Lockstep des quatre emplacements : ce `Must`, ./AGENTS.md, l'agent `validator`
+    (jumelle « Reprendre la batterie rustdoc » de ./vyvil-core.sdd) et ./.github/workflows/test.yml
+    (jumelle de ./.github/workflows/workflows.sdd). Les sept fichiers de `src/` touchés portent
+    chacun leur jumelle, cochées dans le même commit.
 
 Done when:
   `cargo clippy --all-targets -- -D warnings` et `cargo clippy --all-features --all-targets

@@ -242,6 +242,9 @@ Tasks:
     Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
     commit.
 
+  [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : `Engine::gen_fn_signatures` en texte brut dans la rustdoc. Jumelle de « Tendre les
+    lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
+
 Scenario: s3 reste hors de new_bare même feature activée
   Given la crate compilée avec `s3` (donc `rhai` avec)
   When un engine @crate::engine::Script::new_bare évalue `s3_get_yaml("", "", "", "", "", "", "")`

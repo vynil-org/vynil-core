@@ -403,6 +403,9 @@ Tasks:
     Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
     commit.
 
+  [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : `resolve_registry_auth` en texte brut dans la rustdoc. Jumelle de « Tendre les
+    lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
+
 Scenario: oci éteint, les deux modules n'existent pas
   Given la crate compilée `--no-default-features --features rhai` (`oci` off par défaut)
   Then ni @crate::oci ni @crate::oci_mock n'existent, `new_registry` n'est aucun nom du

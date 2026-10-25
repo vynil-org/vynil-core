@@ -398,7 +398,7 @@ fn core_host_fns(target: &mut Target<'_>) {
 /// [`crate::cancel::scope`] it waits in slices of at most `crate::cancel::WAIT_SLICE`
 /// (25 ms) and fails with `cancelled` as soon as the flag is seen set — including a token
 /// already cancelled at entry, where no slice is slept at all. Zero and negative durations
-/// stay immediate no-ops either way. This is not an [`rhai::Engine::on_progress`] hook,
+/// stay immediate no-ops either way. This is not an `rhai::Engine::on_progress` hook,
 /// which cannot get the hand inside a native call; a script catching the error with `try`
 /// continues, ending the script staying the consumer's call.
 ///

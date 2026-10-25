@@ -199,7 +199,7 @@ fn s3_fns(target: &mut Target<'_>) {
 
 /// Registers the two S3 Rhai helpers (`s3_get_yaml`, `s3_list_keys`) directly on a
 /// Rhai `engine` — names in the engine's global namespace, no intermediate global
-/// module; [`Engine::gen_fn_signatures`] sees them as before this task. The
+/// module; `Engine::gen_fn_signatures` sees them as before this task. The
 /// registrations come from the single `s3_fns` list and replace any previous
 /// function of the same name; no type, no namespace, no other name is registered.
 ///

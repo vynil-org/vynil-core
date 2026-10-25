@@ -126,6 +126,9 @@ Tasks:
     rattrapés par @std::panic::catch_unwind. Aucun test inline n'existe à ce jour dans
     ./client_name.rs : les onze Scenario sont à convertir.
 
+  [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : `crate::http::RestClient` en texte brut dans la rustdoc. Jumelle de « Tendre les
+    lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
+
 Scenario: lecture du nom configuré
   Given @client_name::set_client_name appelé avec une closure retournant `my-app.example.com`
   When @client_name::get_client_name est appelé

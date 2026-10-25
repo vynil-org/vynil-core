@@ -11,7 +11,7 @@ use rand::{
     seq::{IndexedRandom, SliceRandom},
 };
 #[cfg(feature = "rhai")] use rhai::{Engine, Map};
-// `Module` n'est atteint que par [`password_module`], gated `password` (la glue, elle,
+// `Module` n'est atteint que par `password_module`, gated `password` (la glue, elle,
 // est publique sous `rhai` seul).
 #[cfg(all(feature = "rhai", feature = "password"))] use rhai::Module;
 
@@ -118,7 +118,7 @@ fn class_min(spec: &Map, key: &str) -> Result<usize> {
 // jumeau module, enregistrable par Engine::register_static_module). Les aides
 // Target/register_at du pilote sont centralisées dans ./engine.rs (`pub(crate)`),
 // password.rs les importe — la variante `Target::Module` n'est construite que par
-// [`password_module`], gated `password` + `rhai` (Exposes de ./password.sdd) : sans la
+// `password_module`, gated `password` + `rhai` (Exposes de ./password.sdd) : sans la
 // feature, l'enregistreur — public sous `rhai` seul — ne pose que des cibles `Engine`.
 // La porte du fichier étant sans `rhai` (le module compile sous `--no-default-features`),
 // tout le motif est gated `rhai`.
@@ -128,7 +128,7 @@ fn class_min(spec: &Map, key: &str) -> Result<usize> {
 /// unaire), additive and idempotent. The functions stay directly on the engine — no
 /// intermediate global module.
 ///
-/// Module twin: [`password_module`] — same single `password_fns` list, same semantics.
+/// Module twin: `password_module` — same single `password_fns` list, same semantics.
 #[cfg(feature = "rhai")]
 pub fn password_rhai_register(engine: &mut Engine) {
     password_fns(&mut Target::Engine(engine));
