@@ -3,6 +3,48 @@
 All notable changes to `vynil-core` are documented here. The crate is pre-1.0: minor versions
 may break the public API, and every breaking change is listed explicitly.
 
+## 0.9.0
+
+The composable-engine release (issues #18–#22): the always-registered core helpers are now
+three public groups you can pick from, every public registrar gained a module twin, script
+functions carry introspection metadata, and the blocking native calls became cancellable.
+
+### Added
+
+- **Public core groups** (#18): the sixteen common helpers are split into three public,
+  additive registrars — `engine::core_pure_rhai_register` (`sha256`, `url_encode`,
+  `to_decimal`, `base64_*`, `json_*`, `basename`, `dirname`), `engine::core_host_rhai_register`
+  (`get_env`, `log_debug`/`log_info`/`log_warn`/`log_error`) and `engine::core_sleep_rhai_register`
+  (`sleep`) — callable in any order on a bare `rhai::Engine::new`; `engine::fs_rhai_register`
+  (feature `fs`) joins them as the public filesystem group. `Script::new_bare` registers all
+  of them exactly as before.
+- **Module twins** (#19): every public `*_rhai_register` has a `*_module() -> rhai::Module`
+  twin with the same names and semantics, registrable through `Engine::register_static_module`
+  under a name of the consumer's choosing — the four engine groups, plus `chrono`, `glob`,
+  `semver`, `yaml`, `hashes`/`crypto_hashes`, `password`, `key`, `shell`, `http`, `oci`, `s3`
+  and the three `k8s` sub-registrars. The test-double registrars have no twin by design.
+- **Feature `metadata`** (#22): off by default, implies `rhai`. Under it, each registered
+  script function carries its `///` comment and its parameter names through
+  `rhai::FuncRegistration`, surfaced by `Engine::gen_fn_signatures` and
+  `Engine::gen_fn_metadata_to_json` (`docComments`, named `params`). Registrations behave
+  identically without it — documentation is pure metadata.
+- **Cancellation** (#21): `cancel::CancelToken` + `cancel::scope` — a thread-local token the
+  crate's blocking native calls read, completing `Engine::on_progress` (which only gets the
+  hand between two script operations, never inside a native call).
+
+### Changed
+
+- `sleep` and the async → sync bridge `rt::block_on` (used by `http`, `oci`, `s3` and `k8s`)
+  now honour the thread's cancel token: they wait in 25 ms slices and return an error of text
+  `cancelled` as soon as the token is cancelled (the pending future is dropped, not left
+  running). Without an open scope the behaviour is unchanged.
+- The `rhai` dependency floor is raised to `1.23.3` — the oldest version exposing
+  `FuncRegistration::with_comments` / `with_params_info`, verified by compiling against it.
+
+No behaviour change for consumers that only call `Script::new_bare` (vynil, kuberest): the
+same names with the same semantics are registered, and the frozen order of the new public
+groups (pure, host, waiting) is what `new_bare` always applied.
+
 ## 0.8.0
 
 First release since `0.7.7`. Mostly a hardening release: the code base was reviewed module by

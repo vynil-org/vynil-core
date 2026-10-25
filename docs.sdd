@@ -171,7 +171,7 @@ Tasks:
     ./shell.rs (./src/shell.sdd), la table et la rustdoc de ./lib.rs avec l'assomption unix seul
     (./src/lib.sdd), et la description de la feature `shell` dans ./Cargo.toml
     (./vyvil-core.sdd).
-  [ ] ./docs/rhai_helpers.md et ./README.md : documenter la série des issues #18 à #22, chaque
+  [x] ./docs/rhai_helpers.md et ./README.md : documenter la série des issues #18 à #22, chaque
     point reformulant la spec nommée et n'ajoutant aucun contrat. (1) Les seize noms communs en
     trois groupes publics (pur, hôte, attente) et `fs_rhai_register`, avec ce
     que chacun accorde, la composition sur un `Engine::new` et la réserve de `add_common` sur le

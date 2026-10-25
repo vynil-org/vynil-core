@@ -63,6 +63,58 @@ test — and run that script against both without touching a real cluster, regis
 endpoint in the test. If registration were automatic, that swap wouldn't be possible without
 threading a runtime flag through `Script::new_bare` itself.
 
+### Static module twins (`*_module`)
+
+Every public `X_rhai_register` has a twin `X_module() -> rhai::Module`: the same function names,
+the same semantics, defined once and shared by both paths (a twin that drifts from its registrar
+is a defect). The twin is registered through `Engine::register_static_module` under whatever
+namespace the consumer picks:
+
+```rust
+script.engine.register_static_module("net", vynil_core::http::http_module());
+// script: net::get("…")
+```
+
+This is the alternative registration path, not a replacement: the registrar keeps putting its
+functions directly on the engine, exactly as before, so `Engine::gen_fn_signatures` still lists
+them the same way. The module path is what lets introspection and per-agent filtering attribute
+functions to their group by namespace instead of comparing before/after signatures. The three
+test-double registrars (`httpmock_rhai_register`, `oci_mock_rhai_register`,
+`k8s_mock_rhai_register`) have no twin — by decision: `http` and `k8s` take fixtures as
+parameters, `oci` is a constant double without fixtures, and none has a per-group consumer.
+
+| Registrar | Module twin |
+|---|---|
+| `engine::core_pure_rhai_register` | `engine::core_pure_module` |
+| `engine::core_host_rhai_register` | `engine::core_host_module` |
+| `engine::core_sleep_rhai_register` | `engine::core_sleep_module` |
+| `engine::fs_rhai_register` *(feature `fs`)* | `engine::fs_module` |
+| `chrono::chrono_rhai_register` | `chrono::chrono_module` |
+| `hashes::hashes_rhai_register` | `hashes::hashes_module` |
+| `hashes::crypto_hashes_rhai_register` *(feature `crypto`)* | `hashes::crypto_hashes_module` |
+| `key::key_rhai_register` *(feature `crypto`)* | `key::key_module` |
+| `password::password_rhai_register` *(feature `password`)* | `password::password_module` |
+| `semver::semver_rhai_register` | `semver::semver_module` |
+| `yaml::yaml_rhai_register` | `yaml::yaml_module` |
+| `glob::glob_rhai_register` | `glob::glob_module` |
+| `shell::shell_rhai_register` *(feature `shell`)* | `shell::shell_module` |
+| `http::http_rhai_register` *(feature `http`)* | `http::http_module` |
+| `oci::oci_rhai_register` *(feature `oci`)* | `oci::oci_module` |
+| `s3::s3_rhai_register` *(feature `s3`)* | `s3::s3_module` |
+| `k8s::k8sgeneric_rhai_register` *(feature `k8s`)* | `k8s::k8sgeneric_module` |
+| `k8s::k8sraw_rhai_register` *(feature `k8s`)* | `k8s::k8sraw_module` |
+| `k8s::k8sworkload_rhai_register` *(feature `k8s`)* | `k8s::k8sworkload_module` |
+
+### Introspection metadata (feature `metadata`)
+
+Under the `metadata` cargo feature (off by default, implies `rhai` — see the table below),
+every registered script function carries its `///` comment and the *name* of each of its
+parameters through `rhai::FuncRegistration`. What that gives an introspecting consumer:
+`Engine::gen_fn_signatures` lists functions with named parameters — `json_encode(value:
+Dynamic)`, not `json_encode(Dynamic)` — and `Engine::gen_fn_metadata_to_json` reports, per
+function, a `docComments` array and named `params`. Without the feature the behaviour is
+identical: the documentation is pure metadata, with no second copy of the registrations.
+
 ## Cargo feature reference
 
 | Feature | Unlocks | Auto-wired into `new_bare`? |
@@ -76,21 +128,30 @@ threading a runtime flag through `Script::new_bare` itself.
 | `k8s` *(implies `rhai`)* | `DynamicObject`, `K8sObject`, `K8sGeneric`, `K8sRaw`, `K8sDeploy`, `K8sDaemonSet`, `K8sStatefulSet`, `K8sJob` | **no** — manual |
 | `http` *(default, implies `rhai`)* | `RestClient` (HTTP) | **no** — manual |
 | `s3` *(implies `rhai`)* | `s3_get_yaml`, `s3_list_keys` | **no** — manual |
+| `metadata` *(implies `rhai`)* | introspection metadata on registered script functions — `///` comments + parameter names (`gen_fn_signatures`, `gen_fn_metadata_to_json`, see above) | n/a — pure metadata, registers nothing of its own |
 
 ---
 
 ## 1. Core utilities (always available)
 
-Registered by `core_common_rhai_register`, no feature beyond `rhai` itself required.
+Sixteen names, always present under `rhai`, split into three public, additive groups —
+`core_pure_rhai_register`, `core_host_rhai_register` and `core_sleep_rhai_register`
+(`engine.rs`). `Script::new_bare` calls all three, in that order; a consumer that wants to
+grant a script only part of them builds a plain `rhai::Engine::new` and calls just the group
+registrars it grants — each is additive, idempotent under repeated calls, and registers
+nothing outside its own names. The fourth public group registrar, `fs_rhai_register`, is
+gated by the `fs` cargo feature and covered in section 8.
+
+### Pure group — `core_pure_rhai_register`
+
+Computes on its arguments alone and grants no host access (`basename`/`dirname` split a
+string, they never touch the disk).
 
 | Signature | Returns | Notes |
 |---|---|---|
 | `sha256(text: string)` | `string` | Hex digest |
-| `log_debug(text: string)` / `log_info` / `log_warn` / `log_error` | `()` | Forwards to `tracing` |
 | `url_encode(text: string)` | `string` | Percent-encodes for use in a query string |
-| `sleep(seconds: int)` | `()` | Blocks the current thread for `seconds`; a non-positive value returns immediately. For hand-rolled poll loops (`get` + check + `sleep`) when `<K8sObject>.wait_for` doesn't fit |
-| `get_env(name: string)` | `string` | Empty string if unset |
-| `to_decimal(octal: string)` | `int` | Parses the string as base-8; `0` (and a warning) if it isn't valid octal |
+| `to_decimal(octal: string)` | `int` | Parses the string as base-8; any non-octal string raises a Rhai error — never a `0` indistinguishable from the legitimate `0` |
 | `base64_encode(text: string)` | `string` | Standard base64 |
 | `base64_decode(text: string)` | `string` | Errors if the input isn't valid base64/UTF-8 |
 | `json_encode(value)` | `string` | Serializes any Rhai value to JSON |
@@ -98,6 +159,24 @@ Registered by `core_common_rhai_register`, no feature beyond `rhai` itself requi
 | `json_decode(text: string)` | dynamic | Errors on invalid JSON |
 | `basename(path: string)` | `string` | |
 | `dirname(path: string)` | `string` | |
+
+### Host group — `core_host_rhai_register`
+
+What a script reads from the process environment and writes into its logs.
+
+| Signature | Returns | Notes |
+|---|---|---|
+| `get_env(name: string)` | `string` | Empty string if unset (defaults are a use case); errors if the variable exists but isn't UTF-8 |
+| `log_debug(text: string)` / `log_info` / `log_warn` / `log_error` | `()` | Forwards to `tracing` |
+
+### Waiting group — `core_sleep_rhai_register`
+
+`sleep` grants no authority over anything (it blocks; it reads and writes nothing), so it
+travels on its own and not with the host group.
+
+| Signature | Returns | Notes |
+|---|---|---|
+| `sleep(seconds: int)` | `()` | Blocks the current thread for `seconds`; a non-positive value returns immediately. Under an open cancellation scope it sleeps in 25 ms slices and raises `cancelled` (section 15). For hand-rolled poll loops (`get` + check + `sleep`) when `<K8sObject>.wait_for` doesn't fit |
 
 ### Script-level helpers (`add_common`)
 
@@ -108,6 +187,12 @@ Also always present — these are Rhai source injected via `add_code`, not nativ
 | `assert(cond, message)` | Throws `message` if `cond` is falsy |
 | `import_run(name, instance, context, args)` / `import_run(name, instance, context)` / `import_run(name, args)` | `import`s the module `name` and calls its `run(...)` function with the matching arity. If the module or the function doesn't exist, logs a debug message and returns instead of throwing; any other error is rethrown. |
 | `import_template(name, instance, context, args)` / `import_template(name, instance, context)` / `import_template(name, args)` | Same as `import_run`, but calls `template(...)` first, falling back to `run(...)` if the module has no `template` function |
+
+The shims' skip path calls `log_debug`, which belongs to the **host** group: on an engine
+hand-built without `core_host_rhai_register`, `import_run`/`import_template` fail on that
+path with unknown function `log_debug` (documented on `add_common`). Grant the host group
+before calling `add_common` — that also gives you `get_env`; if you want `log_debug` without
+`get_env`, register a `log_debug` yourself before `add_common`.
 
 ---
 
@@ -437,3 +522,39 @@ Backed by `object_store`'s S3-compatible client (AWS S3 or any S3-compatible end
 | `s3_list_keys(bucket, region, prefix, endpoint, access_key, secret_key)` | `array` of strings | Lists all object keys under `prefix` |
 
 All parameters are `string`.
+
+---
+
+## 15. Cancellation — `cancel::CancelToken` and `cancel::scope`
+
+Lives behind the `rhai` feature (module `vynil_core::cancel`; no new error variant — the
+cancellation error is `Error::Other` of text `cancelled`). It lets a consumer driving a
+script (typically an LLM session) interrupt the crate's *blocking native calls* — `sleep`
+and the network waits made by `http`, `oci`, `s3` and `k8s` through the crate's shared
+async → sync bridge — without waiting for them to return.
+
+**Relation to `rhai::Engine::on_progress`:** the progress callback only gets the hand
+*between* two script operations; a native call that sleeps or waits on the network doesn't
+hand control back until it returns. `on_progress` stays the consumer's stop mechanism for
+the script itself and is not replaced — the token is what makes a native call *already in
+flight* return early, so the engine comes back to `on_progress` instead of only once that
+call finishes.
+
+| Item | Behavior |
+|---|---|
+| `CancelToken::new()` | Fresh, not-yet-cancelled flag; `Clone` (all clones designate the **same** flag), `Debug`, `Default`, `Send + Sync`. Once cancelled a token stays cancelled — no reset |
+| `token.cancel()` | Sets the flag — callable from any thread (e.g. a watchdog holding a clone) |
+| `token.is_cancelled()` | Whether the flag is set |
+| `cancel::scope(&token, closure)` | Installs the token on the **current thread** for the duration of `closure` and returns the closure's value; the thread's previous token (or its absence) is restored on exit, normal return *or* panic alike. Nested scopes stack — the innermost wins while it lasts |
+
+A native call reads the token of the thread it runs on: already cancelled at entry, it
+starts nothing and returns the `cancelled` error (a Rhai error a script can catch with
+`try`); cancelled during a wait, it returns within one 25 ms slice — the common wait slice
+shared by `sleep` and the bridge — and a pending network future is *dropped*, not continued
+in the background. `sleep(0)` and `sleep(-3)` are immediate no-ops with nothing to cancel
+and succeed even under a cancelled token.
+
+**What does not cross threads:** the token is thread-local. A `scope` opened on one thread
+is visible to native calls made on *that* thread only — another thread, a `tokio::task::spawn`
+task or a `tokio::task::spawn_blocking` closure does not inherit it. A consumer evaluating on
+such a thread opens its own `scope` there.

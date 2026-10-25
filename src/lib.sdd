@@ -223,6 +223,8 @@ Handles:
 Tasks:
   [x] Les trois extraits `vynil-core = ...` de la rustdoc racine passent de `0.7` à `0.8` avec la
     livraison de ./vyvil-core.sdd (tâche « Livrer 0.8.0 », même commit).
+  [x] Les trois extraits `vynil-core = ...` de la rustdoc racine passent de `0.8` à `0.9` avec la
+    livraison de ./vyvil-core.sdd (tâche « Livrer 0.9.0 », même commit).
   [x] Reprendre la doc de @variant-Error::UnsupportedMethod (l. 175) : elle dit
     « `RestClient::obj_*` was called with an unsupported method enum variant » — périmée depuis
     la tâche `obj_*` de ./src/http.sdd (les `match` sont devenus exhaustifs, ./http.rs ne

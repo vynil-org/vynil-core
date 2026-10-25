@@ -87,8 +87,9 @@ Must:
     ne disparaît pas et garde ses fonctions directement sur l'engine. Une seule définition des
     fonctions sert les deux voies : un jumeau qui diverge de son enregistreur est un défaut.
     Hors périmètre, par décision de cette spec : les trois enregistreurs de test double
-    (`httpmock_rhai_register`, `oci_mock_rhai_register`, `k8s_mock_rhai_register`), qui reçoivent
-    des fixtures en paramètre et n'ont pas de consommateur par groupe.
+    (`httpmock_rhai_register`, `oci_mock_rhai_register`, `k8s_mock_rhai_register`), qui
+    reçoivent des fixtures en paramètre pour `http` et `k8s`, sont un double constant sans
+    fixtures pour `oci`, et n'ont pas de consommateur par groupe.
   Documenter les fonctions enregistrées pour l'introspection (issue vynil-org/vynil-core#20) :
     chaque fonction de script d'un enregistreur public porte, sous la feature `metadata`, un
     commentaire `///` (ce qu'elle fait, ses erreurs, sa valeur) et le NOM de chacun de ses
@@ -251,7 +252,7 @@ Tasks:
     compilant contre elle (`cargo update -p rhai --precise <version>` puis la batterie) et non
     supposée ; le lock actuel est en 1.25.1. Tâche jumelle de « Poser le motif double cible »
     de ./src/engine.sdd, cochée dans le même commit.
-  [ ] Livrer `0.9.0` une fois les tâches des issues #18 à #22 closes dans les specs de ./src/ :
+  [x] Livrer `0.9.0` une fois les tâches des issues #18 à #22 closes dans les specs de ./src/ :
     bascule de `version` de ./Cargo.toml (0.8.0 → 0.9.0), ./CHANGELOG.md — `Added` : les quatre
     groupes publics de l'engine, les jumeaux module, la feature `metadata`, les fonctions
     documentées, `cancel::{CancelToken, scope}` ; `Changed` : `sleep` et `rt::block_on` annulables,
