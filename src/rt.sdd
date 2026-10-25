@@ -1,8 +1,10 @@
 Spec: rt
 
 Purpose:
-  Fournir aux modules réseau synchrones-côté-script (`http`, `oci`, `s3`, `k8s`) un unique pont
-    async → sync, `crate::rt::block_on`, qui exécute un futur depuis un appel de script Rhai
+  Fournir aux modules réseau synchrones-côté-script (`http`, `oci`, `s3`, `k8s`) et, depuis
+    l'issue vynil-org/vynil-core#23, aux consommateurs de la crate qui appellent de l'async depuis
+    un script Rhai synchrone (fonctions natives MCP ou d'inférence de `lymaille`), un unique pont
+    async → sync, `vynil_core::rt::block_on` (PUBLIC, derrière la feature `rt`), qui exécute un futur depuis un appel de script Rhai
     (synchrone) sans jamais paniquer l'hôte : sur un runtime @tokio multi-thread il bloque le
     thread courant par @tokio::task::block_in_place, sans runtime il en crée un temporaire, et
     sur un runtime `current_thread` — où `block_in_place` panique — il rend une erreur
@@ -15,12 +17,14 @@ Purpose:
 
 Owns:
   ./rt.rs
+  ../tests/rt_block_on_public.rs
 
 References:
-  ./lib.rs — déclare `mod rt;` PRIVÉ (aucun `pub`), sous
-    `#[cfg(any(feature = "http", feature = "oci", feature = "s3", feature = "k8s"))]` : seules
-    ces quatre features activent @tokio ; le module n'existe pas sans elles et ne fait partie d'aucune API
-    publique. Variantes @Error consommées : @variant-Error::Other et @variant-Error::Stdio,
+  ./lib.rs — déclare `pub mod rt;` sous `#[cfg(feature = "rt")]` + `doc(cfg)` (issue #23 ; jusque-là
+    `mod rt;` privé sous `any(http, oci, s3, k8s)`). La feature `rt = ["dep:tokio"]` de ../Cargo.toml
+    ne tire ni `rhai` ni rien d'autre : `http`, `oci`, `s3` et `k8s` en dépendent désormais, au
+    lieu de `dep:tokio`. Le module est une API PUBLIQUE de la crate (pré-1.0, instable comme le
+    reste). Variantes @Error consommées : @variant-Error::Other et @variant-Error::Stdio,
     toutes deux non gated.
   ./cancel.sdd — le jeton lu (@crate::cancel::CancelToken, lecture du jeton courant du fil,
     tranche de 25 ms).
@@ -56,14 +60,19 @@ Must:
     un contrôle périodique du drapeau dans le même runtime (@tokio::select! sur
     @tokio::time::interval ; aucun thread, aucune tâche supplémentaire). Sans jeton, le
     chemin est exactement celui d'avant.
+  Être `pub` sous la feature `rt`, signature de `block_on` inchangée, avec une rustdoc d'API
+    publique : section `# Errors` (les trois erreurs de `Raises`), les trois stratégies, le jeton
+    d'annulation, l'exigence du pilote de temps (`enable_all()`) sous jeton, l'absence de borne
+    `Send`, la voie « aucun runtime » en secours.
   Documenter que la voie « aucun runtime » est un secours (coût d'un runtime par appel) : en
     production les scripts tournent dans le runtime du consommateur.
 
 Must not:
   Créer un runtime global, un thread dédié, un pool ou un cache de runtime : le runtime
     temporaire ne survit pas à l'appel.
-  Exposer une variante async ou une API à l'appelant : le module ne connaît ni @rhai ni
-    @crate::RhaiRes — les appelants convertissent l'erreur par @crate::rhai_err.
+  Exposer une variante async ou une autre fonction que `block_on` : la face publique est cette
+    seule fonction synchrone. Le module ne connaît ni @rhai ni @crate::RhaiRes — les appelants
+    convertissent l'erreur par @crate::rhai_err — et ne dépend pas de la porte `rhai`.
   Retenter, temporiser ou journaliser : une erreur remonte telle quelle.
   Annuler de lui-même ou lire un jeton autre que celui du fil appelant : l'arrêt est la décision
     du consommateur, le module n'observe que ce que @crate::cancel::scope a installé.
@@ -77,8 +86,9 @@ Depends on:
   crate — @crate::Result, @crate::Error, @crate::cancel (jeton courant du fil et tranche).
 
 Exposes:
-  `crate::rt::block_on` — `pub(crate) fn block_on<F: Future>(fut: F) -> @crate::Result<F::Output>`
-    (signature inchangée ; le jeton est lu du fil, pas passé).
+  `vynil_core::rt::block_on` — `pub fn block_on<F: Future>(fut: F) -> @crate::Result<F::Output>`
+    sous la feature `rt` (signature inchangée par rapport au `pub(crate)` d'avant ; le jeton est lu
+    du fil, pas passé).
 
 Accepts:
   Tout futur, `Send` ou non, à sortie quelconque ; appel depuis un thread de runtime
@@ -131,6 +141,13 @@ Tasks:
     transférable (décision du développeur principal, découpage de la campagne).
     Dans les `LazyLock` de ./k8s.rs (`CLIENT`, `RAW_CLIENT`, `CACHE`), l'erreur de `block_on`
     reste un `expect` (panic d'infrastructure acceptée, ./k8s.sdd).
+  [ ] Exposer `block_on` (issue #23) : `pub fn` sous la feature `rt`, rustdoc d'API publique selon le
+    `Must` (section `# Errors` pour `missing_errors_doc`, rendu sous `RUSTDOCFLAGS="-D warnings"`),
+    sans changer la signature ni le corps. Tests d'abord depuis les deux Scenario « consommateur
+    externe » ci-dessous, joués par un binaire d'intégration (../tests/rt_block_on_public.rs,
+    compilé avec la seule feature `rt`, `cfg(feature = "rt")`). Tâche jumelle de « Déclarer `rt`
+    public » de ./lib.sdd et de « Exposer la feature `rt` » de ../vyvil-core.sdd, cochée dans le
+    même commit. Prérequis : « Lever la porte `rhai` de ./cancel.rs » de ./cancel.sdd coché.
 
 Scenario: multi-thread, le futur s'exécute
   Given un `#[tokio::test(flavor = "multi_thread")]`
@@ -182,3 +199,17 @@ Scenario: jeton d'un autre fil
   Given un jeton annulé installé par `scope` sur le fil A
   When le fil B appelle `block_on` avec un futur qui rend `7`
   Then `Ok(7)` est rendu sur B
+
+Scenario: consommateur externe, runtime multi-thread
+  Given un binaire d'intégration hors de la crate, compilé avec la seule feature `rt`
+    (`--no-default-features --features rt`)
+  When `vynil_core::rt::block_on` reçoit, sous un runtime multi-thread (`#[tokio::test(flavor =
+    "multi_thread")]`), un futur qui rend `42`
+  Then `Ok(42)` est rendu
+
+Scenario: consommateur externe, annulation
+  Given le même binaire et un jeton `vynil_core::cancel::CancelToken` installé par
+    `vynil_core::cancel::scope`, annulé par un autre fil 100 ms plus tard
+  When `block_on` reçoit un futur qui dort 30 s en portant un témoin de destruction
+  Then l'@variant-Error::Other `cancelled` est rendu en moins de 500 ms au total
+  And le témoin de destruction est levé : le futur est abandonné

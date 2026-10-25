@@ -98,6 +98,11 @@ Must:
     passe est donc complète (paramètres puis retour) et écrite dans le vocabulaire du script
     (`string`, `i64`, `bool`, `array`, `map`… ; type de succès déballé pour une fonction fallible). Sans la feature, le comportement est identique : la
     documentation n'est qu'une métadonnée.
+  Exposer la feature `rt` (issue vynil-org/vynil-core#23) : `rt = ["dep:tokio"]`, hors `default`,
+    qui n'implique PAS `rhai` (c'est son objet : un consommateur sans les quatre features réseau
+    ni script obtient le pont async → sync de ./src/rt.sdd). `http`, `oci`, `s3` et `k8s` en
+    dépendent au lieu de `dep:tokio` ; l'ensemble compilé de ceux qui l'avaient ne change pas.
+    Additif, aucun effet pour les consommateurs actuels.
   Exposer la feature `metadata` (issue vynil-org/vynil-core#22) : `metadata = ["rhai",
     "rhai/metadata"]`, hors `default`, qui active l'introspection Rhai (`gen_fn_signatures`,
     `gen_fn_metadata_to_json`, commentaires des fonctions de script). Elle implique `rhai`
@@ -268,6 +273,15 @@ Tasks:
     clause amendée de « Documenter les fonctions enregistrées » ci-dessus. Tâche portée par les treize specs
     de ./src/ qui ont un enregistreur documenté (une tâche jumelle chacune), cochée quand toutes le sont ;
     la 0.9.0 ne se tague pas avant.
+  [ ] Exposer la feature `rt` dans ./Cargo.toml (issue #23) : `rt = ["dep:tokio"]`, commentée comme ses
+    voisines (ce qu'elle active, pourquoi elle n'implique pas `rhai`), hors `default` ; `http`,
+    `oci`, `s3` et `k8s` remplacent `"dep:tokio"` par `"rt"`. Vérifier `cargo hack check
+    --each-feature --no-dev-deps` et son pendant clippy, plus `cargo test --all-features`.
+    Tâche jumelle de « Déclarer `rt` public » de ./src/lib.sdd, cochée dans le même commit.
+  [ ] Reprendre le CHANGELOG 0.9.0 et la batterie (issue #23) : ./CHANGELOG.md — `Added` : la feature
+    `rt` et `rt::block_on` publics ; `Changed` : `cancel` compilé sans feature ; ./AGENTS.md et
+    ./.opencode/agents/validator.md — la porte `--no-default-features --features rt` (test et
+    clippy). Jumelle de « Ajouter la porte `rt` » de ./tooling.sdd, cochée dans le même commit.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec revue (`Owns` groupé admis pour les mocks),

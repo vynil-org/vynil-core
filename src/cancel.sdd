@@ -11,8 +11,10 @@ Purpose:
     d'attendre. Le jeton est porté par le FIL appelant (thread-local) et non par un paramètre :
     les soixante appelants de `block_on` et les fonctions natives n'ont ainsi aucune signature à
     changer, et l'évaluation Rhai, synchrone, reste sur le fil qui l'a lancée (y compris sous
-    @tokio::task::block_in_place). Ce module ne dépend ni de @tokio ni de la porte réseau :
-    `sleep` n'existe que sous `rhai`. Périmètre arrêté (revue de 0.9.0) : seuls `sleep` et
+    @tokio::task::block_in_place). Ce module ne dépend ni de @tokio ni de la porte réseau et,
+    depuis l'issue vynil-org/vynil-core#23, il est compilé SANS aucune feature : le pont
+    @crate::rt::block_on, exposé aux consommateurs par la feature `rt` (sans `rhai`), lit le même
+    jeton ; seul `sleep` (@crate::engine) n'existe que sous `rhai`. Périmètre arrêté (revue de 0.9.0) : seuls `sleep` et
     @crate::rt::block_on, donc les attentes réseau de http/oci/s3/k8s, sont annulables ; les
     appels qui bloquent sur un PROCESSUS FILS — `shell_run`/`shell_output` (./shell.rs) et
     `sign_image` (cosign, ./oci.rs) — ne lisent pas le jeton et ne rendent la main qu'à la fin du
@@ -22,14 +24,18 @@ Owns:
   ./cancel.rs
 
 References:
-  ./lib.rs — déclarant : `#[cfg(feature = "rhai")]` + `pub mod cancel;`. Aucune variante @Error
+  ./lib.rs — déclarant : `pub mod cancel;` SANS gate (issue #23 ; jusque-là sous `rhai`). Aucune variante @Error
     nouvelle : l'annulation est @variant-Error::Other de texte `cancelled`.
   ./rt.sdd, ./engine.sdd — les deux lecteurs du jeton (@crate::rt::block_on et la fonction de
     script `sleep`).
   Issue vynil-org/vynil-core#21.
 
 Must:
-  N'exister que sous la porte `rhai`.
+  Exister sans aucune porte : le module est compilé dans tout graphe de features, y compris
+    `--no-default-features`, et ses tests s'y jouent. Les deux lectures `pub(crate)` ci-dessous,
+    qui n'ont de lecteur que sous `rhai` (`sleep`) ou `rt` (le pont), ne sont compilées que sous
+    `any(feature = "rhai", feature = "rt")` : aucun `#[allow(dead_code)]` pour faire taire le graphe
+    sans lecteur.
   Fournir @crate::cancel::CancelToken : un drapeau partagé, @core::clone::Clone (les clones
     désignent le MÊME drapeau), @core::fmt::Debug, @core::default::Default (non annulé),
     @core::marker::Send et @core::marker::Sync affirmés par test. Une fois annulé il le reste :
@@ -88,6 +94,12 @@ Tasks:
     comme `engine`) : tests d'abord. Tâche jumelle de « Déclarer `cancel` » de ./lib.sdd,
     cochée dans le même commit. À cocher AVANT les tâches « annulation » de ./rt.sdd et
     ./engine.sdd, qui lisent ce module.
+  [ ] Lever la porte `rhai` de ./cancel.rs (issue #23) : le module se compile sans aucune feature ;
+    les lectures `pub(crate)` `current()` et `WAIT_SLICE` passent sous
+    `#[cfg(any(feature = "rhai", feature = "rt"))]` (leurs seuls lecteurs), sans
+    `#[allow(dead_code)]`. Tests d'abord depuis le Scenario « sans aucune feature » ; les sept tests
+    existants restent verts, ceux qui lisent `current()` suivent la porte de la lecture. Tâche
+    jumelle de « Déclarer `cancel` sans gate » de ./lib.sdd, cochée dans le même commit.
 
 Scenario: sans portée, aucun jeton
   Given un fil sur lequel aucune portée n'est ouverte
@@ -122,3 +134,10 @@ Scenario: les clones partagent le drapeau
   When `C.cancel()` est appelé
   Then `T.is_cancelled()` est vrai, et le reste après tout autre appel
   And un `CancelToken::default()` n'est pas annulé
+
+Scenario: cancel existe sans aucune feature
+  Given la crate compilée par `cargo test --no-default-features`
+  When l'API publique est inspectée
+  Then `vynil_core::cancel::{CancelToken, scope}` existe, les tests de `CancelToken` (Send, Sync,
+    clones partageant le drapeau, Default non annulé) passent, et la compilation ne rend aucun
+    avertissement `dead_code`
