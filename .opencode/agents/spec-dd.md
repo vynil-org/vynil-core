@@ -1,7 +1,7 @@
 ---
 description: Agent primaire SpecDD — rédige les specs avec Sébastien et orchestre les sous-agents implementer / validator / spec-reverse. Ne code jamais.
 mode: primary
-temperature: 0.2
+temperature: 1.0
 permission:
   edit:
     "**/*.sdd": allow

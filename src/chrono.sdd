@@ -58,14 +58,16 @@ Must:
     `try` de script ; côté Rust, @crate::chrono::DateTimeHandler::format retourne un
     @crate::Result portant @crate::Error::Other (message `Invalid date format '<fmt>'`).
   @crate::chrono::chrono_rhai_register enregistre exactement trois choses sur le
-    @rhai::Engine reçu, et rien d'autre : @rhai::Engine::register_type_with_name du type sous
-    le nom de script `DateTimeHandler`, @rhai::Engine::register_fn de
-    @crate::chrono::DateTimeHandler::now sous le nom de script `date_now` à zéro argument,
-    @rhai::Engine::register_fn de @crate::chrono::DateTimeHandler::rhai_format sous le nom de
-    script `format`, méthode d'un @crate::chrono::DateTimeHandler recevant une chaîne.
+    @rhai::Engine reçu, et rien d'autre, par le motif double cible importé de ./engine.rs
+    (@crate::engine::Target, @crate::engine::register_type_at et @crate::engine::register_at) :
+    le type sous le nom de script `DateTimeHandler`, la fonction
+    @crate::chrono::DateTimeHandler::now sous le nom de script `date_now` à zéro argument, la
+    fonction @crate::chrono::DateTimeHandler::rhai_format sous le nom de script `format`,
+    méthode d'un @crate::chrono::DateTimeHandler recevant une chaîne. Le jumeau
+    @crate::chrono::chrono_module pose les mêmes entrées sur un @rhai::Module.
   @crate::chrono::DateTimeHandler::rhai_format garde son récepteur `&mut self` et son
-    paramètre @std::string::String par valeur, signatures imposées par
-    @rhai::Engine::register_fn, et conserve en pair le
+    paramètre @std::string::String par valeur, signatures imposées par l'enregistrement
+    @rhai::FuncRegistration du motif, et conserve en pair le
     `#[allow(clippy::needless_pass_by_value)]` et son commentaire de justification d'une
     ligne citant vyvil-core.sdd (règle de harnais de ../.specdd/bootstrap.project.md).
   @crate::chrono::DateTimeHandler::now et @crate::chrono::DateTimeHandler::format gardent
@@ -96,11 +98,13 @@ Depends on:
     dépendance non gated de ./Cargo.toml avec `features = ["serde"]` sur les features par
     défaut — dont `clock`, indispensable à @chrono::Local::now — donc présente dans toutes
     les combinaisons de features de la crate.
-  rhai — @rhai::Engine, @rhai::ImmutableString, @rhai::Engine::register_type_with_name et
-    @rhai::Engine::register_fn, derrière la feature du même nom ; seuls
-    @crate::chrono::DateTimeHandler::rhai_format et @crate::chrono::chrono_rhai_register en
-    dépendent.
-  @derive.Clone — exigé par @rhai::Engine::register_type_with_name pour enregistrer le type ;
+  rhai — @rhai::Engine, @rhai::ImmutableString, @rhai::Module et le motif
+    @crate::engine::Target/@crate::engine::register_type_at/@crate::engine::register_at,
+    derrière la feature du même nom ; seuls
+    @crate::chrono::DateTimeHandler::rhai_format, @crate::chrono::chrono_rhai_register et
+    @crate::chrono::chrono_module en dépendent.
+  @derive.Clone — exigé par l'enregistrement du type (@crate::engine::register_type_at,
+    @rhai::Module::set_custom_type sous la voie module) ;
     @derive.Eq, @derive.PartialEq, @derive.Ord, @derive.PartialOrd, @derive.Hash et
     @derive.Debug ne servent que la face Rust : le module ne câble aucun crochet Rhai
     d'égalité ou de hachage de type personnalisé et n'enregistre aucune méthode associée.
@@ -128,6 +132,10 @@ Exposes:
     n'étant enregistré, `date_now` est l'unique façon d'obtenir une valeur de script.
   Méthode de script `<DateTimeHandler>.format(fmt)` — une chaîne en argument, retourne une
     chaîne ; @type_of d'une valeur du handler rendu vaut `DateTimeHandler`.
+  @crate::chrono::chrono_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
+    @crate::chrono::chrono_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
 
 Accepts:
   @crate::chrono::DateTimeHandler::now — rien, et ne consulte ni argument, ni variable
@@ -201,6 +209,24 @@ Tasks:
     @std::fmt::Write::write_fmt, @crate::chrono::DateTimeHandler::rhai_format rend un
     @crate::RhaiRes ; les trois Scenario d'erreur ci-dessus sont à écrire en test d'abord, et
     les appelants Rust de `format` (./engine.rs, consommateurs) à répercuter.
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::chrono::chrono_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::chrono::chrono_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (chrono) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+    la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
+    type de retour (absent quand la fonction rend l'unité), écrits dans le vocabulaire du script
+    (`string`, non `String`/`ImmutableString` ; type de succès déballé pour une fonction fallible).
+    Tests d'abord : une table de signatures attendues, écrite à la main, comparée par égalité à
+    `gen_fn_signatures` pour l'enregistreur ET le jumeau ; un test de complétude (nombre de fonctions
+    du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
+    Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
+    commit.
 
 Scenario: rendu local d'un motif valide
   Given un @crate::chrono::DateTimeHandler dont @crate::chrono::DateTimeHandler::date est une
@@ -356,3 +382,31 @@ Scenario: un motif invalide dans un script devient une erreur rattrapable
     `()` et non la chaîne
   Then l'évaluation retourne `rattrape`
   And sans `try`, l'évaluation échoue en erreur @rhai portant `Invalid date format '%Q'`, sans panic
+
+Scenario: chrono_module équivaut à chrono_rhai_register
+  Given un @rhai::Engine où chrono_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::chrono::chrono_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (chrono)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (chrono_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
+    entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
+    entrée, écrit dans le vocabulaire du SCRIPT et non celui de Rust : `string` (pour `String` comme
+    pour `ImmutableString`), `i64`, `u32`, `bool`, `Dynamic`, `array`, `map` — les types natifs de rhai
+    s'écrivent comme `type_of` en script, donc en minuscules, y compris en retour —, le nom du type
+    enregistré tel quel (`K8sGeneric`, `RestClient`) ;
+    une fonction fallible (`RhaiRes<T>`) porte le type de succès `T` déballé, jamais le `Result<…>` brut
+    que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
+    une signature sans retour
+  And sans la feature, les mêmes tests de comportement passent sans différence

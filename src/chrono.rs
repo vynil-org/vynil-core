@@ -4,8 +4,10 @@
 
 use std::fmt::Write as _;
 
+#[cfg(feature = "rhai")]
+use crate::engine::{Target, register_at, register_type_at};
 use chrono::{DateTime, Local};
-#[cfg(feature = "rhai")] use rhai::{Engine, ImmutableString};
+#[cfg(feature = "rhai")] use rhai::{Engine, ImmutableString, Module};
 
 /// Local date-time handle. Create with [`DateTimeHandler::now`] then [`DateTimeHandler::format`].
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
@@ -60,13 +62,65 @@ impl DateTimeHandler {
     }
 }
 
-/// Registers the `DateTimeHandler` type and its date helpers on a Rhai `engine`.
+// ── Motif double cible (chrono.sdd, issues #19 et #20) ───────────────────────
+// Reproduit le motif posé par le pilote de ./engine.sdd : le type et les fonctions
+// du module sont définis UNE seule fois, dans `chrono_fns`, comme une liste
+// d'enregistrements (nom, fonction, noms des paramètres et commentaire `///` sous
+// `metadata`) appliquée soit directement à l'Engine (l'enregistreur — les fonctions
+// restent en namespace global de l'engine, visibles de gen_fn_signatures comme
+// avant), soit à un Module dans ce même namespace global (le jumeau module,
+// enregistrable par Engine::register_static_module). Les aides Target/register_at/
+// register_type_at du pilote sont centralisées dans ./engine.rs (`pub(crate)`),
+// chrono.rs les importe.
+
+/// Registers the `DateTimeHandler` type and its date helpers on a Rhai `engine`:
+/// the type named `DateTimeHandler` (`type_of`), the script function `date_now`
+/// and the script method `format` — exactly those three registrations, nothing else.
+///
+/// Additive and idempotent: callable alone on a fresh [`Engine`]. The functions stay
+/// directly on the engine — no intermediate global module.
+///
+/// Module twin: [`chrono_module`] — same single `chrono_fns` list, same semantics.
 #[cfg(feature = "rhai")]
 pub fn chrono_rhai_register(engine: &mut Engine) {
-    engine
-        .register_type_with_name::<DateTimeHandler>("DateTimeHandler")
-        .register_fn("date_now", DateTimeHandler::now)
-        .register_fn("format", DateTimeHandler::rhai_format);
+    chrono_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`chrono_rhai_register`] (issue #19): the same type name and the
+/// same functions, under the global namespace of a fresh [`Module`], registrable by
+/// [`Engine::register_static_module`] under the name the consumer picks. A twin that
+/// drifts from its registrar is a defect: both share the single `chrono_fns` list.
+#[cfg(feature = "rhai")]
+#[must_use]
+pub fn chrono_module() -> Module {
+    let mut module = Module::new();
+    chrono_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The `chrono` group defined once (motif double cible): the custom type name, then
+/// each entry is a name, its function, its parameter names and its `///` comment
+/// (both under `metadata` only).
+#[cfg(feature = "rhai")]
+fn chrono_fns(target: &mut Target<'_>) {
+    register_type_at::<DateTimeHandler>(target, "DateTimeHandler");
+    register_at(
+        target,
+        "date_now",
+        &["/// Current local date-time, frozen at call time, as a DateTimeHandler. No errors."],
+        &["DateTimeHandler"],
+        DateTimeHandler::now,
+    );
+    register_at(
+        target,
+        "format",
+        &[
+            "/// Render the instant frozen in `handler` with a `chrono` strftime pattern `fmt`.",
+            "/// Errors when an item of `fmt` cannot be rendered, any partial output being lost.",
+        ],
+        &["handler: &mut DateTimeHandler", "fmt: string", "string"],
+        DateTimeHandler::rhai_format,
+    );
 }
 
 #[cfg(test)]
@@ -562,6 +616,389 @@ mod tests {
                 .eval::<ImmutableString>("let d = date_now(); type_of(d)")
                 .expect("`type_of` doit fonctionner sur la valeur de `date_now`");
             assert_eq!(ty.as_str(), "DateTimeHandler");
+        }
+
+        // ════════════════════════════════════════════════════════════════════
+        // Tâche « Jumeau module et documentation » (chrono.sdd, issues #19 et #20) —
+        // Scenario « chrono_module équivaut à chrono_rhai_register » et
+        // « fonctions documentées sous metadata (chrono) », sur le motif double cible
+        // posé par le pilote de ./engine.sdd.
+        // ════════════════════════════════════════════════════════════════════
+
+        /// Engine vierge portant le jumeau module enregistré par
+        /// `rhai::Engine::register_static_module` sous le nom `m` (face qualifiée du Scenario).
+        fn engine_with_module(module: rhai::Module) -> Engine {
+            let mut engine = Engine::new();
+            engine.register_static_module("m", module.into());
+            engine
+        }
+
+        /// Noms de fonctions de l'engine, hors packages standard de `@rhai`
+        /// (introspection par `collect_fn_metadata`, porte `internals` toujours activée).
+        fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
+            engine
+                .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+                .into_iter()
+                .collect()
+        }
+
+        /// Noms qu'un enregistreur ajoute à la baseline `Engine::new`.
+        fn names_added_by(register: impl Fn(&mut Engine)) -> std::collections::BTreeSet<String> {
+            let mut engine = Engine::new();
+            register(&mut engine);
+            let apres = registered_names(&engine);
+            let avant = registered_names(&Engine::new());
+            apres.difference(&avant).cloned().collect()
+        }
+
+        /// Noms qu'un jumeau module ajoute à la baseline par `register_static_module`
+        /// sous `m` (préfixe `m::` retiré s'il est porté par le nom).
+        fn names_added_by_module(module: rhai::Module) -> std::collections::BTreeSet<String> {
+            let apres = registered_names(&engine_with_module(module));
+            let avant = registered_names(&Engine::new());
+            apres
+                .difference(&avant)
+                .map(|nom| {
+                    let s = nom.as_str();
+                    s.strip_prefix("m::").unwrap_or(s).to_string()
+                })
+                .collect()
+        }
+
+        fn set_of(noms: &[&str]) -> std::collections::BTreeSet<String> {
+            noms.iter().map(|nom| (*nom).to_string()).collect()
+        }
+
+        /// Évalue `src` sur `engine` dans un scope neuf portant le handler figé à
+        /// `2024-05-06 07:08:09` (le `d` injecté des Scenario existants).
+        fn eval_with_fixed_handler(
+            engine: &mut Engine,
+            src: &str,
+        ) -> Result<rhai::Dynamic, Box<rhai::EvalAltResult>> {
+            let mut scope = rhai::Scope::new();
+            scope.push("d", handler_fixed());
+            engine.eval_with_scope(&mut scope, src)
+        }
+
+        /// Deux faces du même appel : mêmes valeurs rendues, et sur échec même noyau de
+        /// message d'erreur (l'enveloppe d'appel nu vs qualifié appartient à `@rhai`).
+        fn assert_same_call(
+            label: &str,
+            a: Result<rhai::Dynamic, Box<rhai::EvalAltResult>>,
+            b: Result<rhai::Dynamic, Box<rhai::EvalAltResult>>,
+            marqueur: Option<&str>,
+        ) {
+            match (a, b) {
+                (Ok(va), Ok(vb)) => {
+                    assert_eq!(va.to_string(), vb.to_string(), "{label} : valeurs divergentes");
+                }
+                (Err(ea), Err(eb)) => {
+                    let marqueur = marqueur.expect("jeu de test : les échecs portent un noyau de message");
+                    assert!(
+                        ea.to_string().contains(marqueur),
+                        "{label} : l'erreur {ea} doit porter « {marqueur} »"
+                    );
+                    assert!(
+                        eb.to_string().contains(marqueur),
+                        "{label} : l'erreur {eb} doit porter « {marqueur} »"
+                    );
+                }
+                (ea, eb) => panic!("{label} : divergence {ea:?} / {eb:?}"),
+            }
+        }
+
+        /// Scenario « `chrono_module` équivaut à `chrono_rhai_register` » : les appels
+        /// représentatifs des Scenario existants (nom nu sur l'engine de l'enregistreur ;
+        /// nom nu ET qualifié `m::nom` sur l'engine du jumeau module) rendent les mêmes
+        /// valeurs et portent les mêmes noyaux d'erreur ; les deux ensembles de noms de
+        /// fonctions sont égaux, aucune fonction en plus ni en moins.
+        #[test]
+        fn scenario_chrono_module_equivaut_a_chrono_rhai_register() {
+            // Then « les deux ensembles de noms sont égaux », et exactement { date_now, format }.
+            let noms_registrateur = names_added_by(chrono_rhai_register);
+            let noms_module = names_added_by_module(chrono_module());
+            assert_eq!(
+                noms_module, noms_registrateur,
+                "le jumeau module et l'enregistreur accordent les mêmes noms"
+            );
+            assert_eq!(
+                noms_registrateur,
+                set_of(&["date_now", "format"]),
+                "chrono_rhai_register n'accorde que date_now et format (diff de baseline)"
+            );
+
+            // When : les appels représentatifs sont rejoués sur chacun, nu/nu/qualifié.
+            // Échecs rejoués : le motif invalide (message porté) et la fonction inconnue
+            // (argument non chaîne, chaîne receveuse), verrouillés par les Scenario amont.
+            let calls: &[(&str, &str, Option<&str>)] = &[
+                ("type_of(date_now())", "type_of(m::date_now())", None),
+                (
+                    r#"d.format("%Y-%m-%d %H:%M:%S")"#,
+                    r#"m::format(d, "%Y-%m-%d %H:%M:%S")"#,
+                    None,
+                ),
+                (
+                    r#"d.format("%Q")"#,
+                    r#"m::format(d, "%Q")"#,
+                    Some("Invalid date format '%Q'"),
+                ),
+                ("d.format(2024)", r"m::format(d, 2024)", Some("format")),
+                (
+                    r#""2024-05-06".format("%Y")"#,
+                    r#"m::format("2024-05-06", "%Y")"#,
+                    Some("format"),
+                ),
+            ];
+            for (bare, qualified, marqueur) in calls {
+                let mut nu = Engine::new();
+                chrono_rhai_register(&mut nu);
+                let rn = eval_with_fixed_handler(&mut nu, bare);
+                // Face « nom nu aussi sur le second engine » : le jumeau est en namespace
+                // global (FnNamespace::Global), le nom nu doit y résoudre pareil.
+                let mut module_engine = engine_with_module(chrono_module());
+                let rb = eval_with_fixed_handler(&mut module_engine, bare);
+                let rq = eval_with_fixed_handler(&mut module_engine, qualified);
+                assert_same_call(
+                    &format!("nom nu ({bare}) : enregistreur vs jumeau"),
+                    rn,
+                    rb,
+                    *marqueur,
+                );
+                assert_same_call(
+                    &format!("qualifié ({qualified}) vs nu ({bare}) sur l'enregistreur"),
+                    eval_with_fixed_handler(&mut nu, bare),
+                    rq,
+                    *marqueur,
+                );
+            }
+        }
+
+        /// Scenario « `chrono_module` équivaut à `chrono_rhai_register` », dernier `And` : sur
+        /// l'engine de l'enregistreur, `rhai::Engine::gen_fn_signatures` sans les paquets
+        /// liste les mêmes fonctions qu'avant — `date_now` et `format` en fonctions
+        /// directes, non passées dans un module global. Porte `metadata` de `@rhai`.
+        #[cfg(feature = "metadata")]
+        #[test]
+        fn scenario_chrono_enregistreur_fonctions_directement_sur_l_engine() {
+            let mut engine = Engine::new();
+            chrono_rhai_register(&mut engine);
+            let signatures = engine.gen_fn_signatures(false);
+            let baseline = Engine::new().gen_fn_signatures(false);
+            let ajoutees: Vec<&String> = signatures
+                .iter()
+                .filter(|s| !baseline.iter().any(|b| b == *s))
+                .collect();
+            assert_eq!(
+                ajoutees.len(),
+                2,
+                "date_now et format sont les seules signatures ajoutees a la baseline : {ajoutees:?}"
+            );
+            assert!(
+                ajoutees.iter().any(|s| s.starts_with("date_now(")),
+                "date_now doit etre une fonction directe de l'engine : {ajoutees:?}"
+            );
+            assert!(
+                ajoutees.iter().any(|s| s.starts_with("format(")),
+                "format doit etre une fonction directe de l'engine : {ajoutees:?}"
+            );
+        }
+
+        /// Scenario « fonctions documentées sous metadata (chrono) », faces introspection
+        /// et JSON : sous la feature `metadata`, `date_now` et `format` portent un
+        /// commentaire non vide et les NOMS de leurs paramètres — `format` receveur et
+        /// argument nommés, `date_now` zéro paramètre (clause tenue vacuement).
+        #[cfg(feature = "metadata")]
+        #[test]
+        fn scenario_fonctions_documentees_sous_metadata_chrono() {
+            let mut engine = Engine::new();
+            chrono_rhai_register(&mut engine);
+            let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
+                None,
+                |f| {
+                    Some((
+                        f.metadata.name.to_string(),
+                        f.metadata.params_info.len(),
+                        f.metadata.comments.len(),
+                    ))
+                },
+                false,
+            );
+            for nom in ["date_now", "format"] {
+                let (_, _, commentaires) = documentees
+                    .iter()
+                    .find(|(n, _, _)| n == nom)
+                    .unwrap_or_else(|| panic!("{nom} absente des métadonnées de l'engine"));
+                assert!(
+                    *commentaires > 0,
+                    "{nom} doit porter un commentaire non vide sous `metadata`"
+                );
+            }
+
+            let signatures = engine.gen_fn_signatures(false);
+            let signature = signatures
+                .iter()
+                .find(|s| s.starts_with("format("))
+                .unwrap_or_else(|| panic!("format absente des signatures : {signatures:?}"));
+            for param in ["handler", "fmt"] {
+                assert!(
+                    signature.contains(param),
+                    "la signature de format doit nommer le paramètre « {param} », got {signature}"
+                );
+            }
+            assert!(!signature.contains("(_"), "got {signature}");
+
+            // Face JSON : `gen_fn_metadata_to_json` porte le commentaire /// et les
+            // paramètres nommés de format.
+            let json = engine
+                .gen_fn_metadata_to_json(false)
+                .expect("le JSON des métadonnées de l'engine se sérialise");
+            let value: serde_json::Value = serde_json::from_str(&json).expect("JSON valide");
+            let functions = value["functions"]
+                .as_array()
+                .expect("le JSON porte un tableau « functions »");
+            for nom in ["date_now", "format"] {
+                let entree = functions
+                    .iter()
+                    .find(|f| f["name"] == nom)
+                    .unwrap_or_else(|| panic!("{nom} absente du JSON des métadonnées"));
+                let commentaires = entree["docComments"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{nom} doit porter des docComments, got {entree}"));
+                assert!(
+                    commentaires
+                        .iter()
+                        .any(|c| { c.as_str().is_some_and(|c| c.starts_with("///") && c.len() > 3) }),
+                    "le commentaire /// de {nom} doit être non vide, got {entree}"
+                );
+            }
+            let entree = functions
+                .iter()
+                .find(|f| f["name"] == "format")
+                .expect("format présente au JSON");
+            let params = entree["params"]
+                .as_array()
+                .unwrap_or_else(|| panic!("format doit porter des params nommés, got {entree}"));
+            assert_eq!(params.len(), 2, "format a deux paramètres nommés, got {entree}");
+            assert!(
+                params
+                    .iter()
+                    .all(|p| p["name"].as_str().unwrap_or_default() != "_"),
+                "les paramètres de format doivent être nommés, got {entree}"
+            );
+        }
+
+        /// Scenario « fonctions documentées sous metadata (chrono) », `And` « sans la
+        /// feature, les mêmes tests de comportement passent sans différence » : valeurs
+        /// verrouillées et noms accordés identiques de côté metadata — la documentation
+        /// n'étant qu'une métadonnée, aucune observable ici ne bouge.
+        #[cfg(not(feature = "metadata"))]
+        #[test]
+        fn scenario_fonctions_documentees_sous_metadata_chrono_sans_difference() {
+            let mut engine = Engine::new();
+            chrono_rhai_register(&mut engine);
+            assert_eq!(
+                engine
+                    .eval::<ImmutableString>("type_of(date_now())")
+                    .expect("type_of(date_now()) réussit")
+                    .as_str(),
+                "DateTimeHandler",
+                "sans `metadata`, type_of(date_now()) rend la même chaîne qu'avec"
+            );
+            assert_eq!(
+                eval_with_fixed_handler(&mut engine, r#"d.format("%Y-%m-%d %H:%M:%S")"#)
+                    .expect("le handler figé se met en forme sans `metadata`")
+                    .to_string(),
+                "2024-05-06 07:08:09",
+                "sans `metadata`, format rend la même valeur qu'avec"
+            );
+            assert_eq!(
+                names_added_by(chrono_rhai_register),
+                set_of(&["date_now", "format"]),
+                "sans `metadata`, les noms accordés sont identiques"
+            );
+        }
+    }
+}
+
+#[cfg(all(test, feature = "metadata"))]
+mod signatures_documentees {
+    use super::*;
+
+    /// Signatures attendues du groupe `chrono`, écrites à la main depuis les closures :
+    /// `date_now` rend un `DateTimeHandler` sans erreur, `format` a pour receveur
+    /// `handler: &mut DateTimeHandler` et rend la chaîne déballée de son `RhaiRes`.
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("date_now", "date_now() -> DateTimeHandler"),
+        (
+            "format",
+            "format(handler: &mut DateTimeHandler, fmt: string) -> string",
+        ),
+    ];
+
+    /// Signatures que le groupe ajoute à la base, par l'enregistreur direct sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        chrono_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le groupe ajoute à la base, par le jumeau module enregistré sous `m`
+    /// (préfixe `m::` retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", chrono_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or(s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        chrono_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
+            );
         }
     }
 }

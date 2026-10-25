@@ -171,6 +171,24 @@ Tasks:
     ./shell.rs (./src/shell.sdd), la table et la rustdoc de ./lib.rs avec l'assomption unix seul
     (./src/lib.sdd), et la description de la feature `shell` dans ./Cargo.toml
     (./vyvil-core.sdd).
+  [x] ./docs/rhai_helpers.md et ./README.md : documenter la série des issues #18 à #22, chaque
+    point reformulant la spec nommée et n'ajoutant aucun contrat. (1) Les seize noms communs en
+    trois groupes publics (pur, hôte, attente) et `fs_rhai_register`, avec ce
+    que chacun accorde, la composition sur un `Engine::new` et la réserve de `add_common` sur le
+    groupe hôte (./src/engine.sdd). (2) Les jumeaux `*_module` et l'enregistrement par
+    `register_static_module` (règle de ./vyvil-core.sdd, spec de chaque module), sans les doubles
+    de test. (3) La feature `metadata` dans la table des features, hors `default`, impliquant
+    `rhai` (./Cargo.toml), et ce que les fonctions documentées donnent à l'introspection.
+    (4) `cancel::{CancelToken, scope}` : portée par fil, `sleep` et les appels réseau annulables,
+    lien avec `Engine::on_progress` qu'ils complètent sans le remplacer, ce qui ne traverse pas
+    les fils (./src/cancel.sdd, ./src/rt.sdd). Jumelle des tâches des specs citées, cochée dans
+    le même commit que la dernière d'entre elles ; les extraits `vynil-core = ...` passent de
+    `0.8` à `0.9` avec la tâche « Livrer 0.9.0 » de ./vyvil-core.sdd.
+  [x] Documenter `rt` et `cancel` sans feature (issue #23) : la feature `rt` et `vynil_core::rt::block_on` dans
+    ./docs/rhai_helpers.md (table des features, section 15 : le pont public, le jeton lu sans `rhai`,
+    l'exigence du pilote de temps) et dans ./README.md (table des features). Jumelle des tâches
+    « Exposer `block_on` » de ./src/rt.sdd et « Lever la porte `rhai` de ./cancel.rs » de ./src/cancel.sdd,
+    cochée dans le même commit.
 
 Done when:
   Les trois pages et ./README.md ne contiennent plus une phrase contredisant la spec d'un module,

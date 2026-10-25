@@ -230,7 +230,9 @@ Must:
     directement (@rhai::serde::to_dynamic), sans le double @serde_json round trip identité
     actuel (nettoyage, décision actée).
   Enregistrer en Rhai exactement : `k8sgeneric_rhai_register` = type @kube::api::DynamicObject
-    (getter `data` CLONANT le map data) + macros sur @crate::k8s::K8sObject ("K8sObject" : 3
+    (getter `data` CLONANT le map data) + surface des macros publiées rejouée par les entrées
+    du motif (@crate::engine::register_at/@crate::engine::register_get_at/@crate::engine::register_type_at
+    importé de ./engine.rs) sur @crate::k8s::K8sObject ("K8sObject" : 3
     getters `kind`/`original_kind`/`metadata`, 7 méthodes `delete`/`wait_condition`/`wait_status`/
     `wait_status_prop`/`wait_status_string`/`wait_for`/`wait_deleted`) et @crate::k8s::K8sGeneric
     ("K8sGeneric" : 23 méthodes `k8s_resource`×3-rités, `list`×2, `update_k8s_crd_cache`,
@@ -363,6 +365,18 @@ Exposes:
   Aucun type privé contracté (excluded_apiservice_groups, async_populate_cache, populate_cache,
     prepare_handle, job_is_completed, find_workload_mock, upsert_in_list, merge_with_existing sont
     internes — seuls leurs EFFETS sont contractés).
+  @crate::k8s::k8sgeneric_module — `#[must_use] pub fn() -> @rhai::Module`, porte `k8s`, jumeau de
+    @crate::k8s::k8sgeneric_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
+  @crate::k8s::k8sraw_module — `#[must_use] pub fn() -> @rhai::Module`, porte `k8s`, jumeau de
+    @crate::k8s::k8sraw_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
+  @crate::k8s::k8sworkload_module — `#[must_use] pub fn() -> @rhai::Module`, porte `k8s`, jumeau de
+    @crate::k8s::k8sworkload_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
 
 Accepts:
   Des noms de ressources en kind OU plural, casse indifférente (vrai) — en kind EXACT casse
@@ -530,11 +544,29 @@ Tasks:
     en face, page `mocking.md` l. 144 fidèle (« Overridden to a no-op … »). Le macro réel
     enregistre la vraie `update_cache` (registre vrai, l. 1882) — le mock la remplace,
     c'est exactement ce que la tâche prescrivait.
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+    la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
+    type de retour (absent quand la fonction rend l'unité), écrits dans le vocabulaire du script
+    (`string`, non `String`/`ImmutableString` ; type de succès déballé pour une fonction fallible).
+    Tests d'abord : une table de signatures attendues, écrite à la main, comparée par égalité à
+    `gen_fn_signatures` pour l'enregistreur ET le jumeau ; un test de complétude (nombre de fonctions
+    du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
+    Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
+    commit.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   panics d'infrastructure (contexte non câblé, discovery initiale), macros `register_k8s_*`
 #   publiques stables, un contexte par process, liste sans pagination, mock inchangé (sémantique
 #   documentée).
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::k8s::k8sgeneric_rhai_register, @crate::k8s::k8sraw_rhai_register, @crate::k8s::k8sworkload_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::k8s::k8sgeneric_module, @crate::k8s::k8sraw_module, @crate::k8s::k8sworkload_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (k8s) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: k8s en feature off, tout s'éteint en bloc
   Given le crate compilé `--no-default-features` (k8s n'est PAS dans default, ./README l.34)
@@ -713,3 +745,53 @@ Scenario: mock waits exist et no-op updates
   Then AUCUN touch de provider, AUCUNE panic même sans set_get_client — le no-op est
     enregistré explicitement par le mock, sans dépendre de l'ordre de réenregistrement ; Given @crate::k8s_mock::K8sRawMock
   Then les trois rendent une map VIDE figée
+
+Scenario: k8sgeneric_module équivaut à k8sgeneric_rhai_register
+  Given un @rhai::Engine où k8sgeneric_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::k8s::k8sgeneric_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: k8sraw_module équivaut à k8sraw_rhai_register
+  Given un @rhai::Engine où k8sraw_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::k8s::k8sraw_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: k8sworkload_module équivaut à k8sworkload_rhai_register
+  Given un @rhai::Engine où k8sworkload_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::k8s::k8sworkload_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (k8s)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (k8sgeneric_rhai_register; k8sraw_rhai_register; k8sworkload_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
+    entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
+    entrée, écrit dans le vocabulaire du SCRIPT et non celui de Rust : `string` (pour `String` comme
+    pour `ImmutableString`), `i64`, `u32`, `bool`, `Dynamic`, `array`, `map` — les types natifs de rhai
+    s'écrivent comme `type_of` en script, donc en minuscules, y compris en retour —, le nom du type
+    enregistré tel quel (`K8sGeneric`, `RestClient`) ;
+    une fonction fallible (`RhaiRes<T>`) porte le type de succès `T` déballé, jamais le `Result<…>` brut
+    que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
+    une signature sans retour
+  And sans la feature, les mêmes tests de comportement passent sans différence

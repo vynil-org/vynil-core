@@ -109,9 +109,9 @@ Must:
   Seuils de harnais : aucun `unsafe`, aucun @std::result::Result::unwrap,
     @std::option::Option::expect, @std::panic, @std::todo ni @std::unimplemented — le repli
     `@std::option::Option::unwrap_or` du helper de verdict n'est pas un lint du harnais (c'est
-    `unwrap_or`, pas `@std::option::Option::unwrap`) ; les cinq items publics
+    `unwrap_or`, pas `@std::option::Option::unwrap`) ; les six items publics
     portent leur rustdoc, quatre avec une section `# Errors` nommant les variantes traversées ;
-    aucun `#[must_use]` n'apparaît dans ./shell.rs.
+    le seul `#[must_use]` de ./shell.rs est celui du jumeau @crate::shell::shell_module.
 
 Must not:
   Traiter un code de sortie non nul comme une erreur de @crate::shell::run, de
@@ -144,8 +144,8 @@ Depends on:
     sous `rhai`.
   tracing — @tracing::warn! du champ `err` ; dépendance non optionnelle (`tracing = "0.1.37"`,
     verrouillée `0.1.44` dans ./Cargo.lock), indépendante de la feature `shell`.
-  rhai — @rhai::Engine et @rhai::Engine::register_fn derrière la feature du même nom, verrouillée
-    `1.25.1` ; la feature `shell` ne la fait pas dériver, d'où la double porte des items.
+  rhai — @rhai::Engine, @rhai::Module et le motif @crate::engine::Target/@crate::engine::register_at derrière la feature du même nom, verrouillée
+    `1.25.1` dans ./Cargo.lock ; la feature `shell` ne la fait pas dériver, d'où la double porte des items.
 
 Exposes:
   @crate::shell::run — signature `pub fn run(command: @std::string::String) -> @crate::Result<@std::process::Output>`,
@@ -159,6 +159,10 @@ Exposes:
     mêmes portes ; présenté aux scripts sous le seul nom `shell_output`.
   @crate::shell::shell_rhai_register — signature `pub fn shell_rhai_register(engine: &mut @rhai::Engine)`,
     mêmes portes, unique câblage automatique de ./engine.rs.
+  @crate::shell::shell_module — `#[must_use] pub fn() -> @rhai::Module`, porte `shell` et `rhai`, jumeau de
+    @crate::shell::shell_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
   Rien de plus : aucun type, aucune constante, aucune réexportation à la racine de la crate.
 
 Accepts:
@@ -205,7 +209,7 @@ Raises:
     de fin incluse ; @crate::Error::UTF8 dont l'affichage commence par `UTF8 error ` — suite
     portée par @std::string::FromUtf8Error, non verrouillée — quand le stderr du cas « exit 0
     avec stderr » ou le stdout du cas de succès n'est pas UTF-8 strict.
-  @crate::shell::shell_rhai_register — rien : les deux @rhai::Engine::register_fn sont
+  @crate::shell::shell_rhai_register — rien : les deux entrées @crate::engine::register_at sont
     infaillibles.
 
 Handles:
@@ -233,6 +237,16 @@ Handles:
     l'exécuter — comportement consigné comme non testable.
 
 Tasks:
+
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+    la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
+    type de retour (absent quand la fonction rend l'unité), écrits dans le vocabulaire du script
+    (`string`, non `String`/`ImmutableString` ; type de succès déballé pour une fonction fallible).
+    Tests d'abord : une table de signatures attendues, écrite à la main, comparée par égalité à
+    `gen_fn_signatures` pour l'enregistreur ET le jumeau ; un test de complétude (nombre de fonctions
+    du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
+    Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
+    commit.
 # Ce qui restait ici hors de ./shell.rs : `shell_output` à la table de ./lib.rs est transféré
 # à ./src/lib.sdd et la description de la feature `shell` à ./vyvil-core.sdd (tâches jumelles,
 # même commit).
@@ -272,6 +286,15 @@ Tasks:
     `shell` seule écartée (zéro verrou en propre, face compilée tenue par `cargo hack
     --each-feature`), `password` et `fs` sans porte à réclamer (trous de contrat de
     ./src/engine.sdd et ./src/hbs.sdd, pas de la matrice).
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::shell::shell_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::shell::shell_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (shell) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: la table des portes compile la face Rust sans rhai et le câblage sous rhai plus shell
   Given la crate compilée par `cargo check --no-default-features`
@@ -281,7 +304,7 @@ Scenario: la table des portes compile la face Rust sans rhai et le câblage sous
     le graphe, et ni @crate::shell::rhai_run, @crate::shell::rhai_get_stdout ni
     @crate::shell::shell_rhai_register n'existe
   When la crate est compilée par `cargo check --no-default-features --features rhai,shell`
-  Then les cinq items compilent et @Script::new_bare câble le registre
+  Then les six items compilent et @Script::new_bare câble le registre
   But dans les graphes sans `shell`, @crate::shell est absent et un @Script::new_bare ignore les
     deux noms, `shell = []` ne faisant dériver aucune feature
 
@@ -411,3 +434,31 @@ Scenario: new_bare ne livre que deux noms, et rien d'autre
   Then les quatre échouent en fonction inconnue : seules les deux arités unaires sur `string` existent
   But aucun autre nom n'apparaît, ni `shell`, `sh`, `run` ni `get_out` en script, et un second
     appel manuel de @crate::shell::shell_rhai_register laisse tout identique
+
+Scenario: shell_module équivaut à shell_rhai_register
+  Given un @rhai::Engine où shell_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::shell::shell_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (shell)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (shell_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
+    entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
+    entrée, écrit dans le vocabulaire du SCRIPT et non celui de Rust : `string` (pour `String` comme
+    pour `ImmutableString`), `i64`, `u32`, `bool`, `Dynamic`, `array`, `map` — les types natifs de rhai
+    s'écrivent comme `type_of` en script, donc en minuscules, y compris en retour —, le nom du type
+    enregistré tel quel (`K8sGeneric`, `RestClient`) ;
+    une fonction fallible (`RhaiRes<T>`) porte le type de succès `T` déballé, jamais le `Result<…>` brut
+    que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
+    une signature sans retour
+  And sans la feature, les mêmes tests de comportement passent sans différence

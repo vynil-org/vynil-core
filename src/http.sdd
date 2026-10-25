@@ -61,7 +61,7 @@ References:
     (voir ./rt.sdd) : plus aucune panique tokio depuis un script.
   ./tooling.sdd — harnais : 25 @allow(clippy::needless_pass_by_value) (17 ./http.rs,
     8 ./http_mock.rs) sous DEUX variantes de commentaire citant ./vyvil-core.sdd (« signature
-    imposée par l'API Rhai » et « signature publique exposée sur crates.io »), 3 @core::marker::must_use.
+    imposée par l'API Rhai » et « signature publique exposée sur crates.io »), 4 @core::marker::must_use.
 
 Must:
   N'exister tous deux que sous la porte `http`, avec @cfg_attr docsrs, `http` inclus dans
@@ -177,7 +177,9 @@ Must:
     case-insensitive (`#[must_use]` ; @crate::http::headers_get ne l'a pas, asymétrie clippy
     sans effet script) ; les deux consistent avec le `headers` vecteur-de-tuples rendu par
     les `rhai_*`.
-  Enregistrer dans @crate::http::http_rhai_register : type @rhai::Engine::register_type_with_name
+  Enregistrer dans @crate::http::http_rhai_register, par le motif double cible importé de
+    ./engine.rs (@crate::engine::Target/@crate::engine::register_type_at/@crate::engine::register_at) :
+    le type
     `"RestClient"` et VINGT-NEUF noms exactement : `new_http_client` ET `new_client`
     (jumeaux vers @crate::http::RestClient::new), `headers_reset`, `set_baseurl`,
     `set_server_ca`, `set_mtls_cert_key`, `add_header` (2 chaînes), `add_header_json`,
@@ -202,9 +204,9 @@ Must:
     ABSENT, `http_get_yaml` ABSENTE et l'alias `http_head` ABSENT — trois trous assumés et
     documentés (décision actée : on ne change rien au mock ; les consommateurs redéfinissent
     `http_get_yaml` en script, comme le fait vynil), avec `headers_get`/`headers_has` réenregistrés depuis le VRAI ./http.rs.
-  Maintenir le harnais : 25 @allow(clippy::needless_pass_by_value) (§References), 3
+  Maintenir le harnais : 25 @allow(clippy::needless_pass_by_value) (§References), 4
     @core::marker::must_use (@crate::http::RestClient::new 76, @crate::http::headers_has 1250,
-    @crate::http_mock::RestClientMock::new 47) ; aucun `unwrap`/`expect`/`panic!`/`todo!`/`dbg!`/`println!`
+    @crate::http_mock::RestClientMock::new 47, @crate::http::http_module) ; aucun `unwrap`/`expect`/`panic!`/`todo!`/`dbg!`/`println!`
     dans les deux fichiers — les `unwrap_or(0)`/`unwrap_or_default` contractés ci-dessus sont
     des replis, non des panic.
 
@@ -248,7 +250,8 @@ Depends on:
   schemars / serde — @schemars::JsonSchema + @serde::Serialize/@serde::Deserialize des quatre énum de verbes (les rend
     importables d'un config par @serde::Deserialize) ; raison d'être de `dep:schemars` dans
     la feature `http`.
-  rhai / crate — @rhai::Engine/@rhai::Dynamic/@rhai::Map, @rhai::Engine::register_type_with_name/@rhai::Engine::register_fn,
+  rhai / crate — @rhai::Engine/@rhai::Dynamic/@rhai::Map, @rhai::Module et le motif
+    @crate::engine::Target/@crate::engine::register_type_at/@crate::engine::register_at,
     @crate::RhaiRes, @crate::rhai_err, @crate::error_chain, @crate::get_client_name. Le mock
     ne tient qu'à @rhai + @crate::RhaiRes (+ @serde::Deserialize de @crate::http_mock::HttpMockItem
     pour les fixtures sérialisées façon mocking.md).
@@ -291,6 +294,10 @@ Exposes:
     @crate::http_mock::RestClientMock::new (`#[must_use]`), setters/add_* no-op publics, @crate::http_mock::RestClientMock::baseurl
     (stocke), huit verbes miroirs de noms script.
   @crate::http_mock::httpmock_rhai_register — `pub fn(engine, mocks)` ; seul point d'entrée mock.
+  @crate::http::http_module — `#[must_use] pub fn() -> @rhai::Module`, porte `http`, jumeau de
+    @crate::http::http_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
   Rien de plus dans les deux fichiers (le `fn get_client` de ./http.rs est PRIVÉ).
 
 Accepts:
@@ -476,11 +483,29 @@ Tasks:
     verrouillage partiel des body_* hors runtime inchangé ; `native-tls` à zéro dans
     les graphes http/oci/s3/k8s (mesuré). Jointe à la tâche de ./oci.sdd et à celle de
     ./vyvil-core.sdd, trois coches dans le même commit.
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+    la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
+    type de retour (absent quand la fonction rend l'unité), écrits dans le vocabulaire du script
+    (`string`, non `String`/`ImmutableString` ; type de succès déballé pour une fonction fallible).
+    Tests d'abord : une table de signatures attendues, écrite à la main, comparée par égalité à
+    `gen_fn_signatures` pour l'enregistreur ET le jumeau ; un test de complétude (nombre de fonctions
+    du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
+    Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
+    commit.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   statut jamais erreur côté script, `json_delete` enrobant contre `json_*` stricts, mock
 #   inchangé (setters muets, matching sans baseurl ni corps), panique contractuelle de
 #   `get_client_name`.
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::http::http_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::http::http_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (http) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: http par défaut mais jamais auto-wired
   Given la crate en default (`http` y est, ./Cargo.toml ligne 50) et un
@@ -630,3 +655,31 @@ Scenario: co-enregistrement, la substitution à deux trous
   When le script appelle `new_client("http://x")`, `http_get_yaml(...)` ou `c.http_head(...)`
   Then fonction INCONNUE : ces trois noms manquent à la table du mock — trous assumés et
     documentés (le mock ne change pas), les consommateurs redéfinissant `http_get_yaml` en script
+
+Scenario: http_module équivaut à http_rhai_register
+  Given un @rhai::Engine où http_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::http::http_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (http)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (http_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
+    entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
+    entrée, écrit dans le vocabulaire du SCRIPT et non celui de Rust : `string` (pour `String` comme
+    pour `ImmutableString`), `i64`, `u32`, `bool`, `Dynamic`, `array`, `map` — les types natifs de rhai
+    s'écrivent comme `type_of` en script, donc en minuscules, y compris en retour —, le nom du type
+    enregistré tel quel (`K8sGeneric`, `RestClient`) ;
+    une fonction fallible (`RhaiRes<T>`) porte le type de succès `T` déballé, jamais le `Result<…>` brut
+    que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
+    une signature sans retour
+  And sans la feature, les mêmes tests de comportement passent sans différence

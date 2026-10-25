@@ -227,7 +227,7 @@ Tasks:
     jumelle de la spec racine, `Owns` de ces deux fichiers), la tâche jumelle de
     ./.github/workflows/workflows.sdd (entrée de matrice et boucle clippy de ./test.yml), et
     la vue de ./src/engine.sdd — toutes les coches dans le même commit.
-  [ ] Interdire en CI le retour des deux défauts de forme `.sdd` mesurés sur ce dépôt, par un
+  [x] Interdire en CI le retour des deux défauts de forme `.sdd` mesurés sur ce dépôt, par un
     contrôle de quelques dizaines de lignes ajouté à ./.github/workflows/test.yml (avec sa spec
     `./workflows.sdd`) : l'artefact est un script de contrôle et non du code de `src/`, donc la
     règle « une spec `.sdd` par fichier de `src/` » ne s'applique pas et c'est cette spec qui en
@@ -243,6 +243,12 @@ Tasks:
     `[ ]`, suites de tâches distinctes, têtes de clause à deux espaces suivies d'un repli à
     quatre. Verrouiller le contrôle par ses propres cas rouges (une faute de chaque classe, plus
     chaque cas limite) avant de le rendre bloquant.
+  [x] Ajouter la porte `--no-default-features --features rt` (test et clippy `--all-targets --
+    -D warnings`) à la batterie (issue #23) : elle joue le seul graphe où `rt` existe sans `rhai`
+    (le module `cancel` ungated lu par le pont, le binaire d'intégration de ./src/rt.sdd) ;
+    `cargo hack --each-feature` ne compile que la face, pas ce verrou d'exécution. Jumelle de
+    ./.github/workflows/workflows.sdd (entrée `rt` de la matrice et de la boucle clippy) et de
+    « Reprendre le CHANGELOG 0.9.0 et la batterie » de ./vyvil-core.sdd, cochée dans le même commit.
 
 Done when:
   `cargo clippy --all-targets -- -D warnings` et `cargo clippy --all-features --all-targets

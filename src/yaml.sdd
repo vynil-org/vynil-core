@@ -32,11 +32,14 @@ References:
 
 Must:
   @crate::yaml compile dans toutes les combinaisons de features : sa déclaration dans ./lib.rs
-    ne porte aucun `#[cfg]`, et ./yaml.rs ne porte que CINQ portes `#[cfg(feature = "rhai")]` en
-    production — le `use crate::{@crate::RhaiRes, @crate::rhai_err}`, le
-    `use rhai::{@rhai::Dynamic, @rhai::Engine, @rhai::ImmutableString, @rhai::Map}`, les deux
+    ne porte aucun `#[cfg]`, et ./yaml.rs ne porte de portes `#[cfg(feature = "rhai")]` que sur
+    la face publique Rhai et ce qu'elle impose — le `use` du motif
+    (@crate::engine::Target, @crate::engine::register_at), le
+    `use crate::{@crate::RhaiRes, @crate::rhai_err}`, le
+    `use rhai`, les deux
     conversions privées @dynamic_from_yaml_value et @yaml_key_to_string que la voie
-    @serde_yaml::Value a fait naître, et @crate::yaml::yaml_rhai_register — les trois helpers Rust
+    @serde_yaml::Value a fait naître, la liste @crate::yaml::yaml_fns, @crate::yaml::yaml_rhai_register
+    et @crate::yaml::yaml_module — les trois helpers Rust
     étant donc appelables sous `cargo test --no-default-features`. Le `#[cfg(test)]` du `mod tests`
     et ses portes internes ne comptent pas ici.
   Il n'existe qu'une seule conversion d'erreur dans le module, appliquée sur chaque appel
@@ -66,7 +69,7 @@ Must:
   @crate::yaml::yaml_all_serialize_to_string n'a aucun état ni repli partiel : la concaténation
     déjà produite au moment où une valeur échoue est abandonnée avec l'erreur, l'appelant ne
     voit jamais un préfixe tronqué.
-  @crate::yaml::yaml_rhai_register enregistre exactement quatre @rhai::Engine::register_fn sur
+  @crate::yaml::yaml_rhai_register enregistre exactement quatre entrées @crate::engine::register_at sur
     l'engine reçu et rien d'autre : deux surcharges du nom de script `yaml_encode` (paramètre
     @rhai::Dynamic puis paramètre @rhai::Map), `yaml_decode` (paramètre
     @rhai::ImmutableString) et `yaml_decode_multi` (paramètre @rhai::ImmutableString). Aucun
@@ -100,9 +103,10 @@ Must:
   Le module est sans état propre : aucune variable globale, aucune mise en cache, aucune I/O,
     aucune lecture d'environnement ; ses quatre fonctions sont réentrantes et appelables de
     plusieurs threads (la feature @rhai `sync` est activée au niveau crate).
-  ./yaml.rs ne porte aucun `#[allow(...)]`, aucun `#[must_use]`, aucun
-    @std::option::Option::unwrap ni @std::result::Result::unwrap ni @std::panic, et ses quatre
-    items `pub` portent chacun leur rustdoc avec une section `# Errors` (règle de harnais de
+  ./yaml.rs ne porte aucun `#[allow(...)]`, aucun @std::option::Option::unwrap ni
+    @std::result::Result::unwrap ni @std::panic, son seul `#[must_use]` est celui du jumeau
+    @crate::yaml::yaml_module, et ses items `pub` portent chacun leur rustdoc avec une section
+    `# Errors` pour les fallibles (règle de harnais de
     ../.specdd/bootstrap.project.md).
 
 Must not:
@@ -126,8 +130,8 @@ Depends on:
   serde — @serde::Serialize comme borne des deux helpers de sérialisation et
     @serde::Deserialize::deserialize pour les documents de `yaml_decode_multi` ; dépendance non
     gated, feature `derive`.
-  rhai — @rhai::Engine, @rhai::Engine::register_fn, @rhai::Dynamic, @rhai::Map,
-    @rhai::ImmutableString, derrière la feature du même nom ; suppose au niveau crate les
+  rhai — @rhai::Engine, @rhai::Module, @rhai::Dynamic, @rhai::Map,
+    @rhai::ImmutableString et le motif @crate::engine::Target/@crate::engine::register_at, derrière la feature du même nom ; suppose au niveau crate les
     features @rhai `sync` et `serde`, et pour @rhai::Map la feature `serde` de @smartstring
     (commentaire explicite de ./Cargo.toml), sans quoi ni l'encodage ni le décodage ne
     fonctionneraient.
@@ -149,6 +153,10 @@ Exposes:
     plus.
   Rien de ce module n'est réexporté à la racine de la crate : les trois helpers Rust
     s'appellent par leur chemin @crate::yaml.
+  @crate::yaml::yaml_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
+    @crate::yaml::yaml_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
 
 Accepts:
   @crate::yaml::yaml_str_to_json — un `&str` de contenu libre, longueur quelconque, chaîne
@@ -315,6 +323,24 @@ Tasks:
     quatre items `pub` exige et qu'elle n'a pas depuis avant cette campagne (écart trouvé par
     l'agent `validator` en relisant la doc de HEAD, identique sur HEAD : ce n'est pas une régression
     introduite par la voie @serde_yaml::Value).
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::yaml::yaml_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::yaml::yaml_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (yaml) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+    la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
+    type de retour (absent quand la fonction rend l'unité), écrits dans le vocabulaire du script
+    (`string`, non `String`/`ImmutableString` ; type de succès déballé pour une fonction fallible).
+    Tests d'abord : une table de signatures attendues, écrite à la main, comparée par égalité à
+    `gen_fn_signatures` pour l'enregistreur ET le jumeau ; un test de complétude (nombre de fonctions
+    du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
+    Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
+    commit.
 
 Scenario: document mapping converti en JSON
   Given la chaîne `image: nginx\nreplicas: 3\n`
@@ -559,3 +585,31 @@ Scenario: entier sous i64 refusé plutôt qu'inventé
     rend surtout pas `9223372036854775807`
   But `yaml_decode("9223372036854775809\n")` rend un FLOTTANT : @serde_yaml bascule au-dessus de
     @i64::MAX, asymétrie venue de @serde_yaml et non du module
+
+Scenario: yaml_module équivaut à yaml_rhai_register
+  Given un @rhai::Engine où yaml_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::yaml::yaml_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (yaml)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (yaml_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
+    entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
+    entrée, écrit dans le vocabulaire du SCRIPT et non celui de Rust : `string` (pour `String` comme
+    pour `ImmutableString`), `i64`, `u32`, `bool`, `Dynamic`, `array`, `map` — les types natifs de rhai
+    s'écrivent comme `type_of` en script, donc en minuscules, y compris en retour —, le nom du type
+    enregistré tel quel (`K8sGeneric`, `RestClient`) ;
+    une fonction fallible (`RhaiRes<T>`) porte le type de succès `T` déballé, jamais le `Result<…>` brut
+    que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
+    une signature sans retour
+  And sans la feature, les mêmes tests de comportement passent sans différence

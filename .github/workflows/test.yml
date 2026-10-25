@@ -71,6 +71,10 @@ jobs:
             args: "--no-default-features --features rhai,fs"
           - name: rhai-password
             args: "--no-default-features --features rhai,password"
+          # `rt` seul : seule porte où le pont public `rt::block_on` (issue #23) se compile sans
+          # `rhai` ; joue le consommateur externe de ./tests/rt_block_on_public.rs.
+          - name: rt
+            args: "--no-default-features --features rt"
     steps:
       - uses: actions/checkout@v7
 
@@ -102,6 +106,164 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt -- --check
 
+      # Contrôle de forme des specs `.sdd` — tâche de ../../tooling.sdd (« Interdire
+      # en CI le retour des deux défauts de forme .sdd ») et sa tâche jumelle ici
+      # (workflows.sdd). Rougit sur (a) une ligne de corps à deux espaces qui continue
+      # une phrase (ligne précédente finissant sans `.` ni `;` et sans être un élément
+      # de liste de chemins) et (b) une ligne de corps non-tâche dans `Tasks:`. Le
+      # verrouillage par les cas rouges du classifieur passe avant le scan du dépôt :
+      # les fixtures ci-dessous (une faute de chaque classe, plus chaque cas limite —
+      # listes de chemins, énumérations à `;`, tâches ouvertes `[ ]`, suites de tâches
+      # distinctes, têtes de clause à deux espaces suivies d'un repli à quatre) doivent
+      # toutes rendre leur verdict attendu, sinon le script rougit sans même scanner.
+      # Périmètre : tout fichier `.sdd` du dépôt, où qu'il soit (racine, src/,
+      # .github/, .specdd/) ; le `.specdd/bootstrap.md` tiers n'est pas un `.sdd` et
+      # reste hors du contrôle.
+      - name: Spec shape (.sdd)
+        run: |
+          python3 - <<'PY'
+          import os, re, sys
+
+          SECTIONS = ('Spec', 'Platform', 'Purpose', 'Structure', 'Owns', 'Can modify',
+                      'Can read', 'References', 'Must not', 'Must', 'Forbids',
+                      'Depends on', 'Exposes', 'Accepts', 'Returns', 'Raises', 'Handles',
+                      'Tasks', 'Done when', 'Scenario', 'Example')
+          HEAD = re.compile('(?:%s)(:$|: .*)$' % '|'.join(sorted(SECTIONS, key=len, reverse=True)))
+          TASK = re.compile(r'\[[ xX!?-]\]\s+(#\d+[,:]?\s+)?\S')
+          STEP = re.compile(r'(Given|When|Then|And|But)(\s|$)')
+
+          def classify(text):
+              violations = []
+              section = None
+              prev = None
+              for no, raw in enumerate(text.split('\n'), 1):
+                  line = raw.rstrip('\r')
+                  body = line.strip()
+                  if not body or body.startswith('#'):
+                      prev = None
+                      continue
+                  indent = len(line) - len(line.lstrip(' '))
+                  if indent == 0 and HEAD.match(body):
+                      section = body.split(':', 1)[0]
+                      prev = None
+                      continue
+                  if indent != 2:
+                      prev = (no, 'cont' if indent else 'col0', body)
+                      continue
+                  kind = 'text'
+                  if body.startswith(('./', '../', '/')):
+                      kind = 'path'
+                  elif section == 'Tasks' and TASK.match(body):
+                      kind = 'task'
+                  elif section == 'Scenario' and STEP.match(body):
+                      kind = 'step'
+                  if section == 'Tasks':
+                      if kind != 'task':
+                          violations.append((no, 'b'))
+                  elif kind == 'text' and prev and prev[1] in ('text', 'cont') \
+                          and not prev[2].endswith(('.', ';')):
+                      violations.append((no, 'a'))
+                  prev = (no, kind, body)
+              return violations
+
+          FIXTURES = [
+              ('a - repli de phrase a deux espaces',
+               'Must:\n'
+               '  Voici une regle qui enonce le contrat\n'
+               '  et la continue a deux espaces par erreur.\n',
+               [(3, 'a')]),
+              ('a - tete a deux espaces, repli a quatre, chute a deux',
+               'Must:\n'
+               '  Une phrase longue qui se\n'
+               '    poursuit a quatre espaces sans\n'
+               '  retombe a deux espaces par erreur.\n',
+               [(4, 'a')]),
+              ('b - corps non-tache dans Tasks',
+               'Tasks:\n'
+               '  [x] Une tache close.\n'
+               "  Note qui n'est pas une tache.\n",
+               [(3, 'b')]),
+              ('b - note invalide apres une tache ouverte',
+               'Tasks:\n'
+               '  [ ] Une tache ouverte.\n'
+               '  Decide le 2026-10-10 hors ligne de tache.\n',
+               [(3, 'b')]),
+              ('b - marqueur de tache inconnu',
+               'Tasks:\n'
+               '  [~] Etat de marqueur inconnu.\n',
+               [(2, 'b')]),
+              ('vert - liste de chemins',
+               'Owns:\n'
+               '  ./src/a.rs\n'
+               '  ./src/b.rs\n'
+               '  /tooling.sdd\n',
+               []),
+              ('vert - enumerations a point-virgule',
+               'Must:\n'
+               '  Quatre familles du harnais ;\n'
+               '  cinq si lon compte pedantic ;\n'
+               '  et la regle suivante finit par un point.\n'
+               '  Repli a quatre espaces :\n'
+               '    premier ;\n'
+               '    second ;\n'
+               '    troisieme et dernier.\n'
+               '  Regle suivante apres point.\n',
+               []),
+              ('vert - taches ouvertes et suites distinctes',
+               'Tasks:\n'
+               '  [ ] Tache ouverte\n'
+               '  [x] Tache close\n'
+               '  [X] Majuscule\n'
+               '  [-] Sautee\n'
+               '  [!] Bloquee\n'
+               '  [?] A trancher\n'
+               '  [x] #42 Tache avec identifiant\n'
+               '    repli de tache, licite.\n',
+               []),
+              ('vert - tete de clause et repli a quatre',
+               'Must:\n'
+               '  Une regle qui se prolonge avec\n'
+               '    une reprise a quatre espaces, verte.\n'
+               '  Une regle suivante.\n',
+               []),
+              ('vert - etapes consecutives de Scenario',
+               'Scenario: un cas\n'
+               '  Given un etat pose\n'
+               '  When on agit\n'
+               '  Then un fait constant est rendu\n',
+               []),
+          ]
+
+          failed = 0
+          for name, text, expected in FIXTURES:
+              got = classify(text)
+              status = 'OK  ' if got == expected else 'FAIL'
+              if got != expected:
+                  failed += 1
+              print('  %s %-48s attendu=%-10s obtenu=%s' % (status, name, expected, got))
+          if failed:
+              print('self-test du classifieur : %d cas faux - controle abandonne' % failed)
+              sys.exit(1)
+          print('self-test du classifieur : %d/%d cas verts' % (len(FIXTURES), len(FIXTURES)))
+
+          files = []
+          for dirpath, dirnames, filenames in os.walk('.'):
+              dirnames[:] = sorted(d for d in dirnames if d not in ('.git', 'target'))
+              for name in sorted(filenames):
+                  if name.endswith('.sdd'):
+                      files.append(os.path.join(dirpath, name))
+          total = 0
+          for path in files:
+              with open(path, encoding='utf-8') as handle:
+                  for no, cls in classify(handle.read()):
+                      detail = ('repli de phrase a deux espaces' if cls == 'a'
+                                else 'corps non-tache dans Tasks:')
+                      print('::error file=%s,line=%d::%s:%d: [%s] %s' % (path, no, path, no, cls, detail))
+                      total += 1
+          print('controle de forme .sdd : %d faute(s) sur %d fichier(s)' % (total, len(files)))
+          sys.exit(1 if total else 0)
+          PY
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -121,7 +283,7 @@ jobs:
       # missing_docs warn) + `-D warnings` pour les warnings rustc hors [lints]. Ce job rejoue
       # en explicite, entre le `--all-targets` par défaut et le `--all-features`, les portes
       # `k8s`, `oci`, `s3`, `k8s,oci,s3`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`,
-      # `rhai,fs` et `rhai,password`. Les
+      # `rhai,fs` et `rhai,password`, ainsi que `rt` (pont public sans `rhai`). Les
       # quatre premières parce que les analyses pedantic (pureté de `must_use_candidate`, etc.)
       # dépendent du graphe de features et qu'un lint peut ne se déclencher que sur une
       # combinaison (voir ../../tooling.sdd) ; `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`,
@@ -147,7 +309,7 @@ jobs:
         run: |
           set -e
           cargo clippy --all-targets -- -D warnings
-          for features in k8s oci s3 k8s,oci,s3 crypto rhai hbs,crypto rhai,shell rhai,fs rhai,password; do
+          for features in k8s oci s3 k8s,oci,s3 crypto rhai hbs,crypto rhai,shell rhai,fs rhai,password rt; do
             cargo clippy --no-default-features --features "$features" --all-targets -- -D warnings
           done
           cargo clippy --all-features --all-targets -- -D warnings

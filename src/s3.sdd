@@ -92,10 +92,10 @@ Must:
     la liste est triée par ordre lexicographique des octets (décision actée : rendu
     déterministe) ; pagination du flux prise en charge
     par @object_store, pas par ce module.
-  Enregistrer exactement les deux noms dans @crate::s3::s3_rhai_register : deux
-    @rhai::Engine::register_fn directs sur les fonctions publiques, `s3_get_yaml` de 7
+  Enregistrer exactement les deux noms dans @crate::s3::s3_rhai_register : deux entrées
+    @crate::engine::register_at directes sur les fonctions publiques, `s3_get_yaml` de 7
     @std::string::String → @rhai::Dynamic et `s3_list_keys` de 6 @std::string::String →
-    @std::vec::Vec<@std::string::String> ; un @rhai::Engine::register_fn remplace tout
+    @std::vec::Vec<@std::string::String> ; un enregistrement remplace tout
     homonyme précédent ; aucun enregistrement de type, aucun namespace, aucun autre nom.
   Traiter chaque paramètre comme une chaîne quelconque, vide comprise : access_key et
     secret_key tous deux vides = pas de credential explicite (default credential chain
@@ -123,7 +123,7 @@ Must not:
   Laisser passer une clé concaténée sans séparateur (`pk`) ou avec double `/` : la jonction
     de @crate::s3::s3_get_yaml est toujours normalisée.
   Exposer `build_store`, les imports ou le module de tests : la face `pub` du module est
-    exactement les trois items contractés plus bas.
+    exactement les quatre items contractés plus bas.
 
 Depends on:
   object_store — @object_store::aws::AmazonS3Builder, le trait @object_store::ObjectStore
@@ -134,7 +134,7 @@ Depends on:
   tokio — via `crate::rt::block_on` (voir ./rt.sdd) ; features `macros` et `rt-multi-thread` ;
     1.53.1 en lock.
   futures — @futures::stream::StreamExt::next pour drainer @object_store::ObjectStore::list.
-  rhai — @rhai::Engine, @rhai::Dynamic, @rhai::Engine::register_fn ; @crate::RhaiRes et
+  rhai — @rhai::Engine, @rhai::Dynamic, @rhai::Module et le motif @crate::engine::Target/@crate::engine::register_at ; @crate::RhaiRes et
     @crate::rhai_err de ./lib.rs. Sous-entendu par ./Cargo.toml : `s3` implique `rhai`.
   serde_yaml + serde_json (non optionnels) — double passe @serde_yaml::from_str puis
     @serde_json::to_string puis @serde_json::from_str::<@rhai::Dynamic>, le même motif de
@@ -151,6 +151,10 @@ Exposes:
   @crate::s3::s3_rhai_register — `pub fn(engine: &mut @rhai::Engine)`, porte `s3`, jamais
     appelée par le crate lui-même ; c'est le seul chemin par lequel les deux noms entrent
     dans un engine.
+  @crate::s3::s3_module — `#[must_use] pub fn() -> @rhai::Module`, porte `s3`, jumeau de
+    @crate::s3::s3_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
   Rien de plus : `build_store` reste privée, aucun type, aucune constante, aucun variant
     @Error propre ; aucun nom Rhai homophone (`s3_get`, `list_keys`) n'existe.
 
@@ -219,6 +223,24 @@ Tasks:
     incomplets, passer par `crate::rt::block_on` (décisions actées).
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::s3::s3_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::s3::s3_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (s3) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+    la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
+    type de retour (absent quand la fonction rend l'unité), écrits dans le vocabulaire du script
+    (`string`, non `String`/`ImmutableString` ; type de succès déballé pour une fonction fallible).
+    Tests d'abord : une table de signatures attendues, écrite à la main, comparée par égalité à
+    `gen_fn_signatures` pour l'enregistreur ET le jumeau ; un test de complétude (nombre de fonctions
+    du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
+    Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
+    commit.
 
 Scenario: s3 reste hors de new_bare même feature activée
   Given la crate compilée avec `s3` (donc `rhai` avec)
@@ -239,7 +261,7 @@ Scenario: deux noms, deux arités, chaînes seulement
 Scenario: deux enregistrements successifs ne duppliquent pas
   Given un engine de test
   When @crate::s3::s3_rhai_register est appelée deux fois
-  Then chaque nom garde une résolution unique, @rhai::Engine::register_fn remplaçant
+  Then chaque nom garde une résolution unique, l'entrée @crate::engine::register_at remplaçant
     l'enregistrement précédent, sans erreur ni empilement
 
 Scenario: bucket vide parle à la requête, pas au build
@@ -329,6 +351,34 @@ Scenario: hors runtime multi-thread, jamais de panique
 
 Scenario: sans la feature s3, rien n'existe
   Given `cargo check --no-default-features --features rhai`
-  Then ni @crate::s3 ni ses trois items n'existent, et @object_store, @futures, @tokio restent
+  Then ni @crate::s3 ni ses quatre items n'existent, et @object_store, @futures, @tokio restent
     hors du graphe — la feature `rhai` seule ne les active pas, seul `s3` (et `k8s`/`oci`/
     `http` pour tokio/futures) le fait
+
+Scenario: s3_module équivaut à s3_rhai_register
+  Given un @rhai::Engine où s3_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::s3::s3_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (s3)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (s3_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
+    entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
+    entrée, écrit dans le vocabulaire du SCRIPT et non celui de Rust : `string` (pour `String` comme
+    pour `ImmutableString`), `i64`, `u32`, `bool`, `Dynamic`, `array`, `map` — les types natifs de rhai
+    s'écrivent comme `type_of` en script, donc en minuscules, y compris en retour —, le nom du type
+    enregistré tel quel (`K8sGeneric`, `RestClient`) ;
+    une fonction fallible (`RhaiRes<T>`) porte le type de succès `T` déballé, jamais le `Result<…>` brut
+    que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
+    une signature sans retour
+  And sans la feature, les mêmes tests de comportement passent sans différence

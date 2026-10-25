@@ -7,9 +7,11 @@
 //! the cargo opt-in on the `shell` feature is the only guard. Commands are handed to a
 //! literal `sh -c`: the module is unix-only by assumption, with no windows branch.
 
+#[cfg(feature = "rhai")] use crate::engine::{Target, register_at};
 use crate::{Error, Result};
 #[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
 #[cfg(feature = "rhai")] use rhai::Engine;
+#[cfg(feature = "rhai")] use rhai::Module;
 use std::process::{Command, Output, Stdio};
 
 /// Verdict de terminaison partagé par les deux collages Rhai : le code d'exit élargi quand
@@ -108,12 +110,73 @@ pub fn rhai_get_stdout(command: String) -> RhaiRes<String> {
     Ok(output)
 }
 
-/// Registers the shell Rhai helpers on a Rhai `engine`.
+/// Registers the `shell_run` / `shell_output` Rhai helpers on a Rhai `engine`: the two
+/// unary `string` bindings of [`rhai_run`] and [`rhai_get_stdout`], and nothing else —
+/// no third name, no alias, no other arity.
+///
+/// Additive and idempotent: callable alone on a fresh [`Engine`], in any order with the
+/// other registers. The functions stay directly on the engine — no intermediate global
+/// module.
+///
+/// Module twin: [`shell_module`] — same single `shell_fns` list, same semantics.
 #[cfg(feature = "rhai")]
 pub fn shell_rhai_register(engine: &mut Engine) {
-    engine
-        .register_fn("shell_run", rhai_run)
-        .register_fn("shell_output", rhai_get_stdout);
+    shell_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`shell_rhai_register`] (issue #19): the same two functions, under the
+/// global namespace of a fresh [`Module`], registrable by [`Engine::register_static_module`]
+/// under the name the consumer picks. A twin that drifts from its registrar is a defect:
+/// both share the single `shell_fns` list.
+#[cfg(feature = "rhai")]
+#[must_use]
+pub fn shell_module() -> Module {
+    let mut module = Module::new();
+    shell_fns(&mut Target::Module(&mut module));
+    module
+}
+
+// ── Motif double cible (shell.sdd, issues #19 et #20) ─────────────────────────────
+// Les deux enregistrements sont définis UNE seule fois, dans `shell_fns`, comme une
+// liste (nom, fonction, noms des paramètres et commentaire `///` sous `metadata`). La
+// même liste s'applique soit directement à un Engine — les fonctions tombent dans
+// l'espace de noms global de l'engine et `rhai::Engine::gen_fn_signatures` les voit
+// comme avant l'introduction du motif, sans module global intermédiaire —, soit à un
+// Module dans ce même espace de noms global — le jumeau module, enregistrable par
+// `rhai::Engine::register_static_module` sous le nom que choisit le consommateur.
+// Le trio `Target` / `register_at` est celui du pilote de ./engine.rs, centralisé là
+// (`pub(crate)`) et importé ici (périmètre #19).
+// Le contrat n'a ni type personnalisé ni accesseur : deux fonctions unaires sur
+// `string`, portables telles quelles dans un Module — rien à remonter.
+
+/// Les deux enregistrements `shell` définis une seule fois (motif double cible) : chaque
+/// entrée est un nom, sa fonction, les noms de ses paramètres et son commentaire `///`
+/// (les deux sous `metadata` seule). Les fonctions sont verbatim les [`rhai_run`] et
+/// [`rhai_get_stdout`] que `shell_rhai_register` collait avant le motif.
+#[cfg(feature = "rhai")]
+fn shell_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "shell_run",
+        &[
+            "/// Runs `command` through `sh -c` with the terminal's own streams;",
+            "/// returns the exit code — `128 + signal` on a unix signal death, `-1` if neither exists.",
+            "/// Never errors on the code itself; errors only when `sh` cannot be spawned.",
+        ],
+        &["command: string", "i64"],
+        rhai_run,
+    );
+    register_at(
+        target,
+        "shell_output",
+        &[
+            "/// Runs `command` through `sh -c`, capturing both streams; returns stdout alone, untrimmed.",
+            "/// Errors on a non-zero exit (`Command failed, rc=<n>` plus a 512-byte stderr excerpt),",
+            "/// on any non-empty stderr at exit 0, and on non-UTF-8 output.",
+        ],
+        &["command: string", "string"],
+        rhai_get_stdout,
+    );
 }
 
 /// Scenarios de `shell.sdd` sur le verdict de signal et l'extrait de stderr borné à 512
@@ -125,7 +188,7 @@ pub fn shell_rhai_register(engine: &mut Engine) {
 /// non-unix (le `-1` de repli) est hors harnais par construction, le Scenario le dit.
 #[cfg(all(test, feature = "shell", feature = "rhai"))]
 mod tests {
-    use crate::shell::shell_rhai_register;
+    use crate::shell::{shell_module, shell_rhai_register};
     use rhai::Engine;
     use tracing_subscriber::layer::SubscriberExt as _;
 
@@ -490,6 +553,338 @@ mod tests {
                 .push((field.name().to_string(), format!("{value:?}")));
         }
     }
+
+    // ── Jumeau module et documentation (shell.sdd, tâches « Jumeau module et
+    // documentation », issues #19 et #20) ───────────────────────────────────────────
+    // Scenarios « shell_module équivaut à shell_rhai_register » et « fonctions
+    // documentées sous metadata (shell) », sur le motif double cible posé par le pilote
+    // de ./engine.sdd, rejoués sur le modèle de ./glob.rs. Le contrat n'a ni type
+    // personnalisé ni accesseur : deux fonctions unaires sur `string`, portables telles
+    // quelles dans un `rhai::Module` (constat exigé par la tâche avant tout refactor).
+
+    /// Engine vierge portant le jumeau module enregistré par
+    /// `rhai::Engine::register_static_module` sous le nom `m` (face qualifiée du Scenario).
+    fn engine_with_module(module: rhai::Module) -> Engine {
+        let mut engine = Engine::new();
+        engine.register_static_module("m", module.into());
+        engine
+    }
+
+    /// Noms de fonctions de l'engine, hors paquets standard de `rhai` (introspection par
+    /// `collect_fn_metadata`, porte `internals` toujours activée).
+    fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    /// Noms qu'un enregistreur ajoute à la baseline `Engine::new`.
+    fn names_added_by(register: impl Fn(&mut Engine)) -> std::collections::BTreeSet<String> {
+        let mut engine = Engine::new();
+        register(&mut engine);
+        let apres = registered_names(&engine);
+        let avant = registered_names(&Engine::new());
+        apres.difference(&avant).cloned().collect()
+    }
+
+    /// Noms qu'un jumeau module ajoute à la baseline par `register_static_module` sous
+    /// `m` (préfixe `m::` retiré s'il est porté par le nom).
+    fn names_added_by_module(module: rhai::Module) -> std::collections::BTreeSet<String> {
+        let apres = registered_names(&engine_with_module(module));
+        let avant = registered_names(&Engine::new());
+        apres
+            .difference(&avant)
+            .map(|nom| {
+                let s = nom.as_str();
+                s.strip_prefix("m::").unwrap_or(s).to_string()
+            })
+            .collect()
+    }
+
+    /// Texte porté par une erreur d'évaluation : charge de `ErrorRuntime` (seul ce texte
+    /// est contractuel, `script_error_text` le dit déjà), sinon l'affichage complet de
+    /// l'erreur — le décorateur de position de la runtime diffère entre nom nu et
+    /// qualifié par module statique (mesure), il ne compare pas.
+    fn carried_text(err: &rhai::EvalAltResult) -> String {
+        match err {
+            rhai::EvalAltResult::ErrorRuntime(d, _) => d.as_immutable_string_ref().unwrap().to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    /// Les trois faces d'appel d'un Scenario représentatif : nom nu sur l'engine de
+    /// l'enregistreur, nom nu ET qualifié `m::nom` sur l'engine du jumeau module.
+    fn three_faces(calls: &[(&str, &str)]) {
+        let mut nu = Engine::new();
+        shell_rhai_register(&mut nu);
+        let jumeau = engine_with_module(shell_module());
+        for (bare, qualified) in calls {
+            let rn = nu.eval::<rhai::Dynamic>(bare);
+            let rb = jumeau.eval::<rhai::Dynamic>(bare);
+            let rq = jumeau.eval::<rhai::Dynamic>(qualified);
+            match (rn, rb, rq) {
+                (Ok(vn), Ok(vb), Ok(vq)) => {
+                    assert_eq!(
+                        vn.to_string(),
+                        vb.to_string(),
+                        "valeur divergente entre l'enregistreur ({bare}) et le nom nu du jumeau"
+                    );
+                    assert_eq!(
+                        vn.to_string(),
+                        vq.to_string(),
+                        "valeur divergente entre l'enregistreur ({bare}) et le qualifié ({qualified})"
+                    );
+                }
+                (Err(en), Err(eb), Err(eq)) => {
+                    // Seul le texte porté est contractuel, pas le décorateur de position
+                    // de la runtime (mesure : le qualifié par module statique le perd).
+                    let (tn, tb, tq) = (carried_text(&en), carried_text(&eb), carried_text(&eq));
+                    assert_eq!(
+                        tn, tb,
+                        "texte porté divergent entre l'enregistreur ({bare}) et le nom nu du jumeau"
+                    );
+                    assert_eq!(
+                        tn, tq,
+                        "texte porté divergent entre l'enregistreur ({bare}) et le qualifié ({qualified})"
+                    );
+                }
+                (rn, rb, rq) => panic!("divergence entre Ok/Err sur {bare} ({rn:?} / {rb:?} / {rq:?})"),
+            }
+        }
+    }
+
+    /// Scenario « `shell_module` équivaut à `shell_rhai_register` » : appels représentatifs
+    /// des Scenario existants rejoués sur les trois faces — mêmes valeurs, mêmes erreurs
+    /// — et les deux ensembles de noms de fonctions sont égaux, exactement
+    /// { `shell_run`, `shell_output` }, aucune en plus ni en moins.
+    #[test]
+    fn shell_module_equaut_a_shell_rhai_register() {
+        // Then : les deux ensembles de noms sont égaux, et exactement les deux noms.
+        let noms_registrateur = names_added_by(shell_rhai_register);
+        let noms_module = names_added_by_module(shell_module());
+        assert_eq!(
+            noms_module, noms_registrateur,
+            "le jumeau module et l'enregistreur accordent les mêmes noms"
+        );
+        let attendu: std::collections::BTreeSet<String> =
+            ["shell_run".to_string(), "shell_output".to_string()]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            noms_registrateur, attendu,
+            "shell_rhai_register n'accorde que les deux noms (diff de baseline)"
+        );
+        assert_eq!(noms_module, attendu, "le jumeau module n'accorde rien de plus");
+
+        // When : les appels à valeur des Scenario existants, sur les trois faces.
+        let mut valeurs: Vec<(&str, &str)> = vec![
+            (r#"shell_run("true")"#, r#"m::shell_run("true")"#),
+            (r#"shell_run("exit 3")"#, r#"m::shell_run("exit 3")"#),
+            (r#"shell_run("echo x")"#, r#"m::shell_run("echo x")"#),
+            (r#"shell_run("")"#, r#"m::shell_run("")"#),
+            (r#"shell_output("echo hi")"#, r#"m::shell_output("echo hi")"#),
+            (
+                r#"shell_output("printf 'ligne1\nligne2\n'")"#,
+                r#"m::shell_output("printf 'ligne1\nligne2\n'")"#,
+            ),
+            (r#"shell_output("")"#, r#"m::shell_output("")"#),
+        ];
+        #[cfg(unix)]
+        valeurs.push((
+            r#"shell_run("kill -TERM $$")"#,
+            r#"m::shell_run("kill -TERM $$")"#,
+        ));
+        three_faces(&valeurs);
+
+        // When : les échecs portés par la fonction elle-même (ErrorRuntime), texte porté
+        // identique sur les trois faces — rc, extrait stderr, warn, UTF8.
+        let mut echecs: Vec<(&str, &str)> = vec![
+            (r#"shell_output("exit 2")"#, r#"m::shell_output("exit 2")"#),
+            (
+                r#"shell_output("echo sortie && echo alerte >&2 && exit 2")"#,
+                r#"m::shell_output("echo sortie && echo alerte >&2 && exit 2")"#,
+            ),
+            (
+                r#"shell_output("echo sortie && echo alerte >&2")"#,
+                r#"m::shell_output("echo sortie && echo alerte >&2")"#,
+            ),
+            (
+                r#"shell_output("printf '\\377'")"#,
+                r#"m::shell_output("printf '\\377'")"#,
+            ),
+        ];
+        #[cfg(unix)]
+        echecs.push((
+            r#"shell_output("kill -TERM $$")"#,
+            r#"m::shell_output("kill -TERM $$")"#,
+        ));
+        three_faces(&echecs);
+
+        // But : coercitions et arités hors contrat restent fonctions inconnues sur les
+        // trois faces — le jumeau n'élargit ni ne réduit le contrat.
+        let mut nu = Engine::new();
+        shell_rhai_register(&mut nu);
+        let jumeau = engine_with_module(shell_module());
+        for (nom, bare, qualified) in [
+            ("shell_run", r"shell_run(12)", "m::shell_run(12)"),
+            ("shell_output", r"shell_output(#{})", "m::shell_output(#{})"),
+            (
+                "shell_run",
+                r#"shell_run("true", 1)"#,
+                r#"m::shell_run("true", 1)"#,
+            ),
+            (
+                "shell_output",
+                r#"shell_output("a", "b")"#,
+                r#"m::shell_output("a", "b")"#,
+            ),
+        ] {
+            for (engine, script) in [(&nu, bare), (&jumeau, bare), (&jumeau, qualified)] {
+                let err = engine
+                    .eval::<rhai::Dynamic>(script)
+                    .expect_err("pas de coercition ni d'autre arité dans le jumeau non plus");
+                assert!(
+                    err.to_string().contains(nom),
+                    "l'échec de résolution de `{script}` doit porter {nom}, got {err}"
+                );
+            }
+        }
+    }
+
+    /// Scenario « `shell_module` équivaut à `shell_rhai_register` », dernier `And` : sur
+    /// l'engine de l'enregistreur, `gen_fn_signatures` sans les paquets liste les mêmes
+    /// fonctions qu'avant plus les deux en noms directs — l'enregistreur n'a pas déplacé
+    /// ses fonctions dans un module global. Porte `metadata` de `rhai`.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn enregistreur_laisse_ses_fonctions_directement_sur_l_engine() {
+        let mut engine = Engine::new();
+        shell_rhai_register(&mut engine);
+        let signatures = engine.gen_fn_signatures(false);
+        let baseline = Engine::new().gen_fn_signatures(false);
+        let ajoutees: Vec<&String> = signatures
+            .iter()
+            .filter(|s| !baseline.iter().any(|b| b == *s))
+            .collect();
+        assert_eq!(
+            ajoutees.len(),
+            2,
+            "les deux noms sont les seules signatures ajoutées à la baseline : {ajoutees:?}"
+        );
+        for nom in ["shell_run(", "shell_output("] {
+            assert!(
+                ajoutees.iter().any(|s| s.starts_with(nom)),
+                "{nom} doit être une fonction directe de l'engine, pas un nom qualifié : {ajoutees:?}"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata (shell) », faces introspection,
+    /// signatures et JSON : sous la feature `metadata`, chaque fonction enregistrée porte
+    /// un commentaire `///` non vide et le NOM de son paramètre (`command`), pas seulement
+    /// son type.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn fonctions_documentees_sous_metadata() {
+        let mut engine = Engine::new();
+        shell_rhai_register(&mut engine);
+        let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
+            None,
+            |f| {
+                Some((
+                    f.metadata.name.to_string(),
+                    f.metadata.params_info.len(),
+                    f.metadata.comments.len(),
+                ))
+            },
+            false,
+        );
+        for nom in ["shell_run", "shell_output"] {
+            let (_, params, commentaires) = documentees
+                .iter()
+                .find(|(n, _, _)| n == nom)
+                .unwrap_or_else(|| panic!("{nom} absente des métadonnées de l'engine"));
+            assert!(
+                *commentaires > 0,
+                "{nom} doit porter un commentaire non vide sous `metadata`"
+            );
+            assert!(
+                *params > 0,
+                "{nom} doit porter les noms de ses paramètres sous `metadata`"
+            );
+        }
+
+        let signatures = engine.gen_fn_signatures(false);
+        for nom in ["shell_run(", "shell_output("] {
+            let signature = signatures
+                .iter()
+                .find(|s| s.starts_with(nom))
+                .unwrap_or_else(|| panic!("{nom} absente des signatures : {signatures:?}"));
+            assert!(
+                signature.contains("command"),
+                "la signature de {nom} doit nommer le paramètre « command », got {signature}"
+            );
+            assert!(!signature.contains("(_"), "got {signature}");
+        }
+
+        // Face JSON : `gen_fn_metadata_to_json` porte le commentaire /// et le paramètre
+        // nommé des deux fonctions.
+        let json = engine
+            .gen_fn_metadata_to_json(false)
+            .expect("le JSON des métadonnées de l'engine se sérialise");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("JSON valide");
+        let functions = value["functions"]
+            .as_array()
+            .expect("le JSON porte un tableau « functions »");
+        for nom in ["shell_run", "shell_output"] {
+            let entree = functions
+                .iter()
+                .find(|f| f["name"] == nom)
+                .unwrap_or_else(|| panic!("{nom} absente du JSON des métadonnées"));
+            let commentaires = entree["docComments"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{nom} doit porter des docComments, got {entree}"));
+            assert!(
+                commentaires
+                    .iter()
+                    .any(|c| c.as_str().unwrap_or_default().starts_with("///")
+                        && c.as_str().unwrap_or_default().len() > 3),
+                "le commentaire /// de {nom} doit être non vide, got {entree}"
+            );
+            let params = entree["params"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{nom} doit porter des params nommés, got {entree}"));
+            assert!(
+                !params.is_empty()
+                    && params
+                        .iter()
+                        .all(|p| p["name"].as_str().unwrap_or_default() != "_"),
+                "les paramètres de {nom} doivent être nommés, got {entree}"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata (shell) », face « sans la feature,
+    /// aucune différence observable » : mêmes valeurs verrouillées, mêmes noms accordés.
+    #[cfg(not(feature = "metadata"))]
+    #[test]
+    fn sans_metadata_sans_difference() {
+        let e = engine();
+        let three: i64 = e.eval(r#"shell_run("exit 3")"#).unwrap();
+        assert_eq!(three, 3, "sans `metadata`, shell_run rend le même verdict");
+        let out: String = e.eval(r#"shell_output("echo hi")"#).unwrap();
+        assert_eq!(out, "hi\n", "sans `metadata`, shell_output rend la même stdout");
+        let noms = names_added_by(shell_rhai_register);
+        let attendu: std::collections::BTreeSet<String> =
+            ["shell_run".to_string(), "shell_output".to_string()]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            noms, attendu,
+            "sans `metadata`, l'enregistreur n'accorde rien de plus"
+        );
+    }
 }
 
 /// Scenarios de `shell.sdd` sur la face Rust seule : le module est gated `shell` dans
@@ -645,5 +1040,84 @@ mod tests_rust_api {
             "the child must have run its assertions: status {:?}, stdout {stdout}",
             out.status
         );
+    }
+}
+
+#[cfg(all(test, feature = "metadata"))]
+mod signatures_documentees {
+    use super::*;
+
+    /// Signatures attendues du groupe `shell`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("shell_run", "shell_run(command: string) -> i64"),
+        ("shell_output", "shell_output(command: string) -> string"),
+    ];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        shell_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", shell_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        shell_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
+            );
+        }
     }
 }

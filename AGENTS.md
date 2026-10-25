@@ -80,6 +80,7 @@ cargo test --no-default-features --features hbs,crypto         # helper crypto d
 cargo test --no-default-features --features rhai,shell         # les cinq verrous shell (signal, rc, extrait stderr)
 cargo test --no-default-features --features rhai,fs            # branche gated `fs` des enregistrements de `new_bare` (`--each-feature` ne la compile pas)
 cargo test --no-default-features --features rhai,password      # branche gated `password` des enregistrements de `new_bare`, idem
+cargo test --no-default-features --features rt                 # pont public `rt::block_on` sans `rhai` (issue #23), tests d'intégration hors crate
 cargo clippy --all-targets -- -D warnings              # harnais default, code de test inclus (zéro warning toléré)
 cargo clippy --no-default-features --features k8s --all-targets -- -D warnings
 cargo clippy --no-default-features --features oci --all-targets -- -D warnings
@@ -91,6 +92,7 @@ cargo clippy --no-default-features --features hbs,crypto --all-targets -- -D war
 cargo clippy --no-default-features --features rhai,shell --all-targets -- -D warnings
 cargo clippy --no-default-features --features rhai,fs --all-targets -- -D warnings
 cargo clippy --no-default-features --features rhai,password --all-targets -- -D warnings
+cargo clippy --no-default-features --features rt --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo hack check --each-feature --no-dev-deps             # matrice chaque feature isolée
 cargo hack clippy --each-feature --no-dev-deps -- -D warnings
@@ -112,7 +114,9 @@ une porte qui n'existe que parce qu'un verrou précis n'y tourne pas se nomme da
 ne se déduit pas de `--each-feature` qui ne fait que compiler.
 
 Contraintes de features à préserver (voir racine `vyvil-core.sdd`) : `k8s`/`oci`/`s3`/`http`
-impliquent `rhai` (leurs types cœur sont des API Rhai directes) ; `hbs-scripting` doit rester
+impliquent `rhai` (leurs types cœur sont des API Rhai directes) ; `rt` n'implique PAS `rhai` (le
+pont `rt::block_on`, public, tire `tokio` seul) et `http`/`oci`/`s3`/`k8s` dépendent de `rt`
+au lieu de `dep:tokio` ; `hbs-scripting` doit rester
 isolable de `hbs` — `hbs` seul ne doit jamais réintroduire `handlebars/script_helper` (donc
 `rhai`/`smartstring`) dans le graphe — voir <https://github.com/vynil-org/vynil-core/issues/9>.
 

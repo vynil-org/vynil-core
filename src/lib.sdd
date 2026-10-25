@@ -5,7 +5,7 @@ Purpose:
     Display gelés (source de vérité des textes d'erreur vus par les consommateurs et les
     scripts), @fn-error_chain qui remonte les chaînes @source(), les deux fabriques
     d'erreurs Rhai (@fn-rhai_err, @fn-rhai_err_str), les alias @type-Result et
-    @type-RhaiRes, les 19 déclarations de modules qui fixent la carte des features, les 9
+    @type-RhaiRes, les déclarations de modules qui fixent la carte des features, les
     ré-exports racine, et l'exemption `cfg(test)` du harnais clippy — celle-ci déjà
     contractualisée par ./tooling.sdd, référencée ici sans être re-contractualisée.
 
@@ -25,9 +25,9 @@ References:
   ./chrono.sdd, ./hashes.sdd, ./password.sdd, ./yaml.sdd, ./key.sdd, ./glob.sdd, ./http.sdd
     (avec son mock ./http_mock.sdd via ./http.sdd), ./oci.sdd, ./s3.sdd, ./shell.sdd — tous
     déclarés ici ;
-  ../Cargo.toml — l.50 `default` = http/crypto/rhai/hbs/hbs-scripting ; 11 features au
-    total, la table de doc des features de ./lib.rs (l.14-26) les énumère toutes avec le même
-    statut default que le manifest.
+  ../Cargo.toml — la table `default` (http/crypto/rhai/hbs/hbs-scripting) ; toutes les
+    features du manifest, chacune énumérée dans la table de doc des features de ./lib.rs avec
+    le même statut default que le manifest.
 
 Must:
   Dériver @variant-Error de @thiserror (import @use l.110) et de @core::fmt::Debug
@@ -105,21 +105,19 @@ Must:
   @fn-rhai_err_str (gate `rhai`, @core::marker::must_use porté avec le même message exact,
     même règle) : conversion directe
     @std::string::String → @std::boxed::Box de @rhai::EvalAltResult, sans chaîne.
-  Déclarations de modules, 20 au total (18 publics, @crate::hbs_json et `rt` privés),
-    exactement deux familles. Sans gate (toujours
-    compilés) : @mod @crate::chrono, @crate::client_name, @crate::hashes, @crate::password,
-    @crate::semver, @crate::yaml. Gated, chacune avec sa clause `doc(cfg)` : @crate::key
+  Déclarations de modules, publics comme privés (le seul privé : @crate::hbs_json).
+    Sans gate (toujours
+    compilés) : @mod @crate::cancel (issue #23), @crate::chrono, @crate::client_name,
+    @crate::hashes, @crate::password, @crate::semver, @crate::yaml. Gated, chacune avec sa clause `doc(cfg)` : @crate::key
     (`crypto`) ; @crate::engine et @crate::glob (`rhai` — gate `rhai`, PAS `fs`, intention figée : @crate::glob ne touche pas au disque, à dire
     dans la rustdoc du module) ;
     @crate::hbs (`hbs`) et @crate::hbs_json (`hbs`, PRIVÉ, seule déclaration sans doc ni
     `doc(cfg)`) ; @crate::http et @crate::http_mock (`http`) ; @crate::oci et @crate::oci_mock
     (`oci`) ; @crate::s3 (`s3`, seul des trois gros modules sans mock déclaré ici) ;
-    @crate::k8s et @crate::k8s_mock (`k8s`) ; @crate::shell (`shell`).
-  Un module PRIVÉ `rt` (pont async → sync, ./rt.sdd), sous
-    `#[cfg(any(feature = "http", feature = "oci", feature = "s3", feature = "k8s"))]`, sans `pub` : il n'entre
-    pas dans le décompte des modules publics ni des ré-exports, et ne porte pas de `doc(cfg)`
-    (un module privé n'est jamais rendu par rustdoc). Un seul `any(...)` et pas un gate par
-    feature : le module ne dépend que de @tokio, commun aux quatre.
+    @crate::k8s et @crate::k8s_mock (`k8s`) ; @crate::shell (`shell`) ; @crate::rt (`rt`, issue
+    #23 : le pont async → sync de ./rt.sdd, PUBLIC depuis cette issue, avec sa clause `doc(cfg)` et
+    une ligne de rustdoc). Les quatre features réseau (`http`, `oci`, `s3`, `k8s`) activent `rt`,
+    donc le module reste compilé là où il l'était : un seul gate `rt` et plus un `any(...)`.
   Les trois modules `*_mock` sont PUBLICS hors `cfg(test)` : façade livrée volontairement aux
     tests des consommateurs (vynil s'appuie sur `oci_mock` et `k8s_mock`) — décision actée ;
     les isoler derrière une feature serait un autre contrat.
@@ -193,8 +191,8 @@ Exposes:
     (rhai), @fn-client_name_is_set, @fn-get_client_name, @fn-set_client_name,
     @struct-Semver, @struct-Script (rhai), @struct-HandleBars (hbs) ; + @fn-update_cache
     seulement sous `k8s`.
-  18 modules publics (6 sans gate + 12 gated), dont les trois mock http_mock/oci_mock/
-    k8s_mock publics hors `cfg(test)` ; deux modules privés seulement : @crate::hbs_json et `rt`.
+  20 modules publics (7 sans gate + 13 gated), dont les trois mock http_mock/oci_mock/
+    k8s_mock publics hors `cfg(test)` ; un seul module privé : @crate::hbs_json.
 
 Accepts:
   @fn-error_chain — un @core::error::Error derrière `dyn` : accepte TOUT type
@@ -223,6 +221,8 @@ Handles:
 Tasks:
   [x] Les trois extraits `vynil-core = ...` de la rustdoc racine passent de `0.7` à `0.8` avec la
     livraison de ./vyvil-core.sdd (tâche « Livrer 0.8.0 », même commit).
+  [x] Les trois extraits `vynil-core = ...` de la rustdoc racine passent de `0.8` à `0.9` avec la
+    livraison de ./vyvil-core.sdd (tâche « Livrer 0.9.0 », même commit).
   [x] Reprendre la doc de @variant-Error::UnsupportedMethod (l. 175) : elle dit
     « `RestClient::obj_*` was called with an unsupported method enum variant » — périmée depuis
     la tâche `obj_*` de ./src/http.sdd (les `match` sont devenus exhaustifs, ./http.rs ne
@@ -278,6 +278,15 @@ Tasks:
     fichier est `Owns` de ./rt.sdd — la tâche est exécutée dans la même opération que la tâche de
     ./rt.sdd, sur autorisation explicite du développeur principal (exception same-operation du
     bootstrap, pas un transfert d'`Owns`).
+  [x] Déclarer `cancel` sans gate dans ./lib.rs (issue #23) : retirer `#[cfg(feature = "rhai")]` et le
+    `cfg_attr(docsrs, doc(cfg(...)))` de `pub mod cancel;`, mettre à jour sa ligne de rustdoc.
+    Jumelle de « Lever la porte `rhai` de ./cancel.rs » de ./cancel.sdd, cochée dans le même commit.
+  [x] Déclarer `rt` public dans ./lib.rs (issue #23) : `#[cfg(feature = "rt")]` +
+    `cfg_attr(docsrs, doc(cfg(feature = "rt")))` + `pub mod rt;` avec une ligne de rustdoc, à la place
+    du `mod rt;` privé et de son `any(...)` ; ajouter la feature `rt` à la table de doc des features de
+    ./lib.rs (hors `default`, n'implique pas `rhai`, tire `tokio`) et à la liste de `References`
+    (`Cargo.toml`). Jumelle de « Exposer `block_on` » de ./rt.sdd et de « Exposer la feature `rt` » de
+    ../vyvil-core.sdd, cochée dans le même commit.
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   mocks publics, module `password` ungated, gate `rhai` de `glob`, `error_chain` sans gate.
@@ -319,6 +328,16 @@ Tasks:
     face ShellOutput de `shell_run` n'y figurant pas, et y documenter l'assomption unix seul.
     Tâche jumelle de « Documenter le risque d'exécution de commandes » de ./src/shell.sdd et de
     la description de feature portée par ./vyvil-core.sdd, à cocher dans le même commit.
+  [x] Déclarer `cancel` dans ./lib.rs : `#[cfg(feature = "rhai")]` + `cfg_attr(docsrs,
+    doc(cfg(feature = "rhai")))` + `pub mod cancel;` avec une ligne de rustdoc, sans ré-export
+    racine. Jumelle de « Créer ./cancel.rs » de ./cancel.sdd, cochée dans le même commit.
+    À la clôture, reprendre les décomptes d'`Exposes` et de `Purpose` (déclarations de modules,
+    modules publics) à l'état produit, sans les maintenir en chiffres : « chacun de ces
+    modules » plutôt qu'un compte.
+  [x] Ajouter la feature `metadata` à la table de doc des features de ./lib.rs (même statut que
+    le manifest : hors `default`, active `rhai`) et à la liste de `References`
+    (`Cargo.toml`). Jumelle de « Exposer la feature `metadata` » de ../vyvil-core.sdd, cochée
+    dans le même commit.
 Scenario: error_chain remonte la source de l'extérieur vers la racine
   Given une erreur à trois niveaux calquée sur un échec DNS reqwest
   When @fn-error_chain la rend

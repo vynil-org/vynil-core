@@ -3,10 +3,14 @@
 //! Requires the `http` feature (which implies `rhai`). All requests use the global
 //! client identity from [`crate::set_client_name`] as `User-Agent`.
 
-use crate::{Error, RhaiRes, rhai_err};
+use crate::{
+    Error, RhaiRes,
+    engine::{Target, register_at, register_type_at},
+    rhai_err,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{Certificate, Client, Response};
-use rhai::{Dynamic, Engine, Map};
+use rhai::{Dynamic, Engine, Map, Module};
 use rustls_pki_types::{CertificateDer, pem::PemObject};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1252,41 +1256,282 @@ pub fn http_get_yaml(url: String, auth_type: String, credential: String) -> Rhai
     .map_err(rhai_err)
 }
 
+// ── Motif double cible (http.sdd, issues #19 et #20) ───────────────────────────
+// Reproduit le motif posé par le pilote de ./engine.sdd : le type et les fonctions
+// du module sont définis UNE seule fois, dans `http_fns`, comme une liste
+// d'enregistrements (nom, fonction, noms des paramètres et commentaire `///` sous
+// `metadata`) appliquée soit directement à l'Engine (l'enregistreur — les fonctions
+// restent en namespace global de l'engine, visibles de gen_fn_signatures comme
+// avant), soit à un Module dans ce même namespace global (le jumeau module,
+// enregistrable par Engine::register_static_module). Les aides Target/register_at/
+// register_type_at du pilote sont centralisées dans ./engine.rs (`pub(crate)`),
+// http.rs les importe.
+
 /// Registers `RestClient` (`new_http_client`/`new_client`), the HTTP verbs (each with its
 /// `http_`-prefixed alias, `head`/`http_head` included — 29 names) and the header helpers
 /// (`http_get_yaml`, `headers_get`, `headers_has`) on a Rhai engine.
+///
+/// Additive and idempotent: callable alone on a fresh [`Engine`]. The functions stay
+/// directly on the engine — no intermediate global module.
+///
+/// Module twin: [`http_module`] — same single `http_fns` list, same semantics.
 pub fn http_rhai_register(engine: &mut Engine) {
-    engine
-        .register_type_with_name::<RestClient>("RestClient")
-        .register_fn("new_http_client", RestClient::new)
-        .register_fn("new_client", RestClient::new)
-        .register_fn("headers_reset", RestClient::headers_reset_rhai)
-        .register_fn("set_baseurl", RestClient::baseurl_rhai)
-        .register_fn("set_server_ca", RestClient::set_server_ca)
-        .register_fn("set_mtls_cert_key", RestClient::set_mtls)
-        .register_fn("add_header", RestClient::add_header_rhai)
-        .register_fn("add_header_json", RestClient::add_header_json)
-        .register_fn("add_header_bearer", RestClient::add_header_bearer)
-        .register_fn("add_header_basic", RestClient::add_header_basic)
-        .register_fn("head", RestClient::rhai_head)
-        .register_fn("http_head", RestClient::rhai_head)
-        .register_fn("get", RestClient::rhai_get)
-        .register_fn("http_get", RestClient::rhai_get)
-        .register_fn("delete", RestClient::rhai_delete)
-        .register_fn("http_delete", RestClient::rhai_delete)
-        .register_fn("delete_with_body", RestClient::rhai_delete_with_body)
-        .register_fn("http_delete_with_body", RestClient::rhai_delete_with_body)
-        .register_fn("patch", RestClient::rhai_patch)
-        .register_fn("http_patch", RestClient::rhai_patch)
-        .register_fn("post", RestClient::rhai_post)
-        .register_fn("http_post", RestClient::rhai_post)
-        .register_fn("put", RestClient::rhai_put)
-        .register_fn("http_put", RestClient::rhai_put)
-        .register_fn("post_form", RestClient::rhai_post_form)
-        .register_fn("http_post_form", RestClient::rhai_post_form)
-        .register_fn("http_get_yaml", http_get_yaml)
-        .register_fn("headers_get", headers_get)
-        .register_fn("headers_has", headers_has);
+    http_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`http_rhai_register`] (issue #19): the same type name and the same
+/// functions, under the global namespace of a fresh [`Module`], registrable by
+/// [`Engine::register_static_module`] under the name the consumer picks. A twin that
+/// drifts from its registrar is a defect: both share the single `http_fns` list.
+#[must_use]
+pub fn http_module() -> Module {
+    let mut module = Module::new();
+    http_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The `http` group defined once (motif double cible): the custom type name, then
+/// each entry is a name, its function, its parameter names and its `///` comment
+/// (both under `metadata` only).
+#[allow(clippy::too_many_lines)] // trente entrées du Must de ./http.sdd en une seule liste, forme du motif (#19/#20).
+fn http_fns(target: &mut Target<'_>) {
+    register_type_at::<RestClient>(target, "RestClient");
+    register_at(
+        target,
+        "new_http_client",
+        &["/// New HTTP client whose requests target `base` (joined literally as `base/path`). No errors."],
+        &["base: string", "RestClient"],
+        RestClient::new,
+    );
+    register_at(
+        target,
+        "new_client",
+        &["/// Twin of `new_http_client` — same construction, same type `RestClient`."],
+        &["base: string", "RestClient"],
+        RestClient::new,
+    );
+    register_at(
+        target,
+        "headers_reset",
+        &["/// Drops every custom header configured so far."],
+        &["client: &mut RestClient"],
+        RestClient::headers_reset_rhai,
+    );
+    register_at(
+        target,
+        "set_baseurl",
+        &["/// Points later requests at `base` (void twin of the chainable Rust builder)."],
+        &["client: &mut RestClient", "base: string"],
+        RestClient::baseurl_rhai,
+    );
+    register_at(
+        target,
+        "set_server_ca",
+        &[
+            "/// Stores a PEM CA added as a rustls trust root; an invalid PEM fails only at the",
+            "/// first request, when the client is built — never in the setter.",
+        ],
+        &["client: &mut RestClient", "ca: string"],
+        RestClient::set_server_ca,
+    );
+    register_at(
+        target,
+        "set_mtls_cert_key",
+        &[
+            "/// Stores the client PEM `cert` then `key` used to build the mTLS identity",
+            "/// (key before cert in the concatenated PEM); validated at the first request.",
+        ],
+        &["client: &mut RestClient", "cert: string", "key: string"],
+        RestClient::set_mtls,
+    );
+    register_at(
+        target,
+        "add_header",
+        &[
+            "/// Adds one header sent on every request; a name already present is replaced",
+            "/// WITHOUT REGARD TO CASE — the last value and the last case win.",
+        ],
+        &["client: &mut RestClient", "key: string", "value: string"],
+        RestClient::add_header_rhai,
+    );
+    register_at(
+        target,
+        "add_header_json",
+        &[
+            "/// Adds the JSON Content-Type then Accept, each skipped when already present",
+            "/// (case-insensitive). No header value is ever logged.",
+        ],
+        &["client: &mut RestClient"],
+        RestClient::add_header_json,
+    );
+    register_at(
+        target,
+        "add_header_bearer",
+        &["/// Sets `Authorization: Bearer <token>`."],
+        &["client: &mut RestClient", "token: string"],
+        RestClient::add_header_bearer,
+    );
+    register_at(
+        target,
+        "add_header_basic",
+        &["/// Sets `Authorization: Basic` over standard base64 of `username:password`."],
+        &["client: &mut RestClient", "username: string", "password: string"],
+        RestClient::add_header_basic,
+    );
+    register_at(
+        target,
+        "head",
+        &[
+            "/// Sends a real HEAD; renders the map {code, headers} only — no body is read,",
+            "/// and any non-2xx status still returns Ok.",
+        ],
+        &["client: &mut RestClient", "path: string", "map"],
+        RestClient::rhai_head,
+    );
+    register_at(
+        target,
+        "http_head",
+        &["/// Alias of `head` — same real HEAD, same {code, headers} map."],
+        &["client: &mut RestClient", "path: string", "map"],
+        RestClient::rhai_head,
+    );
+    register_at(
+        target,
+        "get",
+        &[
+            "/// GET on `base/path`; map {code, headers, body, json} — a non-2xx status still",
+            "/// returns Ok, an invalid JSON body falls back silently to the empty map.",
+        ],
+        &["client: &mut RestClient", "path: string", "map"],
+        RestClient::rhai_get,
+    );
+    register_at(
+        target,
+        "http_get",
+        &["/// Alias of `get`."],
+        &["client: &mut RestClient", "path: string", "map"],
+        RestClient::rhai_get,
+    );
+    register_at(
+        target,
+        "delete",
+        &["/// DELETE on `base/path`; map {code, headers, body, json}; any status stays Ok."],
+        &["client: &mut RestClient", "path: string", "map"],
+        RestClient::rhai_delete,
+    );
+    register_at(
+        target,
+        "http_delete",
+        &["/// Alias of `delete`."],
+        &["client: &mut RestClient", "path: string", "map"],
+        RestClient::rhai_delete,
+    );
+    register_at(
+        target,
+        "delete_with_body",
+        &[
+            "/// DELETE sending the serialized body of `val`; a 404 renders as a success like any other status.",
+        ],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClient::rhai_delete_with_body,
+    );
+    register_at(
+        target,
+        "http_delete_with_body",
+        &["/// Alias of `delete_with_body`."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClient::rhai_delete_with_body,
+    );
+    register_at(
+        target,
+        "patch",
+        &["/// PATCH sending `val` (a string raw, anything else as JSON); map {code, headers, body, json}."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClient::rhai_patch,
+    );
+    register_at(
+        target,
+        "http_patch",
+        &["/// Alias of `patch`."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClient::rhai_patch,
+    );
+    register_at(
+        target,
+        "post",
+        &["/// POST sending `val` (a string raw, anything else as JSON); map {code, headers, body, json}."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClient::rhai_post,
+    );
+    register_at(
+        target,
+        "http_post",
+        &["/// Alias of `post`."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClient::rhai_post,
+    );
+    register_at(
+        target,
+        "put",
+        &["/// PUT sending `val` (a string raw, anything else as JSON); map {code, headers, body, json}."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClient::rhai_put,
+    );
+    register_at(
+        target,
+        "http_put",
+        &["/// Alias of `put`."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClient::rhai_put,
+    );
+    register_at(
+        target,
+        "post_form",
+        &[
+            "/// POSTs the map `val` as application/x-www-form-urlencoded — scalar values only,",
+            "/// a composite one is refused; a stored Content-Type header is dropped (any case).",
+        ],
+        &["client: &mut RestClient", "path: string", "val: map", "map"],
+        RestClient::rhai_post_form,
+    );
+    register_at(
+        target,
+        "http_post_form",
+        &["/// Alias of `post_form`."],
+        &["client: &mut RestClient", "path: string", "val: map", "map"],
+        RestClient::rhai_post_form,
+    );
+    register_at(
+        target,
+        "http_get_yaml",
+        &[
+            "/// GETs the absolute `url` (auth `\"\"` anonymous, `bearer` or `basic`, case-insensitive;",
+            "/// any other auth_type errors before connecting) and renders the YAML body as a Rhai value.",
+        ],
+        &[
+            "url: string",
+            "auth_type: string",
+            "credential: string",
+            "Dynamic",
+        ],
+        http_get_yaml,
+    );
+    register_at(
+        target,
+        "headers_get",
+        &[
+            "/// First value of header `name` (case-insensitive) in a response `headers` vector, unit when absent.",
+        ],
+        &["headers: array", "name: string", "Dynamic"],
+        headers_get,
+    );
+    register_at(
+        target,
+        "headers_has",
+        &["/// Whether header `name` is present in a response `headers` vector, case-insensitively."],
+        &["headers: array", "name: string", "bool"],
+        headers_has,
+    );
 }
 
 #[cfg(test)]
@@ -2731,5 +2976,630 @@ A0zCL3skArjVYr5LPVfE+c95+9LM7MYw/YorcueAuaBFiorX0F6kiX6A3Z+QD9kG
             joined, "map|1|two",
             "`type_of` rend map, `r.json.a` et le sous-objet s'indexent nativement : {joined:?}"
         );
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Tâche « Jumeau module et documentation » (http.sdd, issues #19 et #20) —
+// Scenario « http_module équivaut à http_rhai_register » et « fonctions
+// documentées sous metadata (http) », sur le motif double cible posé par le
+// pilote de ./engine.sdd.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// SCELLAGE « Jumeau module et documentation » (http.sdd, issues #19 et #20) —
+/// Scenario « `http_module` équivaut à `http_rhai_register` » et « fonctions
+/// documentées sous metadata (http) ». Le jumeau porte `http` (qui implique
+/// `rhai`, ./Cargo.toml) : les deux verrous ne demandent donc que cette porte.
+/// Motif du pilote de ./engine.rs : une seule liste `http_fns`, appliquée à
+/// l'engine (fonctions DIRECTEMENT en namespace global, jamais dans un module
+/// global intermédiaire) ou au module jumeau enregistré par
+/// `register_static_module` sous `m`.
+#[cfg(all(test, feature = "http"))]
+mod jumeau_module_http {
+    use crate::http::{http_module, http_rhai_register};
+    use rhai::Engine;
+    use std::collections::BTreeSet;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+
+    /// Les VINGT-NEUF noms du `Must` de ./http.sdd (§ « Enregistrer dans
+    /// `http_rhai_register` ») : jumeaux du constructeur, dix setters/builders,
+    /// huit verbes à double alias, trois libres.
+    const HTTP_FNS: [&str; 29] = [
+        "new_http_client",
+        "new_client",
+        "headers_reset",
+        "set_baseurl",
+        "set_server_ca",
+        "set_mtls_cert_key",
+        "add_header",
+        "add_header_json",
+        "add_header_bearer",
+        "add_header_basic",
+        "head",
+        "http_head",
+        "get",
+        "http_get",
+        "delete",
+        "http_delete",
+        "delete_with_body",
+        "http_delete_with_body",
+        "patch",
+        "http_patch",
+        "post",
+        "http_post",
+        "put",
+        "http_put",
+        "post_form",
+        "http_post_form",
+        "http_get_yaml",
+        "headers_get",
+        "headers_has",
+    ];
+
+    /// Nom → paramètres attendus NOMMÉS dans la signature (receveur `client`
+    /// compris) : la table du `Must`, face « NOMS des paramètres, pas seulement
+    /// leurs types » du Scenario metadata. Porte `metadata` : sans la feature,
+    /// l'introspection des noms ne tourne pas.
+    #[cfg(feature = "metadata")]
+    const HTTP_PARAMS: [(&str, &[&str]); 29] = [
+        ("new_http_client", &["base"]),
+        ("new_client", &["base"]),
+        ("headers_reset", &["client"]),
+        ("set_baseurl", &["client", "base"]),
+        ("set_server_ca", &["client", "ca"]),
+        ("set_mtls_cert_key", &["client", "cert", "key"]),
+        ("add_header", &["client", "key", "value"]),
+        ("add_header_json", &["client"]),
+        ("add_header_bearer", &["client", "token"]),
+        ("add_header_basic", &["client", "username", "password"]),
+        ("head", &["client", "path"]),
+        ("http_head", &["client", "path"]),
+        ("get", &["client", "path"]),
+        ("http_get", &["client", "path"]),
+        ("delete", &["client", "path"]),
+        ("http_delete", &["client", "path"]),
+        ("delete_with_body", &["client", "path", "val"]),
+        ("http_delete_with_body", &["client", "path", "val"]),
+        ("patch", &["client", "path", "val"]),
+        ("http_patch", &["client", "path", "val"]),
+        ("post", &["client", "path", "val"]),
+        ("http_post", &["client", "path", "val"]),
+        ("put", &["client", "path", "val"]),
+        ("http_put", &["client", "path", "val"]),
+        ("post_form", &["client", "path", "val"]),
+        ("http_post_form", &["client", "path", "val"]),
+        ("http_get_yaml", &["url", "auth_type", "credential"]),
+        ("headers_get", &["headers", "name"]),
+        ("headers_has", &["headers", "name"]),
+    ];
+
+    /// Engine vierge portant le jumeau module enregistré par
+    /// `rhai::Engine::register_static_module` sous le nom `m` (face qualifiée du Scenario).
+    fn engine_with_module(module: rhai::Module) -> Engine {
+        let mut engine = Engine::new();
+        engine.register_static_module("m", module.into());
+        engine
+    }
+
+    /// Noms de fonctions de l'engine, hors packages standard de `@rhai`
+    /// (introspection par `collect_fn_metadata`, porte `internals` toujours activée).
+    fn registered_names(engine: &Engine) -> BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    /// Noms que l'enregistreur ajoute à la baseline `Engine::new`.
+    fn names_added_by(register: impl Fn(&mut Engine)) -> BTreeSet<String> {
+        let mut engine = Engine::new();
+        register(&mut engine);
+        let apres = registered_names(&engine);
+        let avant = registered_names(&Engine::new());
+        apres.difference(&avant).cloned().collect()
+    }
+
+    /// Noms qu'un jumeau module ajoute à la baseline par `register_static_module`
+    /// sous `m` (préfixe `m::` retiré s'il est porté par le nom).
+    fn names_added_by_module(module: rhai::Module) -> BTreeSet<String> {
+        let apres = registered_names(&engine_with_module(module));
+        let avant = registered_names(&Engine::new());
+        apres
+            .difference(&avant)
+            .map(|nom| {
+                let s = nom.as_str();
+                s.strip_prefix("m::").unwrap_or(s).to_string()
+            })
+            .collect()
+    }
+
+    fn set_of(noms: &[&str]) -> BTreeSet<String> {
+        noms.iter().map(|nom| (*nom).to_string()).collect()
+    }
+
+    /// Deux faces du même appel : mêmes valeurs rendues ; sur échec, même noyau
+    /// de message porté des deux côtés (l'enveloppe d'appel nu vs qualifié
+    /// appartient à `@rhai`, non contractée — voix du pilote de ./engine.rs).
+    fn comparer_resultats(
+        origine: &str,
+        marqueur: Option<&str>,
+        a: crate::RhaiRes<rhai::Dynamic>,
+        b: crate::RhaiRes<rhai::Dynamic>,
+    ) {
+        match (a, b) {
+            (Ok(x), Ok(y)) => assert_eq!(
+                x.to_string(),
+                y.to_string(),
+                "valeur divergente pour « {origine} »"
+            ),
+            (Err(e), Err(f)) => {
+                let Some(marqueur) = marqueur else {
+                    panic!("les deux voies échouent sans marqueur pour « {origine} » : {e} vs {f}");
+                };
+                assert!(
+                    e.to_string().contains(marqueur),
+                    "l'erreur de « {origine} » doit porter « {marqueur} », obtenu : {e}"
+                );
+                assert!(
+                    f.to_string().contains(marqueur),
+                    "l'erreur jumelle de « {origine} » doit porter « {marqueur} », obtenu : {f}"
+                );
+            }
+            (a, b) => panic!("divergence succès/échec pour « {origine} » : {a:?} vs {b:?}"),
+        }
+    }
+
+    /// Scenario « `http_module` équivaut à `http_rhai_register` » : les deux
+    /// ensembles de noms sont égaux et exactement les VINGT-NEUF du `Must`
+    /// (aucune fonction en plus ni en moins, comparés par l'introspection de
+    /// Rhai) ; les appels représentatifs des Scenario existants de cette spec
+    /// sont rejoués sur chacun — nom nu sur l'engine de l'enregistreur, nom nu
+    /// ET qualifié `m::nom` sur l'engine du jumeau — mêmes résultats, mêmes
+    /// noyaux d'erreur.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_module_equivalent_a_http_rhai_register() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/a"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("ok")
+                    .insert_header("x-total-pages", "3"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/a"))
+            .respond_with(ResponseTemplate::new(201).set_body_string("made"))
+            .mount(&server)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/h"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let uri = server.uri();
+
+        // Then « les deux ensembles de noms sont égaux », et exactement les 29.
+        assert_eq!(
+            names_added_by(http_rhai_register),
+            set_of(&HTTP_FNS),
+            "l'enregistreur accorde exactement les VINGT-NEUF noms du Must"
+        );
+        assert_eq!(
+            names_added_by_module(http_module()),
+            set_of(&HTTP_FNS),
+            "le jumeau module rend exactement les noms de l'enregistreur, aucun en plus ni en moins"
+        );
+
+        let mut enregistreur = Engine::new();
+        http_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(http_module());
+
+        let appels: Vec<(String, Option<String>, Option<&str>)> = vec![
+            // Scenario « le registre des 29 noms » : constructeur + type nommé
+            // "RestClient", des deux voies, nu et qualifié.
+            (
+                format!(r#"let c = new_http_client("{uri}"); type_of(c)"#),
+                Some(format!(r#"let c = m::new_http_client("{uri}"); type_of(c)"#)),
+                None,
+            ),
+            // Scenario « le registre des 29 noms », jumeau du constructeur :
+            // `new_client` fonctionne aussi (pas un nom décoratif).
+            (
+                format!(r#"let c = new_client("{uri}"); type_of(c)"#),
+                Some(format!(r#"let c = m::new_client("{uri}"); type_of(c)"#)),
+                None,
+            ),
+            // Les setters/builders, sans réseau : tous appelables, tous void.
+            (
+                r#"let c = new_http_client("http://x"); c.set_baseurl("http://y"); c.add_header("X-A", "1"); c.headers_reset(); c.add_header_json(); c.add_header_bearer("t"); c.add_header_basic("u", "p"); c.set_server_ca("pem"); c.set_mtls_cert_key("cert", "cle"); type_of(c)"#.into(),
+                Some(
+                    r#"let c = m::new_http_client("http://x"); m::set_baseurl(c, "http://y"); m::add_header(c, "X-A", "1"); m::headers_reset(c); m::add_header_json(c); m::add_header_bearer(c, "t"); m::add_header_basic(c, "u", "p"); m::set_server_ca(c, "pem"); m::set_mtls_cert_key(c, "cert", "cle"); type_of(c)"#
+                        .into(),
+                ),
+                None,
+            ),
+            // Scenario « rhai_get ne pleure jamais un statut » et faces wiremock :
+            // get + alias http_get + head + post, codes identiques.
+            (
+                format!(
+                    r#"let c = new_http_client("{uri}"); c.get("a").code.to_string() + "|" + c.http_get("a").code.to_string() + "|" + c.head("h").code.to_string() + "|" + c.post("a", "brut").code.to_string()"#
+                ),
+                Some(format!(
+                    r#"let c = m::new_http_client("{uri}"); m::get(c, "a").code.to_string() + "|" + m::http_get(c, "a").code.to_string() + "|" + m::head(c, "h").code.to_string() + "|" + m::post(c, "a", "brut").code.to_string()"#
+                )),
+                None,
+            ),
+            // Scenario « headers_get et headers_has sont les deux soeurs » : les
+            // libres rejouées sur le `headers` d'une vraie réponse.
+            (
+                format!(
+                    r#"let c = new_http_client("{uri}"); let r = c.get("a"); let v = (if headers_has(r.headers, "X-TOTAL-PAGES") {{ headers_get(r.headers, "x-total-pages") }} else {{ "absent" }}); v"#
+                ),
+                Some(format!(
+                    r#"let c = m::new_http_client("{uri}"); let r = m::get(c, "a"); let v = (if m::headers_has(r.headers, "X-TOTAL-PAGES") {{ m::headers_get(r.headers, "x-total-pages") }} else {{ "absent" }}); v"#
+                )),
+                None,
+            ),
+            // Scenario « post_form encode » : valeur composite refusée avant
+            // toute connexion, texte porté à l'identique des deux voies.
+            (
+                r#"let c = new_http_client("http://127.0.0.1:1"); c.post_form("/a", #{k: #{sub: 1}})"#.into(),
+                Some(r#"let c = m::new_http_client("http://127.0.0.1:1"); m::post_form(c, "/a", #{k: #{sub: 1}})"#.into()),
+                Some("form field 'k' must be a scalar"),
+            ),
+            // Scenario « http_get_yaml parle bearer, basic, et scanne » :
+            // `unknown auth_type` avant toute connexion.
+            (
+                r#"http_get_yaml("http://127.0.0.1:1/a.yaml", "digest", "")"#.into(),
+                Some(r#"m::http_get_yaml("http://127.0.0.1:1/a.yaml", "digest", "")"#.into()),
+                Some("unknown auth_type 'digest'"),
+            ),
+            // Scenario « rhai_get ne pleure jamais un statut », given port
+            // fermé : l'erreur transporte la CAUSE aplatie par error_chain.
+            (
+                r#"let c = new_http_client("http://127.0.0.1:1"); c.get("x")"#.into(),
+                Some(r#"let c = m::new_http_client("http://127.0.0.1:1"); m::get(c, "x")"#.into()),
+                Some("Connection refused"),
+            ),
+        ];
+        for (nu, qualifie, marqueur) in appels {
+            let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
+            // Face « nom nu aussi sur le second engine » : le jumeau est en
+            // namespace global (FnNamespace::Global), le nom nu y résout pareil.
+            let rb = par_module.eval::<rhai::Dynamic>(&nu);
+            comparer_resultats(&nu, marqueur, rn, rb);
+            if let Some(q) = &qualifie {
+                let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
+                let rq = par_module.eval::<rhai::Dynamic>(q);
+                comparer_resultats(q, marqueur, rn, rq);
+            }
+        }
+    }
+
+    /// Scenario « `http_module` équivaut à `http_rhai_register` », dernier `And` :
+    /// sur l'engine de l'enregistreur, `rhai::Engine::gen_fn_signatures` sans les
+    /// paquets liste les mêmes fonctions qu'avant — les vingt-neuf enregistrements
+    /// en fonctions DIRECTES, non passés dans un module global. Porte `metadata`
+    /// de `@rhai`.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn http_enregistreur_fonctions_directement_sur_l_engine() {
+        let mut engine = Engine::new();
+        http_rhai_register(&mut engine);
+        let signatures = engine.gen_fn_signatures(false);
+        let baseline = Engine::new().gen_fn_signatures(false);
+        let ajoutees: Vec<&String> = signatures
+            .iter()
+            .filter(|s| !baseline.iter().any(|b| b == *s))
+            .collect();
+        assert_eq!(
+            ajoutees.len(),
+            29,
+            "les vingt-neuf noms du Must sont les seules signatures ajoutees a la baseline : {ajoutees:?}"
+        );
+        for prefix in [
+            "new_http_client(",
+            "get(",
+            "http_get(",
+            "headers_get(",
+            "post_form(",
+        ] {
+            assert!(
+                ajoutees.iter().any(|s| s.starts_with(prefix)),
+                "{prefix}… doit etre une fonction directe de l'engine : {ajoutees:?}"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata (http) » : sous la feature
+    /// `metadata`, chacune des vingt-neuf fonctions enregistrees porte un
+    /// commentaire `///` non vide et les NOMS de ses parametres — pas seulement
+    /// leurs types —, vérifiés par `gen_fn_signatures` et
+    /// `gen_fn_metadata_to_json`.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn fonctions_documentees_sous_metadata_http() {
+        let mut engine = Engine::new();
+        http_rhai_register(&mut engine);
+        let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
+            None,
+            |f| {
+                Some((
+                    f.metadata.name.to_string(),
+                    f.metadata.params_info.len(),
+                    f.metadata.comments.len(),
+                ))
+            },
+            false,
+        );
+        for nom in HTTP_FNS {
+            let entree = documentees
+                .iter()
+                .find(|(n, _, _)| n == nom)
+                .unwrap_or_else(|| panic!("{nom} absente des métadonnées de l'engine"));
+            assert!(
+                entree.2 > 0,
+                "{nom} doit porter un commentaire non vide sous `metadata`"
+            );
+            assert!(
+                entree.1 > 0,
+                "{nom} doit porter les noms de ses paramètres sous `metadata`"
+            );
+        }
+        let signatures = engine.gen_fn_signatures(false);
+        for (nom, params) in HTTP_PARAMS {
+            let prefix = format!("{nom}(");
+            let sigs: Vec<&String> = signatures.iter().filter(|s| s.starts_with(&prefix)).collect();
+            assert!(!sigs.is_empty(), "{nom} absente des signatures : {signatures:?}");
+            for s in sigs {
+                for p in params {
+                    assert!(
+                        s.contains(p),
+                        "la signature de {nom} doit nommer le paramètre « {p} », got {s}"
+                    );
+                }
+                assert!(!s.contains("(_"), "{nom} porte un paramètre non nommé : {s}");
+            }
+        }
+        // Face JSON : `gen_fn_metadata_to_json` porte le commentaire /// de chaque
+        // nom, et les paramètres de `get` y sont nommés (pas `_`).
+        let json = engine
+            .gen_fn_metadata_to_json(false)
+            .expect("le JSON des métadonnées de l'engine se sérialise");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("JSON valide");
+        let functions = value["functions"]
+            .as_array()
+            .expect("le JSON porte un tableau « functions »");
+        for nom in HTTP_FNS {
+            let entree = functions
+                .iter()
+                .find(|f| f["name"] == nom)
+                .unwrap_or_else(|| panic!("{nom} absente du JSON des métadonnées"));
+            let commentaires = entree["docComments"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{nom} doit porter des docComments, got {entree}"));
+            assert!(
+                commentaires
+                    .iter()
+                    .any(|c| { c.as_str().is_some_and(|c| c.starts_with("///") && c.len() > 3) }),
+                "le commentaire /// de {nom} doit être non vide, got {entree}"
+            );
+        }
+        let entree = functions
+            .iter()
+            .find(|f| f["name"] == "get")
+            .expect("get présent au JSON");
+        let params = entree["params"]
+            .as_array()
+            .unwrap_or_else(|| panic!("get doit porter des params nommés, got {entree}"));
+        assert_eq!(params.len(), 2, "get a deux paramètres nommés, got {entree}");
+        assert!(
+            params
+                .iter()
+                .all(|p| p["name"].as_str().unwrap_or_default() != "_"),
+            "les paramètres de get doivent être nommés, got {entree}"
+        );
+    }
+
+    /// Scenario « fonctions documentées sous metadata (http) », `And` « sans la
+    /// feature, les mêmes tests de comportement passent sans différence » : mêmes
+    /// valeurs verrouillées des deux voies et mêmes ensembles de noms — la
+    /// documentation n'étant qu'une métadonnée, aucun observable ne bouge.
+    #[cfg(not(feature = "metadata"))]
+    #[test]
+    fn http_sans_metadata_sans_difference() {
+        let mut enregistreur = Engine::new();
+        http_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(http_module());
+        assert_eq!(
+            enregistreur
+                .eval::<rhai::Dynamic>(r#"let c = new_http_client("http://x"); c.add_header("K", "v"); c.headers_reset(); type_of(c)"#)
+                .expect("constructeur et setters réussissent sans `metadata`")
+                .to_string(),
+            par_module
+                .eval::<rhai::Dynamic>(r#"let c = new_http_client("http://x"); c.add_header("K", "v"); c.headers_reset(); type_of(c)"#)
+                .expect("la voie jumelle rend la même valeur sans `metadata`")
+                .to_string(),
+        );
+        assert_eq!(
+            names_added_by(http_rhai_register),
+            names_added_by_module(http_module()),
+            "sans `metadata`, les deux ensembles de noms restent égaux"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "metadata", feature = "http"))]
+mod signatures_documentees {
+    use super::*;
+
+    /// Signatures attendues du groupe `http`, écrites à la main depuis les closures
+    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
+    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
+        ("new_http_client", "new_http_client(base: string) -> RestClient"),
+        ("new_client", "new_client(base: string) -> RestClient"),
+        ("headers_reset", "headers_reset(client: &mut RestClient)"),
+        (
+            "set_baseurl",
+            "set_baseurl(client: &mut RestClient, base: string)",
+        ),
+        (
+            "set_server_ca",
+            "set_server_ca(client: &mut RestClient, ca: string)",
+        ),
+        (
+            "set_mtls_cert_key",
+            "set_mtls_cert_key(client: &mut RestClient, cert: string, key: string)",
+        ),
+        (
+            "add_header",
+            "add_header(client: &mut RestClient, key: string, value: string)",
+        ),
+        ("add_header_json", "add_header_json(client: &mut RestClient)"),
+        (
+            "add_header_bearer",
+            "add_header_bearer(client: &mut RestClient, token: string)",
+        ),
+        (
+            "add_header_basic",
+            "add_header_basic(client: &mut RestClient, username: string, password: string)",
+        ),
+        ("head", "head(client: &mut RestClient, path: string) -> map"),
+        (
+            "http_head",
+            "http_head(client: &mut RestClient, path: string) -> map",
+        ),
+        ("get", "get(client: &mut RestClient, path: string) -> map"),
+        (
+            "http_get",
+            "http_get(client: &mut RestClient, path: string) -> map",
+        ),
+        ("delete", "delete(client: &mut RestClient, path: string) -> map"),
+        (
+            "http_delete",
+            "http_delete(client: &mut RestClient, path: string) -> map",
+        ),
+        (
+            "delete_with_body",
+            "delete_with_body(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "http_delete_with_body",
+            "http_delete_with_body(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "patch",
+            "patch(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "http_patch",
+            "http_patch(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "post",
+            "post(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "http_post",
+            "http_post(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "put",
+            "put(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "http_put",
+            "http_put(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "post_form",
+            "post_form(client: &mut RestClient, path: string, val: map) -> map",
+        ),
+        (
+            "http_post_form",
+            "http_post_form(client: &mut RestClient, path: string, val: map) -> map",
+        ),
+        (
+            "http_get_yaml",
+            "http_get_yaml(url: string, auth_type: string, credential: string) -> Dynamic",
+        ),
+        (
+            "headers_get",
+            "headers_get(headers: array, name: string) -> Dynamic",
+        ),
+        ("headers_has", "headers_has(headers: array, name: string) -> bool"),
+    ];
+
+    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
+    fn ajoutees_par_enregistreur() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        http_rhai_register(&mut engine);
+        engine.gen_fn_signatures(false).into_iter().collect()
+    }
+
+    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
+    /// retiré : seuls les noms et types comptent).
+    fn ajoutees_par_module() -> Vec<String> {
+        let mut engine = rhai::Engine::new_raw();
+        engine.register_static_module("m", http_module().into());
+        engine
+            .gen_fn_signatures(false)
+            .into_iter()
+            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
+            .collect()
+    }
+
+    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+        let mut obtenues = ajoutees;
+        obtenues.sort();
+        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+            .iter()
+            .map(|(_, signature)| (*signature).to_string())
+            .collect();
+        attendues.sort();
+        assert_eq!(obtenues, attendues, "signatures de la face {face}");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_enregistreur_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_jumeau_module_egal_table() {
+        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_completude() {
+        assert_eq!(
+            ajoutees_par_enregistreur().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "une fonction du groupe sans entrée de table fait échouer ce test"
+        );
+        assert_eq!(
+            ajoutees_par_module().len(),
+            SIGNATURES_ATTENDUES.len(),
+            "jumeau module : une fonction sans entrée de table fait échouer ce test"
+        );
+    }
+
+    #[test]
+    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
+        let mut engine = rhai::Engine::new();
+        http_rhai_register(&mut engine);
+        for signature in engine.gen_fn_signatures(false) {
+            assert!(
+                !signature.contains("String") && !signature.contains("ImmutableString"),
+                "signature hors vocabulaire rhai : {signature}"
+            );
+        }
     }
 }

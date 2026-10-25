@@ -21,6 +21,16 @@ abstractions (CRDs, package model, instance controllers).
 A plain `vynil-core = "x"` dependency (default features) gets all three, unchanged from previous
 releases. Each is independently optional for a consumer that only needs one — see below.
 
+The sixteen core helpers `new_bare` always registers come in three public, additive groups —
+`core_pure_rhai_register`, `core_host_rhai_register`, `core_sleep_rhai_register` (plus
+`fs_rhai_register` under `fs`) — so a consumer granting a script only part of them composes
+those groups onto a plain `rhai::Engine::new` instead. Every public `*_rhai_register` also has a
+`*_module()` twin registrable through `Engine::register_static_module` under a namespace of your
+choosing, and under the optional `metadata` feature each registered function carries its
+comment and parameter names for introspection. `cancel::CancelToken` + `cancel::scope` make the
+crate's blocking native calls (`sleep`, network waits) interruptable per thread, completing
+`rhai::Engine::on_progress`. See [docs/rhai_helpers.md](docs/rhai_helpers.md).
+
 ## Features
 
 | Feature | Default | Adds | Pulls in |
@@ -36,18 +46,20 @@ releases. Each is independently optional for a consumer that only needs one — 
 | `fs` | off | Filesystem access from Rhai scripts | — |
 | `shell` | off | Shell command execution | — |
 | `password` | off | `gen_password`/`gen_password_alphanum` (off by default to avoid a name collision with a consumer's own password semantics) | — |
+| `metadata` | off | Rhai introspection metadata: `///` comments + parameter names on registered script functions, consumed by `gen_fn_signatures`/`gen_fn_metadata_to_json`. Implies `rhai` — metadata alone has no engine to register on. Pure metadata: registrations behave identically without it | `rhai/metadata` |
+| `rt` | off | Async → sync bridge `rt::block_on` for consumers calling async code from synchronous Rhai natives (public; `http`, `oci`, `s3` and `k8s` depend on it). Does not imply `rhai` | `tokio` |
 
 ```toml
 # default: Rhai + Handlebars + HTTP + crypto helpers, same as previous releases
-vynil-core = "0.8"
+vynil-core = "0.9"
 
 # Kubernetes project
-vynil-core = { version = "0.8", features = ["k8s"] }
+vynil-core = { version = "0.9", features = ["k8s"] }
 
 # Handlebars only (e.g. rendering MCP tool output), no Rhai engine at all — and no rhai/smartstring
 # in the graph either, since "hbs" alone doesn't pull in "hbs-scripting" (e.g. safe to combine
 # with async-graphql, see the `hbs-scripting` row above)
-vynil-core = { version = "0.8", default-features = false, features = ["hbs", "crypto"] }
+vynil-core = { version = "0.9", default-features = false, features = ["hbs", "crypto"] }
 ```
 
 ## Client identity

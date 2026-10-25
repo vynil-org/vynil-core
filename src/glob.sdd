@@ -30,7 +30,8 @@ Must:
   Quel que soit le motif, même aberrant ou vide, `glob` renvoie un `bool` et ne lève rien :
     @WildMatch::new ne peut pas échouer et le retour n'est pas un @RhaiRes.
   @glob::glob_fn conserve ses paramètres @rhai::ImmutableString par valeur, exigence de
-    @rhai::Engine::register_fn ; le `#[allow(clippy::needless_pass_by_value)]` et son
+    l'enregistrement @rhai::FuncRegistration du motif (@crate::engine::register_at importé de
+    ./engine.rs) ; le `#[allow(clippy::needless_pass_by_value)]` et son
     commentaire de justification d'une ligne citant la spec se maintiennent ensemble.
 
 Must not:
@@ -41,7 +42,8 @@ Must not:
     texte ou le motif avant comparaison.
 
 Depends on:
-  rhai — @rhai::Engine, @rhai::ImmutableString et @rhai::Engine::register_fn, derrière la
+  rhai — @rhai::Engine, @rhai::ImmutableString, @rhai::Module et le motif
+    @crate::engine::Target/@crate::engine::register_at, derrière la
     feature du même nom.
   wildmatch — @wildmatch::WildMatch, @WildMatch::new et @WildMatch::matches ; dépendance non
     gated par feature, présente dans le graphe même sans `rhai`.
@@ -51,6 +53,10 @@ Exposes:
     enregistre la fonction de script `glob` dans le @rhai::Engine fourni.
   Fonction de script `glob(text, pattern) -> bool` — nom exact côté script `glob`, retour
     `bool` et jamais @RhaiRes, portée par la fonction privée @glob::glob_fn.
+  @crate::glob::glob_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
+    @crate::glob::glob_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
 
 Accepts:
   @glob::glob_rhai_register — un `&mut @rhai::Engine` fourni par l'appelant, qu'elle ne lit
@@ -79,6 +85,24 @@ Tasks:
     ./engine.rs ou la batterie de features, mais doivent être verrouillés quelque part.
     Aucun test inline n'existe à ce jour dans ./glob.rs : les dix-sept Scenario sont à
     convertir.
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::glob::glob_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::glob::glob_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (glob) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+    la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
+    type de retour (absent quand la fonction rend l'unité), écrits dans le vocabulaire du script
+    (`string`, non `String`/`ImmutableString` ; type de succès déballé pour une fonction fallible).
+    Tests d'abord : une table de signatures attendues, écrite à la main, comparée par égalité à
+    `gen_fn_signatures` pour l'enregistreur ET le jumeau ; un test de complétude (nombre de fonctions
+    du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
+    Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
+    commit.
 
 Scenario: correspondance littérale exacte
   Given un engine avec la fonction `glob` enregistrée
@@ -172,3 +196,31 @@ Scenario: module absent sans la feature rhai
   Given la crate compilée sans la feature `rhai`, par exemple `cargo check --no-default-features`
   When l'API publique de la crate est inspectée
   Then @glob::glob_rhai_register n'existe pas et `glob` n'est disponible dans aucun script
+
+Scenario: glob_module équivaut à glob_rhai_register
+  Given un @rhai::Engine où glob_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::glob::glob_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (glob)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (glob_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
+    entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
+    entrée, écrit dans le vocabulaire du SCRIPT et non celui de Rust : `string` (pour `String` comme
+    pour `ImmutableString`), `i64`, `u32`, `bool`, `Dynamic`, `array`, `map` — les types natifs de rhai
+    s'écrivent comme `type_of` en script, donc en minuscules, y compris en retour —, le nom du type
+    enregistré tel quel (`K8sGeneric`, `RestClient`) ;
+    une fonction fallible (`RhaiRes<T>`) porte le type de succès `T` déballé, jamais le `Result<…>` brut
+    que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
+    une signature sans retour
+  And sans la feature, les mêmes tests de comportement passent sans différence

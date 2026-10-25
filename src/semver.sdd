@@ -123,14 +123,15 @@ Must:
     @std::hash::Hash : `v1.2.3 == 1.2.3` est vrai et `1.2.3 < v1.2.3` est faux, y compris via
     les opérateurs de script, et deux valeurs égales ont le même hash.
   @crate::semver::semver_rhai_register fait exactement un enregistrement de type et treize
-    enregistrements de fonction, et rien d'autre : @rhai::Engine::register_type_with_name
-    donnant au type le nom de script `Semver` pour `type_of` ; la fonction unaire `semver_from`
+    enregistrements de fonction, et rien d'autre, par le motif double cible importé de
+    ./engine.rs (@crate::engine::Target, @crate::engine::register_type_at et
+    @crate::engine::register_at) : le type sous le nom de script `Semver` pour `type_of` ; la fonction unaire `semver_from`
     sur une chaîne, collage de @crate::Semver::rhai_parse ; les méthodes `inc_major`,
     `inc_minor`, `inc_patch` — collages des trois infallibles — et `inc_beta`, `inc_alpha` —
     collages des deux versions @crate::RhaiRes ; les six opérateurs `==`, `!=`, `<`, `>`, `<=`,
     `>=` entre deux @crate::Semver passés par valeur et rendant @std::primitive::bool ; et la
     méthode `to_string` à zéro argument rendant @std::string::String.
-    @rhai::Engine::register_type_with_name n'exposant aucun champ public sans implémentation de
+    l'enregistrement du type (@rhai::Module::set_custom_type sous la voie module) n'exposant aucun champ public sans implémentation de
     @rhai::Field, l'objet de script ne voit ni `use_v` ni `version` ni de propriétés `major`,
     `minor`, `patch` : sa surface se limite à ces cinq méthodes mutantes, à `to_string` et à
     être opérande des six comparaisons. Chaque nom est aussi appelable en forme globale
@@ -149,7 +150,8 @@ Must:
     rien ; un échec de compteur porte l'affichage de @crate::Error::ParseInt,
     `ParseIntError ` suivi du texte de @std::num::ParseIntError. Les unes comme les autres sont des erreurs attrapables
     par un `try` de script.
-  Seuils de harnais : seul @crate::Semver::opt_parse porte `#[must_use]` ; chaque item public
+  Seuils de harnais : @crate::Semver::opt_parse et @crate::semver::semver_module seuls à porter
+    `#[must_use]` ; chaque item public
     porte sa rustdoc avec sa section `# Errors` pour les six fallibles ; la production est sans
     @std::result::Result::unwrap, @std::option::Option::expect ni @std::panic — le
     @std::option::Option::unwrap_or_default après @std::primitive::str::strip_prefix n'est pas
@@ -183,8 +185,9 @@ Depends on:
     @crate::rhai_err et @crate::error_chain — sous `rhai` ; le passage par @crate::rhai_err
     (chaîne de sources) distingue le texte d'erreur de celui de ./password.rs, qui employait
     `format!("{e}")` nu.
-  rhai — @rhai::Engine, @rhai::Engine::register_type_with_name, @rhai::Engine::register_fn,
-    @rhai::EvalAltResult, derrière la feature du même nom, verrouillée `1.25.1`.
+  rhai — @rhai::Engine, @rhai::Module, @rhai::EvalAltResult et le motif
+    @crate::engine::Target/@crate::engine::register_type_at/@crate::engine::register_at,
+    derrière la feature du même nom, plancher `1.23.3` au manifest, lock `1.25.1`.
 
 Exposes:
   @crate::Semver et @crate::semver::Semver — un seul et même type, cloneable et comparé, deux
@@ -210,6 +213,10 @@ Exposes:
     opérateurs `==`, `!=`, `<`, `>`, `<=`, `>=` entre objets `Semver`. ./engine.rs les livre
     automatiquement via @Script::new_bare, mais le registre reste appelable sur tout
     @rhai::Engine nu.
+  @crate::semver::semver_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
+    @crate::semver::semver_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
   Rien de plus : aucune propriété d'objet, aucun accesseur de composant, aucun alias de
     constructeur, aucune fonction globale de comparaison ou de parsing sous un autre nom.
 
@@ -312,6 +319,16 @@ Handles:
     type.
 
 Tasks:
+
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+    la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
+    type de retour (absent quand la fonction rend l'unité), écrits dans le vocabulaire du script
+    (`string`, non `String`/`ImmutableString` ; type de succès déballé pour une fonction fallible).
+    Tests d'abord : une table de signatures attendues, écrite à la main, comparée par égalité à
+    `gen_fn_signatures` pour l'enregistreur ET le jumeau ; un test de complétude (nombre de fonctions
+    du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
+    Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
+    commit.
 # Les parts ./docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
 # propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
 # leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
@@ -369,6 +386,15 @@ Tasks:
     la provenance d'avant le bump serait fausse après), test d'abord. Documenter « resets
     minor/patch, clears prerelease and build » dans ./docs/rhai_helpers.md est la tâche
     jumelle de ./docs.sdd, à cocher dans le même commit.
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::semver::semver_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::semver::semver_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (semver) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: le même type sous deux chemins dans tous les graphes
   Given la crate compilée par `cargo check --no-default-features`
@@ -522,3 +548,31 @@ Scenario: la mutation reste visible et l'erreur du script rattrapable
     @std::num::ParseIntError et l'enveloppe de @rhai ne sont verrouillés nulle part
   And l'évaluation ne fait paniquer aucun moteur
   But le sort des valeurs aliasées ou clonées reste la sémantique interne de @rhai, non verrouillée
+
+Scenario: semver_module équivaut à semver_rhai_register
+  Given un @rhai::Engine où semver_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::semver::semver_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (semver)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (semver_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
+    entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
+    entrée, écrit dans le vocabulaire du SCRIPT et non celui de Rust : `string` (pour `String` comme
+    pour `ImmutableString`), `i64`, `u32`, `bool`, `Dynamic`, `array`, `map` — les types natifs de rhai
+    s'écrivent comme `type_of` en script, donc en minuscules, y compris en retour —, le nom du type
+    enregistré tel quel (`K8sGeneric`, `RestClient`) ;
+    une fonction fallible (`RhaiRes<T>`) porte le type de succès `T` déballé, jamais le `Result<…>` brut
+    que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
+    une signature sans retour
+  And sans la feature, les mêmes tests de comportement passent sans différence

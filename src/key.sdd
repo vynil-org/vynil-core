@@ -64,7 +64,8 @@ Must:
     @crate::key::gen_private_key soit appelée. Le garde précède tout dispatch et s'applique
     donc aussi à `ed25519` : une taille négative échoue même pour cet algorithme qui
     n'utilise jamais `bits`.
-  @crate::key::key_rhai_register n'enregistre que deux @rhai::Engine::register_fn, tous deux
+  @crate::key::key_rhai_register n'enregistre que deux entrées @crate::engine::register_at (motif
+    importé de ./engine.rs), tous deux
     sous l'unique nom de script `gen_private_key`, et rien d'autre : unaire `algo` transmettant
     @crate::key::DEFAULT_RSA_BITS, binaire `algo, bits` avec le garde de
     @std::convert::TryFrom::try_from. Aucune coercition scalaire n'existe pour leurs paramètres
@@ -104,7 +105,8 @@ Depends on:
     de la pile appartient à openssl et n'est verrouillée nulle part ici.
   @crate::Error et @crate::Result sans condition dans le module ; @crate::RhaiRes sous la
     porte `rhai`.
-  rhai — @rhai::Engine et @rhai::Engine::register_fn derrière la feature du même nom.
+  rhai — @rhai::Engine, @rhai::Module et le motif @crate::engine::Target/@crate::engine::register_at
+    derrière la feature du même nom.
 
 Exposes:
   @crate::key::DEFAULT_RSA_BITS — `pub const DEFAULT_RSA_BITS: @std::primitive::u32 = 4096`,
@@ -120,6 +122,10 @@ Exposes:
     `|algo: &str, bits: i64| -> @crate::RhaiRes<@std::string::String>`, PEM rendu comme
     `string`, seule voie filtrant la taille.
   Rien n'est réexporté à la racine : le module s'atteint par son chemin @crate::key.
+  @crate::key::key_module — `#[must_use] pub fn() -> @rhai::Module`, porte `crypto` et `rhai`, jumeau de
+    @crate::key::key_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
 
 Accepts:
   @crate::key::gen_private_key — un `algo` `&str` de contenu libre, la casse n'importe que
@@ -160,7 +166,7 @@ Raises:
     plus, avant toute autre chose, le message exact `unsupported key size: <bits>` quand
     `bits` est négatif ou strictement supérieur à `4294967295` ; ce texte n'est pas un
     affichage de @crate::Error et ne porte ni `KEY-ALGO-001` ni `KEY-OPENSSL-001`.
-  @crate::key::key_rhai_register — rien : les deux @rhai::Engine::register_fn sont
+  @crate::key::key_rhai_register — rien : les deux entrées @crate::engine::register_at sont
     infaillibles.
 
 Handles:
@@ -218,6 +224,24 @@ Tasks:
   [x] Conserver la casse d'origine dans @crate::Error::UnsupportedKeyAlgorithm : comparer sur
     la copie lowercased mais alimenter la variante avec `algo` (décision actée : le lowercase
     perdu était un défaut de collage) ; test d'abord depuis le Scenario `DSA`.
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::key::key_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::key::key_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (key) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+    la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
+    type de retour (absent quand la fonction rend l'unité), écrits dans le vocabulaire du script
+    (`string`, non `String`/`ImmutableString` ; type de succès déballé pour une fonction fallible).
+    Tests d'abord : une table de signatures attendues, écrite à la main, comparée par égalité à
+    `gen_fn_signatures` pour l'enregistreur ET le jumeau ; un test de complétude (nombre de fonctions
+    du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
+    Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
+    commit.
 
 Scenario: la voie ed25519 rend un PEM PKCS8 valide
   Given @crate::key::gen_private_key compilée sous la feature `crypto`
@@ -359,3 +383,31 @@ Scenario: sans rhai la face Rust reste et la porte script ferme
   Given la crate compilée par `cargo check --no-default-features --features crypto`
   Then @crate::key::gen_private_key et @crate::key::DEFAULT_RSA_BITS compilent et s'appellent
   But @crate::key::key_rhai_register n'est pas compilée, sa propre porte `rhai` faisant défaut
+
+Scenario: key_module équivaut à key_rhai_register
+  Given un @rhai::Engine où key_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::key::key_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (key)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (key_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
+    entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
+    entrée, écrit dans le vocabulaire du SCRIPT et non celui de Rust : `string` (pour `String` comme
+    pour `ImmutableString`), `i64`, `u32`, `bool`, `Dynamic`, `array`, `map` — les types natifs de rhai
+    s'écrivent comme `type_of` en script, donc en minuscules, y compris en retour —, le nom du type
+    enregistré tel quel (`K8sGeneric`, `RestClient`) ;
+    une fonction fallible (`RhaiRes<T>`) porte le type de succès `T` déballé, jamais le `Result<…>` brut
+    que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
+    une signature sans retour
+  And sans la feature, les mêmes tests de comportement passent sans différence

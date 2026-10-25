@@ -87,17 +87,19 @@ Must:
   @crate::hashes::hashes_rhai_register n'enregistre qu'une fonction, `crc32_hash` unaire sur
     @rhai::ImmutableString, et rien d'autre. @crate::hashes::crypto_hashes_rhai_register
     n'enregistre exactement que : la fonction unaire `bcrypt_hash` sur @rhai::ImmutableString
-    en @crate::RhaiRes ; le type d'objet nommé `Argon` par @rhai::Engine::register_type_with_name ;
+    en @crate::RhaiRes ; le type d'objet nommé `Argon` par @crate::engine::register_type_at ;
     @crate::hashes::Argon::new sous le nom de script `new_argon`, arité zéro ; et
     @crate::hashes::Argon::rhai_hash sous le nom de méthode `hash` — c'est bien la porte Rhai
-    et non @crate::hashes::Argon::hash que le script invoque, @rhai::Engine::register_fn
+    et non @crate::hashes::Argon::hash que le script invoque, l'entrée
+    @crate::engine::register_at
     exposant de plus la forme globale `hash(argon, mot_de_passe)`.
   Les collages de script propagent l'erreur sans l'avaler, par @crate::rhai_err sur les deux
     voies bcrypt et argon : un échec rendu au script porte le texte @std::fmt::Display complet
     de @crate::Error (`Argon2 password_hash error ...` ou `Bcrypt hash error ...`), sans chaîne
     vide de déguisement — motif réservé aux helpers ./hbs.rs.
   Seuils de harnais : @crate::hashes::crc32_hash porte l'attribut `#[must_use]`, les autres
-    fonctions non (leur @crate::Result l'est déjà) ; chaque item `pub` porte sa
+    fonctions non (leur @crate::Result l'est déjà), hormis les jumeaux @crate::hashes::hashes_module
+    et @crate::hashes::crypto_hashes_module qui le portent ; chaque item `pub` porte sa
     rustdoc avec sa section `# Errors` pour les deux fallibles ; le code de production est sans
     @std::result::Result::unwrap ni @std::option::Option::expect hors cas prouvé, la propagation
     se faisant par `?`, @std::result::Result::map_err et le `#[from]` des variantes d'@Error.
@@ -157,6 +159,14 @@ Exposes:
     rend la chaîne PHC ou échoue en @crate::RhaiRes ; existe aussi en forme globale
     `hash(argon, password)`.
   Rien n'est réexporté à la racine : le module s'atteint par son chemin @crate::hashes.
+  @crate::hashes::hashes_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
+    @crate::hashes::hashes_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
+  @crate::hashes::crypto_hashes_module — `#[must_use] pub fn() -> @rhai::Module`, porte `crypto` et `rhai`, jumeau de
+    @crate::hashes::crypto_hashes_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
+    l'enregistreur reste, inchangé pour ses appelants.
 
 Accepts:
   @crate::hashes::crc32_hash — tout @std::string::String, vide et non-ASCII compris, haché sur
@@ -249,6 +259,16 @@ Handles:
     ./engine.rs ; `crypto` + `rhai` : jeu complet via @Script::new_bare ou les deux registres.
 
 Tasks:
+
+  [x] Rendre le type de retour et le vocabulaire de types de rhai aux fonctions documentées (revue de 0.9.0) :
+    la liste passée à `with_params_info` de chaque enregistrement de ce fichier compte les paramètres puis le
+    type de retour (absent quand la fonction rend l'unité), écrits dans le vocabulaire du script
+    (`string`, non `String`/`ImmutableString` ; type de succès déballé pour une fonction fallible).
+    Tests d'abord : une table de signatures attendues, écrite à la main, comparée par égalité à
+    `gen_fn_signatures` pour l'enregistreur ET le jumeau ; un test de complétude (nombre de fonctions
+    du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
+    Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
+    commit.
 # Les parts ./docs/ de cette spec ne sont plus d'ici : ./docs.sdd en est la
 # propriétaire depuis l'arbitrage du développeur principal, et les reçoit avec
 # leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
@@ -297,6 +317,15 @@ Tasks:
     Close 2026-10-11 : ouverte sur vynil-org/vynil#266 et vynil-org/kuberest#12 ; kydah n'en
     reçoit pas (décision du développeur principal : la box suit vynil, pas de dépôt consommateur
     direct).
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::hashes::hashes_rhai_register, @crate::hashes::crypto_hashes_rhai_register sur le motif
+    posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::hashes::hashes_module, @crate::hashes::crypto_hashes_module.
+    Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
+    fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
+    différence observable. Tests d'abord depuis les Scenario « <jumeau> équivaut à <enregistreur> »
+    et « fonctions documentées sous metadata (hashes) » ci-dessous. Prérequis : la tâche
+    pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
+    d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
+    un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
 Scenario: la face Rust crc32 survit sans aucune feature
   Given la crate compilée par `cargo check --no-default-features`
@@ -399,7 +428,7 @@ Scenario: la forme globale hash réussit aussi
   Given un @rhai::Engine enregistré par @crate::hashes::crypto_hashes_rhai_register
   When un script évalue `let a = new_argon(); hash(a, "p")`
   Then l'évaluation réussit et rend une chaîne commençant par `$argon2id$v=19$m=19456,t=2,p=1$`
-  And cette forme globale vient de @rhai::Engine::register_fn exposant la méthode en fonction
+  And cette forme globale vient de l'entrée @crate::engine::register_at exposant la méthode en fonction
     de premier argument l'objet
 
 Scenario: le réenregistrement reste sans effet visible
@@ -409,3 +438,42 @@ Scenario: le réenregistrement reste sans effet visible
   Then les deux nouveaux appels rendent `()` sans erreur
   And `crc32_hash("hello")`, `bcrypt_hash("p")` et `new_argon().hash("p")` réussissent avec les
     mêmes formes de sortie qu'auparavant
+
+Scenario: hashes_module équivaut à hashes_rhai_register
+  Given un @rhai::Engine où hashes_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::hashes::hashes_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: crypto_hashes_module équivaut à crypto_hashes_rhai_register
+  Given un @rhai::Engine où crypto_hashes_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::hashes::crypto_hashes_module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
+    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+  Then les résultats et les erreurs sont identiques
+  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+    comparés sous `metadata`, par l'introspection de Rhai)
+  And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
+    fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
+
+Scenario: fonctions documentées sous metadata (hashes)
+  Given la crate compilée avec la feature `metadata` (porte `--all-features`)
+  When l'introspection de l'engine (hashes_rhai_register; crypto_hashes_rhai_register) liste ses fonctions
+    (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
+  Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
+    pas seulement leurs types
+  And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
+    entrée de plus que les paramètres quand la fonction ne rend pas l'unité — le TYPE DE RETOUR en dernière
+    entrée, écrit dans le vocabulaire du SCRIPT et non celui de Rust : `string` (pour `String` comme
+    pour `ImmutableString`), `i64`, `u32`, `bool`, `Dynamic`, `array`, `map` — les types natifs de rhai
+    s'écrivent comme `type_of` en script, donc en minuscules, y compris en retour —, le nom du type
+    enregistré tel quel (`K8sGeneric`, `RestClient`) ;
+    une fonction fallible (`RhaiRes<T>`) porte le type de succès `T` déballé, jamais le `Result<…>` brut
+    que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
+    une signature sans retour
+  And sans la feature, les mêmes tests de comportement passent sans différence

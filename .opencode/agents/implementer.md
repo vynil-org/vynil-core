@@ -1,7 +1,7 @@
 ---
 description: Implémente une spec précise de vyvil-core en TDD strict — tests depuis les Scenario d'abord, puis implémentation minimale dans le périmètre Owns/Can modify.
 mode: subagent
-temperature: 0.2
+temperature: 0.7
 permission:
   bash:
     "*": allow

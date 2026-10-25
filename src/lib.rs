@@ -24,14 +24,16 @@
 //! | `fs` | ❌ | Filesystem access from Rhai (`file_read`, `file_write`, …) |
 //! | `shell` | ❌ | Shell execution (`shell::run` / `shell::get_out` + Rhai `shell_run` / `shell_output`); unix-only, commands are interpreted by a literal `sh -c` |
 //! | `password` | ❌ | Auto-wires `gen_password` / `gen_password_alphanum` into `new_bare` and registers the Handlebars helpers; the Rhai glue itself compiles under `rhai` alone (opt-in to avoid name collisions) |
+//! | `metadata` | ❌ | Rhai introspection metadata: `///` comments + parameter names on registered script functions, consumed by `gen_fn_signatures` / `gen_fn_metadata_to_json`. Implies `rhai` |
+//! | `rt` | ❌ | async → sync bridge `rt::block_on` for consumers; pulls `tokio`; does not imply `rhai` |
 //!
 //! ```toml
 //! # default: Rhai + Handlebars + HTTP + crypto
-//! vynil-core = "0.8"
+//! vynil-core = "0.9"
 //! # Kubernetes project
-//! vynil-core = { version = "0.8", features = ["k8s"] }
+//! vynil-core = { version = "0.9", features = ["k8s"] }
 //! # Handlebars only, no Rhai/smartstring in the graph
-//! vynil-core = { version = "0.8", default-features = false, features = ["hbs", "crypto"] }
+//! vynil-core = { version = "0.9", default-features = false, features = ["hbs", "crypto"] }
 //! ```
 //!
 #![cfg_attr(
@@ -378,6 +380,9 @@ pub mod yaml;
 /// Private key generation (RSA / ed25519 via OpenSSL).
 pub mod key;
 
+/// Cooperative cancellation of blocking native calls (`CancelToken` + thread-scoped `scope`).
+/// Compiled without any feature: the token is read by `rt::block_on` and by `sleep` (`rhai`).
+pub mod cancel;
 #[cfg(feature = "rhai")]
 #[cfg_attr(docsrs, doc(cfg(feature = "rhai")))]
 /// Rhai scripting engine ([`engine::Script`]) and its registered helpers.
@@ -397,11 +402,11 @@ pub mod glob;
 pub mod hbs;
 #[cfg(feature = "hbs")] mod hbs_json;
 
-#[cfg(any(feature = "http", feature = "oci", feature = "s3", feature = "k8s"))]
-/// Internal async → sync bridge (`rt::block_on`) shared by the `http`, `oci`, `s3`
-/// and `k8s` modules. Private: not part of the public API, and only compiled where
-/// the optional `tokio` dependency is enabled (those four features, and nothing else).
-mod rt;
+#[cfg(feature = "rt")]
+#[cfg_attr(docsrs, doc(cfg(feature = "rt")))]
+/// Async → sync bridge ([`rt::block_on`]) for synchronous Rhai callers, shared by the `http`,
+/// `oci`, `s3` and `k8s` modules and public for consumers; only compiled with the `rt` feature.
+pub mod rt;
 
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
