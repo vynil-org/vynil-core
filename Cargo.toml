@@ -159,7 +159,7 @@ tower-test = "0.4.0"
 # @std::cargo::dev-dependencies) : `Subscriber` confiné au fil via un `Layer` de capture écrit
 # dans le module de tests. Rien que `registry` — pas `fmt` ni ses réglages gratuits.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
-httpmock = "0.7"
+httpmock = "0.9"
 # Faux registre HTTP local des chemins réseau d'src/oci.rs (vyvil-core.sdd, tâche `httpmock`,
 # jumelle de « Tester les chemins réseau » d'src/oci.sdd) : en-tête `Accept` reçu par
 # `verify_tag_in_registry`, pagination de `list_tags`, cosign absent par fils `env_clear`.
