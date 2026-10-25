@@ -230,7 +230,9 @@ Must:
     directement (@rhai::serde::to_dynamic), sans le double @serde_json round trip identité
     actuel (nettoyage, décision actée).
   Enregistrer en Rhai exactement : `k8sgeneric_rhai_register` = type @kube::api::DynamicObject
-    (getter `data` CLONANT le map data) + macros sur @crate::k8s::K8sObject ("K8sObject" : 3
+    (getter `data` CLONANT le map data) + surface des macros publiées rejouée par les entrées
+    du motif (@crate::engine::register_at/@crate::engine::register_get_at/@crate::engine::register_type_at
+    importé de ./engine.rs) sur @crate::k8s::K8sObject ("K8sObject" : 3
     getters `kind`/`original_kind`/`metadata`, 7 méthodes `delete`/`wait_condition`/`wait_status`/
     `wait_status_prop`/`wait_status_string`/`wait_for`/`wait_deleted`) et @crate::k8s::K8sGeneric
     ("K8sGeneric" : 23 méthodes `k8s_resource`×3-rités, `list`×2, `update_k8s_crd_cache`,
@@ -547,7 +549,7 @@ Tasks:
 #   panics d'infrastructure (contexte non câblé, discovery initiale), macros `register_k8s_*`
 #   publiques stables, un contexte par process, liste sans pagination, mock inchangé (sémantique
 #   documentée).
-  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::k8s::k8sgeneric_rhai_register, @crate::k8s::k8sraw_rhai_register, @crate::k8s::k8sworkload_rhai_register sur le motif
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::k8s::k8sgeneric_rhai_register, @crate::k8s::k8sraw_rhai_register, @crate::k8s::k8sworkload_rhai_register sur le motif
     posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::k8s::k8sgeneric_module, @crate::k8s::k8sraw_module, @crate::k8s::k8sworkload_module.
     Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
     fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune

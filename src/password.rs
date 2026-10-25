@@ -4,12 +4,16 @@
 //! `gen_password_alphanum`) compile under `rhai` alone; only the automatic
 //! registration by `Script::new_bare` is gated behind the `password` feature.
 
+#[cfg(feature = "rhai")] use crate::engine::{Target, register_at};
 use crate::{Error, Result};
 use rand::{
     rng,
     seq::{IndexedRandom, SliceRandom},
 };
 #[cfg(feature = "rhai")] use rhai::{Engine, Map};
+// `Module` n'est atteint que par [`password_module`], gated `password` (la glue, elle,
+// est publique sous `rhai` seul).
+#[cfg(all(feature = "rhai", feature = "password"))] use rhai::Module;
 
 const LOWER: &[char] = &[
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u',
@@ -105,15 +109,72 @@ fn class_min(spec: &Map, key: &str) -> Result<usize> {
     }
 }
 
-/// Registers the `gen_password` / `gen_password_alphanum` helpers on a Rhai `engine`.
+// ── Motif double cible (password.sdd, issues #19 et #20) ───────────────────────
+// Reproduit le motif posé par le pilote de ./engine.sdd : les trois enregistrements sont
+// définis UNE seule fois, dans `password_fns`, comme une liste (nom, fonction, noms des
+// paramètres et commentaire `///` sous `metadata`) appliquée soit directement à l'Engine
+// (l'enregistreur — les fonctions restent en namespace global de l'engine, visibles de
+// gen_fn_signatures comme avant), soit à un Module dans ce même namespace global (le
+// jumeau module, enregistrable par Engine::register_static_module). Les aides
+// Target/register_at du pilote sont centralisées dans ./engine.rs (`pub(crate)`),
+// password.rs les importe — la variante `Target::Module` n'est construite que par
+// [`password_module`], gated `password` + `rhai` (Exposes de ./password.sdd) : sans la
+// feature, l'enregistreur — public sous `rhai` seul — ne pose que des cibles `Engine`.
+// La porte du fichier étant sans `rhai` (le module compile sous `--no-default-features`),
+// tout le motif est gated `rhai`.
+
+/// Registers the `gen_password` / `gen_password_alphanum` helpers on a Rhai `engine`:
+/// exactly those three registrations (the two `gen_password` overloads and the alphanum
+/// unaire), additive and idempotent. The functions stay directly on the engine — no
+/// intermediate global module.
+///
+/// Module twin: [`password_module`] — same single `password_fns` list, same semantics.
 #[cfg(feature = "rhai")]
 pub fn password_rhai_register(engine: &mut Engine) {
-    engine
-        .register_fn("gen_password", |len: i64| -> crate::RhaiRes<String> {
+    password_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`password_rhai_register`] (issue #19): the same functions, under the
+/// global namespace of a fresh [`Module`], registrable by [`Engine::register_static_module`]
+/// under the name the consumer picks. A twin that drifts from its registrar is a defect:
+/// both share the single `password_fns` list. Feature gate per `Exposes` of ./password.sdd:
+/// `password` and `rhai` together (the registrar itself stays callable under `rhai` alone).
+#[cfg(all(feature = "rhai", feature = "password"))]
+#[must_use]
+pub fn password_module() -> Module {
+    let mut module = Module::new();
+    password_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The `password` surface defined once (motif double cible): each entry is a name, its
+/// function, its parameter names and its `///` comment (both under `metadata` only). The
+/// bodies are verbatim the ones `password_rhai_register` used before the motif.
+#[cfg(feature = "rhai")]
+fn password_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "gen_password",
+        &[
+            "/// Random password of `len` chars, minimum one per class (lower/upper/digits/symbols).",
+            "/// Negative `len` is clamped to 0 and refused; errors carry the raw PWD-SPEC text.",
+        ],
+        &["len: i64"],
+        |len: i64| -> crate::RhaiRes<String> {
             let length = usize::try_from(len.max(0)).unwrap_or(usize::MAX);
             generate(length, 1, 1, 1, 1).map_err(|e| format!("{e}").into())
-        })
-        .register_fn("gen_password", |len: i64, spec: Map| -> crate::RhaiRes<String> {
+        },
+    );
+    register_at(
+        target,
+        "gen_password",
+        &[
+            "/// Random password of `len` chars with per-class minimums read from `spec`.",
+            "/// An absent key defaults to 1; a present non-integer is refused (PWD-SPEC-003, naming the key);",
+            "/// 0 or negative excludes the class. Errors carry the raw PWD-SPEC text.",
+        ],
+        &["len: i64", "spec: Map"],
+        |len: i64, spec: Map| -> crate::RhaiRes<String> {
             let length = usize::try_from(len.max(0)).unwrap_or(usize::MAX);
             let read_min = |key: &str| -> crate::RhaiRes<usize> {
                 class_min(&spec, key).map_err(|e| format!("{e}").into())
@@ -123,11 +184,21 @@ pub fn password_rhai_register(engine: &mut Engine) {
             let digits = read_min("digits")?;
             let symbols = read_min("symbols")?;
             generate(length, lower, upper, digits, symbols).map_err(|e| format!("{e}").into())
-        })
-        .register_fn("gen_password_alphanum", |len: i64| -> crate::RhaiRes<String> {
+        },
+    );
+    register_at(
+        target,
+        "gen_password_alphanum",
+        &[
+            "/// Random alphanumeric password of `len` chars: minimums 1/1/1/0, so never a symbol.",
+            "/// Negative `len` is clamped to 0 and refused; errors carry the raw PWD-SPEC text.",
+        ],
+        &["len: i64"],
+        |len: i64| -> crate::RhaiRes<String> {
             let length = usize::try_from(len.max(0)).unwrap_or(usize::MAX);
             generate(length, 1, 1, 1, 0).map_err(|e| format!("{e}").into())
-        });
+        },
+    );
 }
 
 #[cfg(test)]
@@ -879,5 +950,307 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+/// SCELLAGE « Jumeau module et documentation » (password.sdd, issues #19 et #20) —
+/// Scenario « `password_module` équivaut à `password_rhai_register` » et « fonctions
+/// documentées sous metadata (password) ». Le jumeau porte `password` et `rhai`
+/// (Exposes de la spec) : le lot de comparaison est donc sous double porte, tandis que
+/// l'Enregistreur étant public sous `rhai` seul, ses verrous de documentation ne
+/// demandent que `metadata`. Motif du pilote de ./engine.rs : une seule liste
+/// `password_fns`, appliquée à l'engine (fonctions en namespace global, jamais dans un
+/// module global intermédiaire) ou au module enregistré par `register_static_module`
+/// sous `m`.
+#[cfg(all(test, feature = "rhai", feature = "password"))]
+mod jumeau_module_password {
+    use rhai::Engine;
+
+    /// Engine vierge portant le jumeau module enregistré par
+    /// `rhai::Engine::register_static_module` sous le nom `m` (face qualifiée du Scenario).
+    fn engine_with_module(module: rhai::Module) -> Engine {
+        let mut engine = Engine::new();
+        engine.register_static_module("m", module.into());
+        engine
+    }
+
+    /// Noms de fonctions de l'engine, hors packages standard de `@rhai`
+    /// (introspection par `collect_fn_metadata`, porte `internals` toujours activée).
+    fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    fn set_of(noms: &[&str]) -> std::collections::BTreeSet<String> {
+        noms.iter().map(|nom| (*nom).to_string()).collect()
+    }
+
+    /// Noms que l'enregistreur ajoute à la baseline `Engine::new`.
+    fn names_added_by(register: impl Fn(&mut Engine)) -> std::collections::BTreeSet<String> {
+        let mut engine = Engine::new();
+        register(&mut engine);
+        let apres = registered_names(&engine);
+        let avant = registered_names(&Engine::new());
+        apres.difference(&avant).cloned().collect()
+    }
+
+    /// Noms qu'un jumeau module ajoute à la baseline par `register_static_module`
+    /// sous `m` (préfixe `m::` retiré s'il est porté par le nom).
+    fn names_added_by_module(module: rhai::Module) -> std::collections::BTreeSet<String> {
+        let apres = registered_names(&engine_with_module(module));
+        let avant = registered_names(&Engine::new());
+        apres
+            .difference(&avant)
+            .map(|nom| {
+                let s = nom.as_str();
+                s.strip_prefix("m::").unwrap_or(s).to_string()
+            })
+            .collect()
+    }
+
+    /// Deux faces du même appel : mêmes valeurs rendues ; sur échec, même noyau de
+    /// message porté des deux côtés (l'enveloppe d'appel nu vs qualifié appartient à
+    /// `@rhai`, non contractée — voix du pilote de ./engine.rs). Seul le texte porté est
+    /// contractuel, comme pour les refus `PWD-SPEC-*` de cette spec.
+    fn comparer_resultats(
+        origine: &str,
+        marqueur: Option<&str>,
+        a: crate::RhaiRes<rhai::Dynamic>,
+        b: crate::RhaiRes<rhai::Dynamic>,
+    ) {
+        match (a, b) {
+            (Ok(x), Ok(y)) => assert_eq!(
+                x.to_string(),
+                y.to_string(),
+                "valeur divergente pour « {origine} »"
+            ),
+            (Err(e), Err(f)) => {
+                let marqueur = marqueur.expect("jeu de test : les échecs portent un noyau de message");
+                assert!(
+                    e.to_string().contains(marqueur),
+                    "l'erreur de « {origine} » doit porter « {marqueur} », obtenu : {e}"
+                );
+                assert!(
+                    f.to_string().contains(marqueur),
+                    "l'erreur jumelle de « {origine} » doit porter « {marqueur} », obtenu : {f}"
+                );
+            }
+            (a, b) => panic!("divergence succès/échec pour « {origine} » : {a:?} vs {b:?}"),
+        }
+    }
+
+    /// Les trois enregistrements du `Must` de ./password.sdd — les deux surcharges de
+    /// `gen_password` portent le même nom, `gen_password_alphanum` est le seul autre.
+    const PASSWORD_FNS: [&str; 2] = ["gen_password", "gen_password_alphanum"];
+
+    /// Scenario « `password_module` équivaut à `password_rhai_register` » : les deux
+    /// ensembles de noms sont égaux (introspection, aucune fonction en plus ni en moins) ;
+    /// les appels représentatifs des Scenario existants sont rejoués en nom nu sur
+    /// l'engine de l'enregistreur, puis en nom nu ET qualifié `m::nom` sur l'engine du
+    /// jumeau — mêmes valeurs, mêmes noyaux d'erreur portés (`PWD-SPEC-*` bruts).
+    #[test]
+    fn password_module_equivalent_a_password_rhai_register() {
+        assert_eq!(
+            names_added_by(crate::password::password_rhai_register),
+            set_of(&PASSWORD_FNS),
+            "l'enregistreur ajoute exactement gen_password et gen_password_alphanum, aucun alias"
+        );
+        assert_eq!(
+            names_added_by_module(crate::password::password_module()),
+            set_of(&PASSWORD_FNS),
+            "le jumeau module rend exactement les noms de l'enregistreur, aucun en plus ni en moins"
+        );
+        let mut enregistreur = Engine::new();
+        crate::password::password_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(crate::password::password_module());
+        let appels: Vec<(String, Option<String>, Option<&str>)> = vec![
+            // Scenario « gen_password unaire applique un de chaque classe » : longueur
+            // exacte et type verrouillés, joués sans comparer la valeur (tirage frais).
+            (
+                r#"gen_password(20).type_of() == "string" && gen_password(20).len() == 20"#.into(),
+                Some(
+                    r#"m::gen_password(20).type_of() == "string" && m::gen_password(20).len() == 20"#.into(),
+                ),
+                None,
+            ),
+            // Scenario « gen_password binaire lit ses minima » : la surcharge binaire
+            // passe la Map par valeur des deux voies.
+            (
+                r"gen_password(40, #{ lower: 8, upper: 2, digits: 4, symbols: 6 }).len() == 40".into(),
+                Some(
+                    r"m::gen_password(40, #{ lower: 8, upper: 2, digits: 4, symbols: 6 }).len() == 40".into(),
+                ),
+                None,
+            ),
+            // Scenario « une classe à zéro exclut la classe » : la Map vide équivaut à
+            // la surcharge unaire, la valeur déterminable (zéro symbole) est comparée en booléen.
+            (
+                r#"gen_password(30, #{ symbols: 0 }).index_of("!") == -1"#.into(),
+                Some(r#"m::gen_password(30, #{ symbols: 0 }).index_of("!") == -1"#.into()),
+                None,
+            ),
+            // Scenario « la longueur négative puis nulle est refusée » : texte brut
+            // PWD-SPEC-001 porté à l'identique des deux voies.
+            (
+                "gen_password(0)".into(),
+                Some("m::gen_password(0)".into()),
+                Some("PWD-SPEC-001 sum of class minimums (4) exceeds requested length (0)"),
+            ),
+            (
+                "gen_password_alphanum(0)".into(),
+                Some("m::gen_password_alphanum(0)".into()),
+                Some("PWD-SPEC-001 sum of class minimums (3) exceeds requested length (0)"),
+            ),
+            // Scenario « une clé de spec non entière est une erreur » : PWD-SPEC-003
+            // citant sa clé, porté à l'identique.
+            (
+                r#"gen_password(20, #{ lower: "5" })"#.into(),
+                Some(r#"m::gen_password(20, #{ lower: "5" })"#.into()),
+                Some("PWD-SPEC-003 spec key 'lower' must be an integer"),
+            ),
+            // Scenario « aucune coercition d'arité ni de type » : fonction inconnue des
+            // deux côtés, generate jamais exécutée.
+            ("gen_password(\"12\")".into(), None, Some("gen_password")),
+            (
+                "gen_password_alphanum(\"a\")".into(),
+                None,
+                Some("gen_password_alphanum"),
+            ),
+        ];
+        for (nu, qualifie, marqueur) in appels {
+            let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
+            let rb = par_module.eval::<rhai::Dynamic>(&nu);
+            comparer_resultats(&nu, marqueur, rn, rb);
+            if let Some(q) = &qualifie {
+                let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
+                let rq = par_module.eval::<rhai::Dynamic>(q);
+                comparer_resultats(q, marqueur, rn, rq);
+            }
+        }
+    }
+
+    /// Scenario « `password_module` équivaut à `password_rhai_register` », dernier `And` :
+    /// sur l'engine de l'enregistreur, `gen_fn_signatures` sans les paquets liste les
+    /// mêmes fonctions qu'avant — les trois enregistrements en fonctions DIRECTES, pas
+    /// dans un module global intermédiaire. Porte `metadata` de `@rhai`.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn password_enregistreur_fonctions_directement_sur_l_engine() {
+        let mut engine = Engine::new();
+        crate::password::password_rhai_register(&mut engine);
+        let signatures = engine.gen_fn_signatures(false);
+        let baseline = Engine::new().gen_fn_signatures(false);
+        let ajoutees: Vec<&String> = signatures
+            .iter()
+            .filter(|s| !baseline.iter().any(|b| b == *s))
+            .collect();
+        assert_eq!(
+            ajoutees.len(),
+            3,
+            "les trois enregistrements (deux surcharges + alphanum) sont les seules signatures ajoutées : {ajoutees:?}"
+        );
+        for prefix in ["gen_password(", "gen_password_alphanum("] {
+            assert!(
+                ajoutees.iter().any(|s| s.starts_with(prefix)),
+                "{prefix}… doit être une fonction directe de l'engine : {ajoutees:?}"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata (password) », faces introspection
+    /// et signatures : chaque fonction enregistrée porte un commentaire non vide et les
+    /// NOMS de ses paramètres (`len`, et `spec` pour la binaire), pas seulement leurs
+    /// types. Les deux surcharges de `gen_password` sont jouées séparément.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn fonctions_documentees_sous_metadata_password() {
+        let mut engine = Engine::new();
+        crate::password::password_rhai_register(&mut engine);
+        let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
+            None,
+            |f| {
+                Some((
+                    f.metadata.name.to_string(),
+                    f.metadata.params_info.len(),
+                    f.metadata.comments.len(),
+                ))
+            },
+            false,
+        );
+        for nom in PASSWORD_FNS {
+            let entries: Vec<&(String, usize, usize)> =
+                documentees.iter().filter(|(n, _, _)| n == nom).collect();
+            assert!(!entries.is_empty(), "{nom} absente des métadonnées de l'engine");
+            for entry in entries {
+                assert!(
+                    entry.2 > 0,
+                    "{nom} doit porter un commentaire non vide sous `metadata`"
+                );
+            }
+        }
+        let signatures = engine.gen_fn_signatures(false);
+        let surcharges: Vec<&String> = signatures
+            .iter()
+            .filter(|s| s.starts_with("gen_password("))
+            .collect();
+        assert_eq!(
+            surcharges.len(),
+            2,
+            "les deux surcharges de gen_password sont signées : {surcharges:?}"
+        );
+        for signature in &surcharges {
+            assert!(
+                signature.contains("len"),
+                "la signature doit nommer le paramètre « len », obtenu : {signature}"
+            );
+            assert!(!signature.contains("(_"), "got {signature}");
+        }
+        assert!(
+            surcharges.iter().any(|s| s.contains("spec")),
+            "la surcharge binaire doit nommer son paramètre « spec » : {surcharges:?}"
+        );
+        let alphanum: Vec<&String> = signatures
+            .iter()
+            .filter(|s| s.starts_with("gen_password_alphanum("))
+            .collect();
+        assert_eq!(
+            alphanum.len(),
+            1,
+            "gen_password_alphanum est unaire signée : {signatures:?}"
+        );
+        assert!(
+            alphanum[0].contains("len"),
+            "la signature doit nommer le paramètre « len », obtenu : {}",
+            alphanum[0]
+        );
+    }
+
+    /// Scenario « fonctions documentées sous metadata (password) », `And` « sans la
+    /// feature, les mêmes tests de comportement passent sans différence » : mêmes valeurs
+    /// verrouillées des deux voies et mêmes ensembles de noms — la documentation n'étant
+    /// qu'une métadonnée.
+    #[cfg(not(feature = "metadata"))]
+    #[test]
+    fn password_sans_metadata_sans_difference() {
+        let mut enregistreur = Engine::new();
+        crate::password::password_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(crate::password::password_module());
+        assert_eq!(
+            enregistreur
+                .eval::<rhai::Dynamic>(r"gen_password(20).len() == 20")
+                .expect("gen_password réussit sans `metadata`")
+                .to_string(),
+            par_module
+                .eval::<rhai::Dynamic>(r"m::gen_password(20).len() == 20")
+                .expect("la voie jumelle rend la même valeur sans `metadata`")
+                .to_string(),
+        );
+        assert_eq!(
+            names_added_by(crate::password::password_rhai_register),
+            names_added_by_module(crate::password::password_module()),
+            "sans `metadata`, les deux ensembles de noms restent égaux"
+        );
     }
 }

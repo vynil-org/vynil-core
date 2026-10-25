@@ -353,6 +353,14 @@ Handles:
     les modules câblés qui l'exigent (`http`, `k8s`) ne sont justement pas câblés ici.
 
 Tasks:
+  [x] Centraliser le motif : rendre `pub(crate)` sous `#[cfg(feature = "rhai")]` le trio
+    @crate::engine::Target, @crate::engine::documented et @crate::engine::register_at (et
+    @crate::engine::register_type_at, livré générique, ainsi que
+    @crate::engine::register_get_at sous `#[cfg(feature = "k8s")]` — porte de sa copie
+    d'origine), sans changer leur
+    comportement ni ce que `new_bare` et les quatre groupes rendent. Les douze modules portant
+    leur jumeau les importent au lieu d'en dupliquer une copie privée ; la suppression des
+    copies déjà posées est la part des tâches jumelles de ces specs, cochée avec elles.
   [x] Scinder les seize noms communs en trois groupes publics (issue #18) : rendre publics
     @crate::engine::core_pure_rhai_register, @crate::engine::core_host_rhai_register,
     @crate::engine::core_sleep_rhai_register et

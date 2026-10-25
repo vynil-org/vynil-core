@@ -109,9 +109,9 @@ Must:
   Seuils de harnais : aucun `unsafe`, aucun @std::result::Result::unwrap,
     @std::option::Option::expect, @std::panic, @std::todo ni @std::unimplemented — le repli
     `@std::option::Option::unwrap_or` du helper de verdict n'est pas un lint du harnais (c'est
-    `unwrap_or`, pas `@std::option::Option::unwrap`) ; les cinq items publics
+    `unwrap_or`, pas `@std::option::Option::unwrap`) ; les six items publics
     portent leur rustdoc, quatre avec une section `# Errors` nommant les variantes traversées ;
-    aucun `#[must_use]` n'apparaît dans ./shell.rs.
+    le seul `#[must_use]` de ./shell.rs est celui du jumeau @crate::shell::shell_module.
 
 Must not:
   Traiter un code de sortie non nul comme une erreur de @crate::shell::run, de
@@ -144,8 +144,8 @@ Depends on:
     sous `rhai`.
   tracing — @tracing::warn! du champ `err` ; dépendance non optionnelle (`tracing = "0.1.37"`,
     verrouillée `0.1.44` dans ./Cargo.lock), indépendante de la feature `shell`.
-  rhai — @rhai::Engine et @rhai::Engine::register_fn derrière la feature du même nom, verrouillée
-    `1.25.1` ; la feature `shell` ne la fait pas dériver, d'où la double porte des items.
+  rhai — @rhai::Engine, @rhai::Module et le motif @crate::engine::Target/@crate::engine::register_at derrière la feature du même nom, verrouillée
+    `1.25.1` dans ./Cargo.lock ; la feature `shell` ne la fait pas dériver, d'où la double porte des items.
 
 Exposes:
   @crate::shell::run — signature `pub fn run(command: @std::string::String) -> @crate::Result<@std::process::Output>`,
@@ -209,7 +209,7 @@ Raises:
     de fin incluse ; @crate::Error::UTF8 dont l'affichage commence par `UTF8 error ` — suite
     portée par @std::string::FromUtf8Error, non verrouillée — quand le stderr du cas « exit 0
     avec stderr » ou le stdout du cas de succès n'est pas UTF-8 strict.
-  @crate::shell::shell_rhai_register — rien : les deux @rhai::Engine::register_fn sont
+  @crate::shell::shell_rhai_register — rien : les deux entrées @crate::engine::register_at sont
     infaillibles.
 
 Handles:
@@ -276,7 +276,7 @@ Tasks:
     `shell` seule écartée (zéro verrou en propre, face compilée tenue par `cargo hack
     --each-feature`), `password` et `fs` sans porte à réclamer (trous de contrat de
     ./src/engine.sdd et ./src/hbs.sdd, pas de la matrice).
-  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::shell::shell_rhai_register sur le motif
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::shell::shell_rhai_register sur le motif
     posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::shell::shell_module.
     Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
     fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
@@ -294,7 +294,7 @@ Scenario: la table des portes compile la face Rust sans rhai et le câblage sous
     le graphe, et ni @crate::shell::rhai_run, @crate::shell::rhai_get_stdout ni
     @crate::shell::shell_rhai_register n'existe
   When la crate est compilée par `cargo check --no-default-features --features rhai,shell`
-  Then les cinq items compilent et @Script::new_bare câble le registre
+  Then les six items compilent et @Script::new_bare câble le registre
   But dans les graphes sans `shell`, @crate::shell est absent et un @Script::new_bare ignore les
     deux noms, `shell = []` ne faisant dériver aucune feature
 

@@ -92,10 +92,10 @@ Must:
     la liste est triée par ordre lexicographique des octets (décision actée : rendu
     déterministe) ; pagination du flux prise en charge
     par @object_store, pas par ce module.
-  Enregistrer exactement les deux noms dans @crate::s3::s3_rhai_register : deux
-    @rhai::Engine::register_fn directs sur les fonctions publiques, `s3_get_yaml` de 7
+  Enregistrer exactement les deux noms dans @crate::s3::s3_rhai_register : deux entrées
+    @crate::engine::register_at directes sur les fonctions publiques, `s3_get_yaml` de 7
     @std::string::String → @rhai::Dynamic et `s3_list_keys` de 6 @std::string::String →
-    @std::vec::Vec<@std::string::String> ; un @rhai::Engine::register_fn remplace tout
+    @std::vec::Vec<@std::string::String> ; un enregistrement remplace tout
     homonyme précédent ; aucun enregistrement de type, aucun namespace, aucun autre nom.
   Traiter chaque paramètre comme une chaîne quelconque, vide comprise : access_key et
     secret_key tous deux vides = pas de credential explicite (default credential chain
@@ -123,7 +123,7 @@ Must not:
   Laisser passer une clé concaténée sans séparateur (`pk`) ou avec double `/` : la jonction
     de @crate::s3::s3_get_yaml est toujours normalisée.
   Exposer `build_store`, les imports ou le module de tests : la face `pub` du module est
-    exactement les trois items contractés plus bas.
+    exactement les quatre items contractés plus bas.
 
 Depends on:
   object_store — @object_store::aws::AmazonS3Builder, le trait @object_store::ObjectStore
@@ -134,7 +134,7 @@ Depends on:
   tokio — via `crate::rt::block_on` (voir ./rt.sdd) ; features `macros` et `rt-multi-thread` ;
     1.53.1 en lock.
   futures — @futures::stream::StreamExt::next pour drainer @object_store::ObjectStore::list.
-  rhai — @rhai::Engine, @rhai::Dynamic, @rhai::Engine::register_fn ; @crate::RhaiRes et
+  rhai — @rhai::Engine, @rhai::Dynamic, @rhai::Module et le motif @crate::engine::Target/@crate::engine::register_at ; @crate::RhaiRes et
     @crate::rhai_err de ./lib.rs. Sous-entendu par ./Cargo.toml : `s3` implique `rhai`.
   serde_yaml + serde_json (non optionnels) — double passe @serde_yaml::from_str puis
     @serde_json::to_string puis @serde_json::from_str::<@rhai::Dynamic>, le même motif de
@@ -223,7 +223,7 @@ Tasks:
     incomplets, passer par `crate::rt::block_on` (décisions actées).
     Si elle est la première migrée, retirer le `#[allow(dead_code)]` de ./rt.rs : il n'est
     justifié que tant qu'aucun appelant de `block_on` n'existe (./rt.sdd).
-  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::s3::s3_rhai_register sur le motif
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::s3::s3_rhai_register sur le motif
     posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::s3::s3_module.
     Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
     fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
@@ -252,7 +252,7 @@ Scenario: deux noms, deux arités, chaînes seulement
 Scenario: deux enregistrements successifs ne duppliquent pas
   Given un engine de test
   When @crate::s3::s3_rhai_register est appelée deux fois
-  Then chaque nom garde une résolution unique, @rhai::Engine::register_fn remplaçant
+  Then chaque nom garde une résolution unique, l'entrée @crate::engine::register_at remplaçant
     l'enregistrement précédent, sans erreur ni empilement
 
 Scenario: bucket vide parle à la requête, pas au build
@@ -342,7 +342,7 @@ Scenario: hors runtime multi-thread, jamais de panique
 
 Scenario: sans la feature s3, rien n'existe
   Given `cargo check --no-default-features --features rhai`
-  Then ni @crate::s3 ni ses trois items n'existent, et @object_store, @futures, @tokio restent
+  Then ni @crate::s3 ni ses quatre items n'existent, et @object_store, @futures, @tokio restent
     hors du graphe — la feature `rhai` seule ne les active pas, seul `s3` (et `k8s`/`oci`/
     `http` pour tokio/futures) le fait
 

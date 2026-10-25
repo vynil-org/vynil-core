@@ -2,7 +2,11 @@
 //!
 //! Feature `oci` only (implies `rhai`). Wraps `oci-client`.
 
-use crate::{Error, Result, RhaiRes, rhai_err};
+use crate::{
+    Error, Result, RhaiRes,
+    engine::{Target, register_at, register_type_at},
+    rhai_err,
+};
 use base64::Engine as _;
 use chrono::Utc;
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
@@ -10,7 +14,7 @@ use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 #[cfg(feature = "k8s")] use kube::{Client as KubeClient, api::Api};
 pub use oci_client::secrets::RegistryAuth as OciRegistryAuth;
 use oci_client::{Client, Reference, client, config, manifest, secrets::RegistryAuth};
-use rhai::{Dynamic, Engine, ImmutableString, Map};
+use rhai::{Dynamic, Engine, ImmutableString, Map, Module};
 use std::{collections::BTreeMap, path::PathBuf};
 use tar::{Archive, Builder};
 
@@ -399,16 +403,109 @@ pub fn get_auth_from_file(path: String, registry: String) -> RhaiRes<Dynamic> {
     Ok(Dynamic::from_map(map))
 }
 
-/// Registers the `Registry` type and its OCI helpers on a Rhai `engine`.
+// ── Motif double cible (oci.sdd, issues #19 et #20) — reproduction du pilote de ./engine.rs,
+// ses auxiliaires `Target`/`register_at`/`register_type_at` étant centralisés dans
+// ./engine.rs (`pub(crate)`) et importés ici. Chaque enregistrement est défini UNE
+// seule fois dans `oci_fns`, appliqué soit directement à un Engine — les fonctions
+// tombent dans l'espace de noms global de l'engine et @rhai::Engine::gen_fn_signatures
+// les voit comme avant le motif — soit à un Module dans ce même espace de noms global,
+// enregistrable par @rhai::Engine::register_static_module sous le nom que choisit le
+// consommateur.
+//
+// Sa particularité ici, comme pour chrono/semver/hashes : l'entrée de TYPE `Registry`
+// est posée par @rhai::Engine::register_type_with_name sur l'engine et par
+// @rhai::Module::set_custom_type sur le module — `type_of` passe par
+// @rhai::Engine::map_type_name, qui consulte les deux ; les cinq méthodes voyagent
+// comme fonctions du namespace global, l'objet en premier argument (forme jouée par
+// les tests de portabilité du type en Module).
+
+/// Registers the `Registry` type and its OCI helpers on a Rhai `engine`: exactly one
+/// type registration and six function registrations, additive and idempotent.
+///
+/// Module twin: [`oci_module`] — same list of registrations, same semantics.
 pub fn oci_rhai_register(engine: &mut Engine) {
-    engine
-        .register_type_with_name::<Registry>("Registry")
-        .register_fn("new_registry", Registry::new)
-        .register_fn("push_image", Registry::push_image)
-        .register_fn("sign_image", Registry::sign_image)
-        .register_fn("list_tags", Registry::rhai_list_tags)
-        .register_fn("get_manifest", Registry::get_manifest)
-        .register_fn("get_auth_from_file", get_auth_from_file);
+    oci_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`oci_rhai_register`] (issue #19): the same type entry and the same
+/// functions, under the global namespace of a fresh [`Module`], registrable by
+/// [`Engine::register_static_module`] under the name the consumer picks. A twin that
+/// drifts from its registrar is a defect: both share the single `oci_fns` list.
+#[must_use]
+pub fn oci_module() -> Module {
+    let mut module = Module::new();
+    oci_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The `Registry` surface defined once (motif double cible): one type entry, then each
+/// registration as a name, its function, its parameter names and its `///` comment
+/// (both under `metadata` only).
+// sept items du `Must` de ./oci.sdd en une seule liste, forme du motif (#19/#20).
+fn oci_fns(target: &mut Target<'_>) {
+    register_type_at::<Registry>(target, "Registry");
+    register_at(
+        target,
+        "new_registry",
+        &["/// Builds a `Registry` for `registry`; anonymous when `username` or `password` is empty."],
+        &["registry: String", "username: String", "password: String"],
+        Registry::new,
+    );
+    register_at(
+        target,
+        "push_image",
+        &[
+            "/// Tars and gzips `source_dir` into a single-layer image, pushes it to `registry/repository:tag` with `annotations` (scalar values only), and returns the manifest digest.",
+        ],
+        &[
+            "reg: &mut Registry",
+            "source_dir: String",
+            "repository: String",
+            "tag: String",
+            "annotations: Map",
+        ],
+        Registry::push_image,
+    );
+    register_at(
+        target,
+        "sign_image",
+        &[
+            "/// Signs `registry/repository:tag@digest` via the external `cosign` binary; a no-op when `key_path` is empty.",
+        ],
+        &[
+            "reg: &mut Registry",
+            "repository: String",
+            "tag: String",
+            "digest: String",
+            "key_path: String",
+        ],
+        Registry::sign_image,
+    );
+    register_at(
+        target,
+        "list_tags",
+        &[
+            "/// Lists ALL the tags of `repository`, paging to exhaustion (pages of 1000, capped at 10 000), in registry order, unsorted.",
+        ],
+        &["reg: &mut Registry", "repository: String"],
+        Registry::rhai_list_tags,
+    );
+    register_at(
+        target,
+        "get_manifest",
+        &["/// Fetches the manifest of `registry/repository:tag` as a Rhai value carrying every JSON key."],
+        &["reg: &mut Registry", "repository: String", "tag: String"],
+        Registry::get_manifest,
+    );
+    register_at(
+        target,
+        "get_auth_from_file",
+        &[
+            "/// Reads a docker-config `path` and returns `{user, pass}` decoded from the `auth` entry of `registry`; empty strings when absent.",
+        ],
+        &["path: String", "registry: String"],
+        get_auth_from_file,
+    );
 }
 
 #[cfg(test)]
@@ -1595,6 +1692,301 @@ mod tests {
                 "function-inconnue portant {name} attendue, obtenu : {err}"
             );
         }
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // Tâche « Jumeau module et documentation » (issues #19 et #20) — Scenario
+    // « oci_module équivaut à oci_rhai_register » et « fonctions documentées sous
+    // metadata (oci) ». Le motif est celui du pilote de ./engine.rs : une seule
+    // liste `oci_fns` appliquée soit à l'engine (enregistreur, fonctions en espace
+    // de noms global, jamais dans un module global intermédiaire), soit au jumeau
+    // module, enregistré par `rhai::Engine::register_static_module` sous `m`.
+    // Les deux formes sensibles du lot y sont nommément jouées : l'entrée de TYPE
+    // `Registry` (`register_type_with_name` côté engine, `rhai::Module::set_custom_type`
+    // côté module, toutes deux consultées par `type_of` via `rhai::Engine::map_type_name`
+    // — précédent chrono/semver/hashes) et les cinq méthodes portées en Module par
+    // le même `FuncRegistration` sous l'espace de noms global.
+    // ════════════════════════════════════════════════════════════════════════════
+
+    /// Les six enregistrements de fonction du `Must` d'oci.sdd — le septième item de
+    /// l'enregistreur est le nom de type `Registry`, qui n'est pas une fonction.
+    const OCI_FNS: [&str; 6] = [
+        "new_registry",
+        "push_image",
+        "sign_image",
+        "list_tags",
+        "get_manifest",
+        "get_auth_from_file",
+    ];
+
+    /// Engine vierge portant le jumeau module enregistré par
+    /// `rhai::Engine::register_static_module` sous le nom `m` (face qualifiée du Scenario).
+    fn engine_with_module(module: rhai::Module) -> Engine {
+        let mut engine = Engine::new();
+        engine.register_static_module("m", module.into());
+        engine
+    }
+
+    /// Introspection de l'engine : noms de fonctions enregistrés sur lui, hors packages
+    /// standard de `@rhai` (`collect_fn_metadata`, feature `internals` de `@rhai` toujours
+    /// activée par ./Cargo.toml — même voix que le pilote de ./engine.rs).
+    fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    fn set_of(noms: &[&str]) -> std::collections::BTreeSet<String> {
+        noms.iter().map(|nom| (*nom).to_string()).collect()
+    }
+
+    /// Noms qu'un jumeau module ajoute à un `Engine::new` par `register_static_module`
+    /// sous `m` (diff sur la baseline, préfixe `m::` retiré s'il est porté par le nom).
+    fn names_added_by_module(module: rhai::Module) -> std::collections::BTreeSet<String> {
+        let apres = registered_names(&engine_with_module(module));
+        let avant = registered_names(&Engine::new());
+        apres
+            .difference(&avant)
+            .map(|nom| {
+                let s = nom.as_str();
+                s.strip_prefix("m::").unwrap_or(s).to_string()
+            })
+            .collect()
+    }
+
+    /// Noms que l'enregistreur ajoute à un `Engine::new` par rapport à sa baseline.
+    fn names_added_by(register: impl Fn(&mut Engine)) -> std::collections::BTreeSet<String> {
+        let mut engine = Engine::new();
+        register(&mut engine);
+        let apres = registered_names(&engine);
+        let avant = registered_names(&Engine::new());
+        apres.difference(&avant).cloned().collect()
+    }
+
+    /// Comparaison d'un même script joué sur deux engines : mêmes valeurs rendues ;
+    /// sur échec, le même noyau de message porté des deux côtés (l'enveloppe d'appel
+    /// qualifié vs nu appartient à `@rhai`, non contractée — voix du pilote).
+    fn comparer_resultats(
+        origine: &str,
+        marqueur: Option<&str>,
+        a: crate::RhaiRes<rhai::Dynamic>,
+        b: crate::RhaiRes<rhai::Dynamic>,
+    ) {
+        match (a, b) {
+            (Ok(x), Ok(y)) => assert_eq!(
+                x.to_string(),
+                y.to_string(),
+                "valeur divergente pour « {origine} »"
+            ),
+            (Err(e), Err(f)) => {
+                let marqueur = marqueur.expect("jeu de test : les échecs portent un noyau de message");
+                assert!(
+                    e.to_string().contains(marqueur),
+                    "l'erreur de « {origine} » doit porter « {marqueur} », obtenu : {e}"
+                );
+                assert!(
+                    f.to_string().contains(marqueur),
+                    "l'erreur jumelle de « {origine} » doit porter « {marqueur} », obtenu : {f}"
+                );
+            }
+            (a, b) => panic!("divergence succès/échec pour « {origine} » : {a:?} vs {b:?}"),
+        }
+    }
+
+    /// Appels représentatifs des Scenario de cette spec, sans réseau ni cosign, en
+    /// (nom nu, qualifié sous `m`, noyau de message d'erreur le cas échéant).
+    /// `fichier_auth` : docker-config réel servant la voie succès de
+    /// `get_auth_from_file`.
+    fn appels_representatifs(fichier_auth: &str) -> Vec<(String, Option<String>, Option<&'static str>)> {
+        vec![
+            // Entrée de TYPE : `type_of` passe par `map_type_name`, qui consulte
+            // `register_type_with_name` (engine) et `set_custom_type` (module) —
+            // verrou de portabilité du type `Registry` en Module.
+            (
+                r#"type_of(new_registry("reg", "u", "p"))"#.into(),
+                Some(r#"type_of(m::new_registry("reg", "u", "p"))"#.into()),
+                None,
+            ),
+            // Scenario « sign_image clé vide est un no-op sans spawn » — méthode
+            // du type, jouable sans réseau ni cosign ; la forme qualifiée joue la
+            // méthode comme fonction globale à objet premier (précédent semver).
+            (
+                r#"let r = new_registry("reg", "u", "p"); r.sign_image("repo/img", "1.0.0", "sha256:abc", ""); true"#.into(),
+                Some(
+                    r#"let r = m::new_registry("reg", "u", "p"); m::sign_image(r, "repo/img", "1.0.0", "sha256:abc", ""); true"#
+                        .into(),
+                ),
+                None,
+            ),
+            // Scenario « get_auth_from_file rend l'identifiant » — fonction libre,
+            // docker-config réel, sans réseau.
+            (
+                format!(r#"let a = get_auth_from_file("{fichier_auth}", "docker.io"); a.user + ":" + a.pass"#),
+                Some(format!(
+                    r#"let a = m::get_auth_from_file("{fichier_auth}", "docker.io"); a.user + ":" + a.pass"#
+                )),
+                None,
+            ),
+            // Scénario d'erreur : fichier absent → `Stdio error`, noyau identique des
+            // deux côtés (la substitution du jumeau est référée par la valeur).
+            (
+                r#"get_auth_from_file("no/such/file/for-this-test.json", "docker.io")"#.into(),
+                Some(r#"m::get_auth_from_file("no/such/file/for-this-test.json", "docker.io")"#.into()),
+                Some("Stdio error"),
+            ),
+            // Exposes : NI `pull_image` NI les faces non enregistrées ne déménagent
+            // dans le jumeau — fonction INCONNUE des deux côtés, même marqueur.
+            (
+                r#"let r = new_registry("reg", "u", "p"); r.pull_image("/tmp", "repo", "1.0")"#.into(),
+                Some(r#"let r = m::new_registry("reg", "u", "p"); m::pull_image(r, "/tmp", "repo", "1.0")"#.into()),
+                Some("pull_image"),
+            ),
+        ]
+    }
+
+    /// Scenario « `oci_module` équivaut à `oci_rhai_register` » : les deux ensembles
+    /// de noms sont égaux et exactement les six fonctions du `Must` (aucune en plus ni
+    /// en moins) ; les appels représentatifs des Scenario sont rejoués en nom nu sur
+    /// l'engine de l'enregistreur, puis en nom nu ET qualifié `m::nom` sur l'engine du
+    /// jumeau module — mêmes valeurs, mêmes noyaux d'erreur.
+    #[test]
+    fn test_oci_module_equivalent_a_oci_rhai_register() {
+        // Face « les deux ensembles de noms de fonctions sont égaux » (introspection).
+        assert_eq!(
+            names_added_by(oci_rhai_register),
+            set_of(&OCI_FNS),
+            "l'enregistreur ajoute exactement les six fonctions du `Must`"
+        );
+        assert_eq!(
+            names_added_by_module(oci_module()),
+            set_of(&OCI_FNS),
+            "le jumeau module rend exactement les noms de l'enregistreur, aucun en plus ni en moins"
+        );
+
+        // Face rejouée : nu sur l'enregistreur ; nu ET `m::` qualifié sur le jumeau.
+        let dir = tempfile::tempdir().unwrap();
+        let auth_file = dir.path().join("config.json");
+        write_docker_config(&auth_file, "docker.io", "dXNlcjpwYXNz");
+        let auth_file = auth_file.to_string_lossy().into_owned();
+        let mut enregistreur = Engine::new();
+        oci_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(oci_module());
+        for (nu, qualifie, marqueur) in appels_representatifs(&auth_file) {
+            let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
+            let rm = par_module.eval::<rhai::Dynamic>(&nu);
+            comparer_resultats(&nu, marqueur, rn, rm);
+            if let Some(q) = &qualifie {
+                let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
+                let rq = par_module.eval::<rhai::Dynamic>(q);
+                comparer_resultats(q, marqueur, rn, rq);
+            }
+        }
+    }
+
+    /// Scenario « `oci_module` équivaut à `oci_rhai_register` », dernier `And` :
+    /// l'enregistreur garde ses fonctions DIRECTEMENT sur l'engine —
+    /// `rhai::Engine::gen_fn_signatures` (porte `metadata`) les liste comme avant la
+    /// tâche, sans passage par un module global intermédiaire.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn test_oci_enregistreur_fonctions_directement_sur_l_engine() {
+        let mut engine = Engine::new();
+        oci_rhai_register(&mut engine);
+        let signatures = engine.gen_fn_signatures(false);
+        for nom in OCI_FNS {
+            assert!(
+                signatures.iter().any(|s| s.starts_with(&format!("{nom}("))),
+                "{nom} doit être une fonction directe de l'engine, signatures : {signatures:?}"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata (oci) » : sous la feature
+    /// `metadata`, chaque fonction enregistrée par `oci_rhai_register` porte un
+    /// commentaire non vide et les NOMS de ses paramètres (`gen_fn_signatures` et
+    /// `collect_fn_metadata`), pas seulement leurs types.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn test_oci_fonctions_documentees_sous_metadata() {
+        let mut engine = Engine::new();
+        oci_rhai_register(&mut engine);
+        let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
+            None,
+            |f| {
+                Some((
+                    f.metadata.name.to_string(),
+                    f.metadata.params_info.len(),
+                    f.metadata.comments.len(),
+                ))
+            },
+            false,
+        );
+        for nom in OCI_FNS {
+            let (_, params, commentaires) = documentees
+                .iter()
+                .find(|(n, _, _)| n == nom)
+                .unwrap_or_else(|| panic!("{nom} absente des métadonnées de l'engine"));
+            assert!(
+                *commentaires > 0,
+                "{nom} doit porter un commentaire non vide sous `metadata`"
+            );
+            assert!(
+                *params > 0,
+                "{nom} doit porter les noms de ses paramètres sous `metadata`"
+            );
+        }
+        let signatures = engine.gen_fn_signatures(false);
+        for (nom, param) in [
+            ("new_registry", "username"),
+            ("push_image", "source_dir"),
+            ("sign_image", "key_path"),
+            ("list_tags", "repository"),
+            ("get_manifest", "tag"),
+            ("get_auth_from_file", "path"),
+        ] {
+            let signature = signatures
+                .iter()
+                .find(|s| s.starts_with(&format!("{nom}(")))
+                .unwrap_or_else(|| panic!("{nom} absente des signatures : {signatures:?}"));
+            assert!(
+                signature.contains(param),
+                "la signature de {nom} doit nommer son paramètre « {param} », obtenu : {signature}"
+            );
+            assert!(
+                !signature.contains("(_"),
+                "la signature de {nom} ne doit plus réduire le paramètre à un underscore, obtenu : {signature}"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata (oci) », face « sans la feature,
+    /// les mêmes tests de comportement passent sans différence » : valeurs verrouillées
+    /// des trois voies (enregistreur nu, jumeau nu, jumeau qualifié) et mêmes ensembles
+    /// de noms — aucune métadonnée observable de plus ni de moins.
+    #[cfg(not(feature = "metadata"))]
+    #[test]
+    fn test_oci_sans_metadata_sans_difference() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_file = dir.path().join("config.json");
+        write_docker_config(&auth_file, "docker.io", "dXNlcjpwYXNz");
+        let auth_file = auth_file.to_string_lossy().into_owned();
+        let mut enregistreur = Engine::new();
+        oci_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(oci_module());
+        for (nu, _qualifie, marqueur) in appels_representatifs(&auth_file) {
+            let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
+            let rm = par_module.eval::<rhai::Dynamic>(&nu);
+            comparer_resultats(&nu, marqueur, rn, rm);
+        }
+        let nu = enregistreur.eval::<rhai::Dynamic>(r#"type_of(new_registry("reg", "u", "p"))"#);
+        let qualifie = par_module.eval::<rhai::Dynamic>(r#"type_of(m::new_registry("reg", "u", "p"))"#);
+        comparer_resultats("m::new_registry", None, nu, qualifie);
+        assert_eq!(
+            names_added_by(oci_rhai_register),
+            names_added_by_module(oci_module()),
+            "sans `metadata`, les deux ensembles de noms restent égaux"
+        );
     }
 
     // Voie `pull_image` du VRAI client (seam httpmock) : manifeste une-couche

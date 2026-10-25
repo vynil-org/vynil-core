@@ -87,17 +87,19 @@ Must:
   @crate::hashes::hashes_rhai_register n'enregistre qu'une fonction, `crc32_hash` unaire sur
     @rhai::ImmutableString, et rien d'autre. @crate::hashes::crypto_hashes_rhai_register
     n'enregistre exactement que : la fonction unaire `bcrypt_hash` sur @rhai::ImmutableString
-    en @crate::RhaiRes ; le type d'objet nommé `Argon` par @rhai::Engine::register_type_with_name ;
+    en @crate::RhaiRes ; le type d'objet nommé `Argon` par @crate::engine::register_type_at ;
     @crate::hashes::Argon::new sous le nom de script `new_argon`, arité zéro ; et
     @crate::hashes::Argon::rhai_hash sous le nom de méthode `hash` — c'est bien la porte Rhai
-    et non @crate::hashes::Argon::hash que le script invoque, @rhai::Engine::register_fn
+    et non @crate::hashes::Argon::hash que le script invoque, l'entrée
+    @crate::engine::register_at
     exposant de plus la forme globale `hash(argon, mot_de_passe)`.
   Les collages de script propagent l'erreur sans l'avaler, par @crate::rhai_err sur les deux
     voies bcrypt et argon : un échec rendu au script porte le texte @std::fmt::Display complet
     de @crate::Error (`Argon2 password_hash error ...` ou `Bcrypt hash error ...`), sans chaîne
     vide de déguisement — motif réservé aux helpers ./hbs.rs.
   Seuils de harnais : @crate::hashes::crc32_hash porte l'attribut `#[must_use]`, les autres
-    fonctions non (leur @crate::Result l'est déjà) ; chaque item `pub` porte sa
+    fonctions non (leur @crate::Result l'est déjà), hormis les jumeaux @crate::hashes::hashes_module
+    et @crate::hashes::crypto_hashes_module qui le portent ; chaque item `pub` porte sa
     rustdoc avec sa section `# Errors` pour les deux fallibles ; le code de production est sans
     @std::result::Result::unwrap ni @std::option::Option::expect hors cas prouvé, la propagation
     se faisant par `?`, @std::result::Result::map_err et le `#[from]` des variantes d'@Error.
@@ -305,7 +307,7 @@ Tasks:
     Close 2026-10-11 : ouverte sur vynil-org/vynil#266 et vynil-org/kuberest#12 ; kydah n'en
     reçoit pas (décision du développeur principal : la box suit vynil, pas de dépôt consommateur
     direct).
-  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::hashes::hashes_rhai_register, @crate::hashes::crypto_hashes_rhai_register sur le motif
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::hashes::hashes_rhai_register, @crate::hashes::crypto_hashes_rhai_register sur le motif
     posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::hashes::hashes_module, @crate::hashes::crypto_hashes_module.
     Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
     fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune
@@ -416,7 +418,7 @@ Scenario: la forme globale hash réussit aussi
   Given un @rhai::Engine enregistré par @crate::hashes::crypto_hashes_rhai_register
   When un script évalue `let a = new_argon(); hash(a, "p")`
   Then l'évaluation réussit et rend une chaîne commençant par `$argon2id$v=19$m=19456,t=2,p=1$`
-  And cette forme globale vient de @rhai::Engine::register_fn exposant la méthode en fonction
+  And cette forme globale vient de l'entrée @crate::engine::register_at exposant la méthode en fonction
     de premier argument l'objet
 
 Scenario: le réenregistrement reste sans effet visible

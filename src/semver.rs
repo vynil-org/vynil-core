@@ -4,9 +4,11 @@
 //! Rhai helpers (`semver_from`, `inc_major`/`inc_minor`/… + comparison ops) are registered by
 //! `semver_rhai_register`.
 
+#[cfg(feature = "rhai")]
+use crate::engine::{Target, register_at, register_type_at};
 use crate::{Error, Result};
 #[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
-#[cfg(feature = "rhai")] use rhai::Engine;
+#[cfg(feature = "rhai")] use rhai::{Engine, Module};
 use semver::{BuildMetadata, Prerelease, Version};
 
 /// Semver wrapper that remembers whether the original string had a leading `v`.
@@ -188,25 +190,153 @@ impl std::fmt::Display for Semver {
     }
 }
 
+// ── Motif double cible (semver.sdd, issues #19 et #20) — reproduction du pilote de ./engine.rs,
+// ses auxiliaires `Target`/`register_at`/`register_type_at` étant centralisés dans
+// ./engine.rs (`pub(crate)`) et importés ici. Chaque enregistrement est défini UNE
+// seule fois dans `semver_fns`, appliqué soit directement à un Engine — les fonctions
+// tombent dans l'espace de noms global de l'engine et @rhai::Engine::gen_fn_signatures
+// les voit comme avant le motif — soit à un Module dans ce même espace de noms global,
+// enregistrable par @rhai::Engine::register_static_module sous le nom que choisit le
+// consommateur.
+//
+// Sa particularité ici, premier portage avec un type : l'entrée de TYPE `Semver` est
+// posée par @rhai::Engine::register_type_with_name sur l'engine et par
+// @rhai::Module::set_custom_type sur le module — `type_of` passe par
+// @rhai::Engine::map_type_name, qui consulte les deux ; les six opérateurs voyagent
+// comme fonctions du namespace global, nommées `==`, `!=`, `<`, `>`, `<=`, `>=`.
+
 /// Registers the `Semver` type and its helpers (`semver_from`, `inc_major`, `inc_minor`,
-/// `inc_patch`, `inc_beta`, `inc_alpha`, comparison operators, `to_string`) on `engine`.
+/// `inc_patch`, `inc_beta`, `inc_alpha`, comparison operators, `to_string`) on `engine`:
+/// exactly one type registration and thirteen function registrations, additive and
+/// idempotent.
+///
+/// Module twin: [`semver_module`] — same list of registrations, same semantics.
 #[cfg(feature = "rhai")]
 pub fn semver_rhai_register(engine: &mut Engine) {
-    engine
-        .register_type_with_name::<Semver>("Semver")
-        .register_fn("semver_from", Semver::rhai_parse)
-        .register_fn("inc_major", Semver::inc_major)
-        .register_fn("inc_minor", Semver::inc_minor)
-        .register_fn("inc_patch", Semver::inc_patch)
-        .register_fn("inc_beta", Semver::rhai_inc_beta)
-        .register_fn("inc_alpha", Semver::rhai_inc_alpha)
-        .register_fn("==", |a: Semver, b: Semver| a == b)
-        .register_fn("!=", |a: Semver, b: Semver| a != b)
-        .register_fn("<", |a: Semver, b: Semver| a < b)
-        .register_fn(">", |a: Semver, b: Semver| a > b)
-        .register_fn("<=", |a: Semver, b: Semver| a <= b)
-        .register_fn(">=", |a: Semver, b: Semver| a >= b)
-        .register_fn("to_string", |s: &mut Semver| s.to_string());
+    semver_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`semver_rhai_register`] (issue #19): the same type entry and the same
+/// functions, under the global namespace of a fresh [`Module`], registrable by
+/// [`Engine::register_static_module`] under the name the consumer picks. A twin that
+/// drifts from its registrar is a defect: both share the single `semver_fns` list.
+#[cfg(feature = "rhai")]
+#[must_use]
+pub fn semver_module() -> Module {
+    let mut module = Module::new();
+    semver_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The `Semver` surface defined once (motif double cible): one type entry, then each
+/// registration as a name, its function, its parameter names and its `///` comment
+/// (both under `metadata` only).
+#[cfg(feature = "rhai")]
+// quatorze items du `Must` de ./semver.sdd en une seule liste, forme du motif (#19/#20).
+#[allow(clippy::too_many_lines)]
+fn semver_fns(target: &mut Target<'_>) {
+    register_type_at::<Semver>(target, "Semver");
+    register_at(
+        target,
+        "semver_from",
+        &[
+            "/// Parses `text` as a semantic version, optionally prefixed with a single `v`; errors on any other input.",
+        ],
+        &["text: &str"],
+        Semver::rhai_parse,
+    );
+    register_at(
+        target,
+        "inc_major",
+        &["/// Bumps major, resets minor and patch, clears prerelease and build metadata. Never fails."],
+        &["v: &mut Semver"],
+        Semver::inc_major,
+    );
+    register_at(
+        target,
+        "inc_minor",
+        &["/// Bumps minor, resets patch, clears prerelease and build metadata. Never fails."],
+        &["v: &mut Semver"],
+        Semver::inc_minor,
+    );
+    register_at(
+        target,
+        "inc_patch",
+        &[
+            "/// Bumps patch, or only clears a present prerelease; build metadata is always cleared. Never fails.",
+        ],
+        &["v: &mut Semver"],
+        Semver::inc_patch,
+    );
+    register_at(
+        target,
+        "inc_beta",
+        &[
+            "/// Advances the `beta.N` counter, or (from stable, a foreign or bare prerelease)",
+            "/// bumps patch and sets `beta.1`. On a counter error the version is untouched.",
+        ],
+        &["v: &mut Semver"],
+        Semver::rhai_inc_beta,
+    );
+    register_at(
+        target,
+        "inc_alpha",
+        &[
+            "/// Advances the `alpha.N` counter, or (from stable, a foreign or bare prerelease)",
+            "/// bumps patch and sets `alpha.1`. On a counter error the version is untouched.",
+        ],
+        &["v: &mut Semver"],
+        Semver::rhai_inc_alpha,
+    );
+    register_at(
+        target,
+        "==",
+        &["/// Equality of two versions — the remembered `v` flag counts for nothing."],
+        &["a: Semver", "b: Semver"],
+        |a: Semver, b: Semver| a == b,
+    );
+    register_at(
+        target,
+        "!=",
+        &["/// Inequality of two versions — the remembered `v` flag counts for nothing."],
+        &["a: Semver", "b: Semver"],
+        |a: Semver, b: Semver| a != b,
+    );
+    register_at(
+        target,
+        "<",
+        &["/// Standard semver ordering (prerelease < stable); the `v` flag counts for nothing."],
+        &["a: Semver", "b: Semver"],
+        |a: Semver, b: Semver| a < b,
+    );
+    register_at(
+        target,
+        ">",
+        &["/// Standard semver ordering (prerelease < stable); the `v` flag counts for nothing."],
+        &["a: Semver", "b: Semver"],
+        |a: Semver, b: Semver| a > b,
+    );
+    register_at(
+        target,
+        "<=",
+        &["/// Standard semver ordering (prerelease < stable); the `v` flag counts for nothing."],
+        &["a: Semver", "b: Semver"],
+        |a: Semver, b: Semver| a <= b,
+    );
+    register_at(
+        target,
+        ">=",
+        &["/// Standard semver ordering (prerelease < stable); the `v` flag counts for nothing."],
+        &["a: Semver", "b: Semver"],
+        |a: Semver, b: Semver| a >= b,
+    );
+    register_at(
+        target,
+        "to_string",
+        &["/// Renders the version, re-prefixing the `v` remembered at parse time."],
+        &["v: &mut Semver"],
+        |s: &mut Semver| s.to_string(),
+    );
 }
 
 #[cfg(test)]
@@ -1074,6 +1204,337 @@ mod tests {
         assert!(
             text.starts_with("Semver error "),
             "l'erreur attrapée doit commencer par `Semver error `, obtenu : {text}"
+        );
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // Tâche « Jumeau module et documentation » (issues #19 et #20) — Scenario
+    // « semver_module équivaut à semver_rhai_register » et « fonctions documentées
+    // sous metadata (semver) ». Le motif est celui du pilote de ./engine.rs : une
+    // seule liste `semver_fns` appliquée soit à l'engine (enregistreur, fonctions en
+    // namespace global, jamais dans un module global intermédiaire), soit au jumeau
+    // module, enregistré par `rhai::Engine::register_static_module` sous `m`.
+    // Les deux formes sensibles du lot y sont nommément jouées : l'entrée de TYPE
+    // (`register_type_with_name` côté engine, `rhai::Module::set_custom_type` côté
+    // module, toutes deux visibles de `type_of` par `rhai::Engine::map_type_name`)
+    // et les six opérateurs enregistrés comme fonctions du namespace global.
+    // ════════════════════════════════════════════════════════════════════════════
+
+    /// Les treize enregistrements de fonction du `Must` de ./semver.sdd — le quatorzième
+    /// item de l'enregistreur est le nom de type `Semver`, qui n'est pas une fonction.
+    #[cfg(feature = "rhai")]
+    const SEMVER_FNS: [&str; 13] = [
+        "semver_from",
+        "inc_major",
+        "inc_minor",
+        "inc_patch",
+        "inc_beta",
+        "inc_alpha",
+        "==",
+        "!=",
+        "<",
+        ">",
+        "<=",
+        ">=",
+        "to_string",
+    ];
+
+    /// Engine vierge portant le jumeau module enregistré par
+    /// `rhai::Engine::register_static_module` sous le nom `m` (face qualifiée du Scenario).
+    #[cfg(feature = "rhai")]
+    fn engine_with_module(module: rhai::Module) -> Engine {
+        let mut engine = Engine::new();
+        engine.register_static_module("m", module.into());
+        engine
+    }
+
+    /// Introspection de l'engine : noms de fonctions enregistrés sur lui, hors packages
+    /// standard de `@rhai` (`collect_fn_metadata`, feature `internals` de `@rhai` toujours
+    /// activée par ./Cargo.toml — même voix que le pilote de ./engine.rs).
+    #[cfg(feature = "rhai")]
+    fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    #[cfg(feature = "rhai")]
+    fn set_of(noms: &[&str]) -> std::collections::BTreeSet<String> {
+        noms.iter().map(|nom| (*nom).to_string()).collect()
+    }
+
+    /// Noms qu'un jumeau module ajoute à un `Engine::new` par `register_static_module`
+    /// sous `m` (diff sur la baseline, préfixe `m::` retiré s'il est porté par le nom).
+    #[cfg(feature = "rhai")]
+    fn names_added_by_module(module: rhai::Module) -> std::collections::BTreeSet<String> {
+        let apres = registered_names(&engine_with_module(module));
+        let avant = registered_names(&Engine::new());
+        apres
+            .difference(&avant)
+            .map(|nom| {
+                let s = nom.as_str();
+                s.strip_prefix("m::").unwrap_or(s).to_string()
+            })
+            .collect()
+    }
+
+    /// Noms que l'enregistreur ajoute à un `Engine::new` par rapport à sa baseline.
+    #[cfg(feature = "rhai")]
+    fn names_added_by(register: impl Fn(&mut Engine)) -> std::collections::BTreeSet<String> {
+        let mut engine = Engine::new();
+        register(&mut engine);
+        let apres = registered_names(&engine);
+        let avant = registered_names(&Engine::new());
+        apres.difference(&avant).cloned().collect()
+    }
+
+    /// Comparaison d'un même script joué sur deux engines : mêmes valeurs rendues ;
+    /// sur échec, le même noyau de message porté des deux côtés (l'enveloppe d'appel
+    /// qualifié vs nu appartient à `@rhai`, non contractée — voix du pilote).
+    #[cfg(feature = "rhai")]
+    fn comparer_resultats(
+        origine: &str,
+        marqueur: Option<&str>,
+        a: crate::RhaiRes<rhai::Dynamic>,
+        b: crate::RhaiRes<rhai::Dynamic>,
+    ) {
+        match (a, b) {
+            (Ok(x), Ok(y)) => assert_eq!(
+                x.to_string(),
+                y.to_string(),
+                "valeur divergente pour « {origine} »"
+            ),
+            (Err(e), Err(f)) => {
+                let marqueur = marqueur.expect("jeu de test : les échecs portent un noyau de message");
+                assert!(
+                    e.to_string().contains(marqueur),
+                    "l'erreur de « {origine} » doit porter « {marqueur} », obtenu : {e}"
+                );
+                assert!(
+                    f.to_string().contains(marqueur),
+                    "l'erreur jumelle de « {origine} » doit porter « {marqueur} », obtenu : {f}"
+                );
+            }
+            (a, b) => panic!("divergence succès/échec pour « {origine} » : {a:?} vs {b:?}"),
+        }
+    }
+
+    /// Appels représentatifs des Scenario de cette spec, en (nom nu, qualifié sous `m`,
+    /// noyau de message d'erreur le cas échéant).
+    #[cfg(feature = "rhai")]
+    fn appels_representatifs() -> Vec<(String, Option<String>, Option<&'static str>)> {
+        vec![
+            // Scenario « le v initial est mémorisé, reproduit » — constructeur + rendu.
+            (
+                r#"to_string(semver_from("1.2.3"))"#.into(),
+                Some(r#"m::to_string(m::semver_from("1.2.3"))"#.into()),
+                None,
+            ),
+            // Scenario « Display reproduit le v initial puis la queue complète ».
+            (
+                r#"to_string(semver_from("v1.2.3-alpha.1+b"))"#.into(),
+                Some(r#"m::to_string(m::semver_from("v1.2.3-alpha.1+b"))"#.into()),
+                None,
+            ),
+            // Scenario « l'objet Rhai connaît ses méthodes » — entrée de TYPE : type_of
+            // doit rendre « Semver » des deux voies (register_type_with_name vs
+            // set_custom_type dans le module).
+            (
+                r#"type_of(semver_from("1.2.3"))"#.into(),
+                Some(r#"type_of(m::semver_from("1.2.3"))"#.into()),
+                None,
+            ),
+            // Scenario « la mutation reste visible » — forme globale, mutatrice.
+            (
+                r#"let v = semver_from("1.2.3"); inc_minor(v); to_string(v)"#.into(),
+                Some(r#"let v = m::semver_from("1.2.3"); m::inc_minor(v); m::to_string(v)"#.into()),
+                None,
+            ),
+            // Forme pointée + mutatrice fallible depuis beta.N.
+            (
+                r#"let v = semver_from("1.2.3-beta.1"); v.inc_beta(); to_string(v)"#.into(),
+                Some(r#"let v = m::semver_from("1.2.3-beta.1"); v.inc_beta(); m::to_string(v)"#.into()),
+                None,
+            ),
+            // Les six opérateurs — fermetures enregistrées entre deux `Semver`, dont la
+            // transparence du `v` (Scenario « l'ordre suit semver »).
+            (
+                r#"semver_from("1.2.3") == semver_from("v1.2.3")"#.into(),
+                Some(r#"m::semver_from("1.2.3") == m::semver_from("v1.2.3")"#.into()),
+                None,
+            ),
+            (
+                r#"semver_from("1.2.3") != semver_from("1.2.4")"#.into(),
+                Some(r#"m::semver_from("1.2.3") != m::semver_from("1.2.4")"#.into()),
+                None,
+            ),
+            (
+                r#"semver_from("1.2.3") < semver_from("1.2.4")"#.into(),
+                Some(r#"m::semver_from("1.2.3") < m::semver_from("1.2.4")"#.into()),
+                None,
+            ),
+            (
+                r#"semver_from("1.2.4") > semver_from("1.2.3")"#.into(),
+                Some(r#"m::semver_from("1.2.4") > m::semver_from("1.2.3")"#.into()),
+                None,
+            ),
+            (
+                r#"semver_from("1.2.3") <= semver_from("1.2.3")"#.into(),
+                Some(r#"m::semver_from("1.2.3") <= m::semver_from("1.2.3")"#.into()),
+                None,
+            ),
+            (
+                r#"semver_from("1.2.4") >= semver_from("1.2.3")"#.into(),
+                Some(r#"m::semver_from("1.2.4") >= m::semver_from("1.2.3")"#.into()),
+                None,
+            ),
+            // Erreurs : rejet de parse et rejet de compteur, portés à l'identique.
+            (
+                r#"semver_from("nope")"#.into(),
+                Some(r#"m::semver_from("nope")"#.into()),
+                Some("Semver error "),
+            ),
+            (
+                r#"let w = semver_from("1.2.3-beta.rc"); w.inc_beta();"#.into(),
+                Some(r#"let w = m::semver_from("1.2.3-beta.rc"); w.inc_beta();"#.into()),
+                Some("ParseIntError "),
+            ),
+        ]
+    }
+
+    /// Scenario « `semver_module` équivaut à `semver_rhai_register` » : les deux ensembles
+    /// de noms sont égaux et exactement les treize fonctions du `Must` (aucune en plus ni
+    /// en moins) ; les appels représentatifs des Scenario sont rejoués en nom nu sur
+    /// l'engine de l'enregistreur, puis en nom nu ET qualifié `m::nom` sur l'engine du
+    /// jumeau module — mêmes valeurs, mêmes noyaux d'erreur.
+    #[cfg(feature = "rhai")]
+    #[test]
+    fn test_semver_module_equivalent_a_semver_rhai_register() {
+        // Face « les deux ensembles de noms de fonctions sont égaux » (introspection).
+        assert_eq!(
+            names_added_by(semver_rhai_register),
+            set_of(&SEMVER_FNS),
+            "l'enregistreur ajoute exactement les treize fonctions du `Must`"
+        );
+        assert_eq!(
+            names_added_by_module(semver_module()),
+            set_of(&SEMVER_FNS),
+            "le jumeau module rend exactement les noms de l'enregistreur, aucun en plus ni en moins"
+        );
+
+        // Face rejouée : nu sur l'enregistreur ; nu ET `m::` qualifié sur le jumeau.
+        let mut enregistreur = Engine::new();
+        semver_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(semver_module());
+        for (nu, qualifie, marqueur) in appels_representatifs() {
+            let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
+            let rm = par_module.eval::<rhai::Dynamic>(&nu);
+            comparer_resultats(&nu, marqueur, rn, rm);
+            if let Some(q) = &qualifie {
+                let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
+                let rq = par_module.eval::<rhai::Dynamic>(q);
+                comparer_resultats(q, marqueur, rn, rq);
+            }
+        }
+    }
+
+    /// Scenario « `semver_module` équivaut à `semver_rhai_register` », dernier `And` :
+    /// l'enregistreur garde ses fonctions DIRECTEMENT sur l'engine —
+    /// `rhai::Engine::gen_fn_signatures` (porte `metadata`) les liste comme avant la
+    /// tâche, sans passage par un module global intermédiaire.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn test_semver_enregistreur_fonctions_directement_sur_l_engine() {
+        let mut engine = Engine::new();
+        semver_rhai_register(&mut engine);
+        let signatures = engine.gen_fn_signatures(false);
+        for nom in SEMVER_FNS {
+            assert!(
+                signatures.iter().any(|s| s.starts_with(&format!("{nom}("))),
+                "{nom} doit être une fonction directe de l'engine, signatures : {signatures:?}"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata (semver) » : sous la feature
+    /// `metadata`, chaque fonction enregistrée par `semver_rhai_register` porte un
+    /// commentaire non vide et les NOMS de ses paramètres (`gen_fn_signatures` et
+    /// `collect_fn_metadata`), pas seulement leurs types.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn test_semver_fonctions_documentees_sous_metadata() {
+        let mut engine = Engine::new();
+        semver_rhai_register(&mut engine);
+        let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
+            None,
+            |f| {
+                Some((
+                    f.metadata.name.to_string(),
+                    f.metadata.params_info.len(),
+                    f.metadata.comments.len(),
+                ))
+            },
+            false,
+        );
+        for nom in SEMVER_FNS {
+            let (_, params, commentaires) = documentees
+                .iter()
+                .find(|(n, _, _)| n == nom)
+                .unwrap_or_else(|| panic!("{nom} absente des métadonnées de l'engine"));
+            assert!(
+                *commentaires > 0,
+                "{nom} doit porter un commentaire non vide sous `metadata`"
+            );
+            assert!(
+                *params > 0,
+                "{nom} doit porter les noms de ses paramètres sous `metadata`"
+            );
+        }
+        let signatures = engine.gen_fn_signatures(false);
+        for (nom, param) in [("semver_from", "text"), ("inc_minor", "v"), ("==", "a")] {
+            let signature = signatures
+                .iter()
+                .find(|s| s.starts_with(&format!("{nom}(")))
+                .unwrap_or_else(|| panic!("{nom} absente des signatures : {signatures:?}"));
+            assert!(
+                signature.contains(param),
+                "la signature de {nom} doit nommer son paramètre « {param} », obtenu : {signature}"
+            );
+            assert!(
+                !signature.contains("(_"),
+                "la signature de {nom} ne doit plus réduire le paramètre à un underscore, obtenu : {signature}"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata (semver) », face « sans la feature,
+    /// les mêmes tests de comportement passent sans différence » : valeurs verrouillées
+    /// des trois voies (enregistreur nu, jumeau nu, jumeau qualifié) et mêmes ensembles
+    /// de noms — aucune métadonnée observable de plus ni de moins.
+    #[cfg(all(feature = "rhai", not(feature = "metadata")))]
+    #[test]
+    fn test_semver_sans_metadata_sans_difference() {
+        let mut enregistreur = Engine::new();
+        semver_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(semver_module());
+        for script in [
+            r#"to_string(semver_from("v1.2.3"))"#,
+            r#"let v = semver_from("1.2.3"); inc_minor(v); to_string(v)"#,
+            r#"semver_from("1.2.3") < semver_from("1.2.4")"#,
+            r#"type_of(semver_from("1.2.3"))"#,
+        ] {
+            let rn = enregistreur.eval::<rhai::Dynamic>(script);
+            let rm = par_module.eval::<rhai::Dynamic>(script);
+            comparer_resultats(script, None, rn, rm);
+        }
+        let nu = enregistreur.eval::<rhai::Dynamic>(r#"to_string(semver_from("v1.2.3"))"#);
+        let qualifie = par_module.eval::<rhai::Dynamic>(r#"m::to_string(m::semver_from("v1.2.3"))"#);
+        comparer_resultats("m::to_string(m::semver_from)", None, nu, qualifie);
+        assert_eq!(
+            names_added_by(semver_rhai_register),
+            names_added_by_module(semver_module()),
+            "sans `metadata`, les deux ensembles de noms restent égaux"
         );
     }
 }

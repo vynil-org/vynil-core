@@ -61,7 +61,7 @@ References:
     (voir ./rt.sdd) : plus aucune panique tokio depuis un script.
   ./tooling.sdd — harnais : 25 @allow(clippy::needless_pass_by_value) (17 ./http.rs,
     8 ./http_mock.rs) sous DEUX variantes de commentaire citant ./vyvil-core.sdd (« signature
-    imposée par l'API Rhai » et « signature publique exposée sur crates.io »), 3 @core::marker::must_use.
+    imposée par l'API Rhai » et « signature publique exposée sur crates.io »), 4 @core::marker::must_use.
 
 Must:
   N'exister tous deux que sous la porte `http`, avec @cfg_attr docsrs, `http` inclus dans
@@ -177,7 +177,9 @@ Must:
     case-insensitive (`#[must_use]` ; @crate::http::headers_get ne l'a pas, asymétrie clippy
     sans effet script) ; les deux consistent avec le `headers` vecteur-de-tuples rendu par
     les `rhai_*`.
-  Enregistrer dans @crate::http::http_rhai_register : type @rhai::Engine::register_type_with_name
+  Enregistrer dans @crate::http::http_rhai_register, par le motif double cible importé de
+    ./engine.rs (@crate::engine::Target/@crate::engine::register_type_at/@crate::engine::register_at) :
+    le type
     `"RestClient"` et VINGT-NEUF noms exactement : `new_http_client` ET `new_client`
     (jumeaux vers @crate::http::RestClient::new), `headers_reset`, `set_baseurl`,
     `set_server_ca`, `set_mtls_cert_key`, `add_header` (2 chaînes), `add_header_json`,
@@ -202,9 +204,9 @@ Must:
     ABSENT, `http_get_yaml` ABSENTE et l'alias `http_head` ABSENT — trois trous assumés et
     documentés (décision actée : on ne change rien au mock ; les consommateurs redéfinissent
     `http_get_yaml` en script, comme le fait vynil), avec `headers_get`/`headers_has` réenregistrés depuis le VRAI ./http.rs.
-  Maintenir le harnais : 25 @allow(clippy::needless_pass_by_value) (§References), 3
+  Maintenir le harnais : 25 @allow(clippy::needless_pass_by_value) (§References), 4
     @core::marker::must_use (@crate::http::RestClient::new 76, @crate::http::headers_has 1250,
-    @crate::http_mock::RestClientMock::new 47) ; aucun `unwrap`/`expect`/`panic!`/`todo!`/`dbg!`/`println!`
+    @crate::http_mock::RestClientMock::new 47, @crate::http::http_module) ; aucun `unwrap`/`expect`/`panic!`/`todo!`/`dbg!`/`println!`
     dans les deux fichiers — les `unwrap_or(0)`/`unwrap_or_default` contractés ci-dessus sont
     des replis, non des panic.
 
@@ -248,7 +250,8 @@ Depends on:
   schemars / serde — @schemars::JsonSchema + @serde::Serialize/@serde::Deserialize des quatre énum de verbes (les rend
     importables d'un config par @serde::Deserialize) ; raison d'être de `dep:schemars` dans
     la feature `http`.
-  rhai / crate — @rhai::Engine/@rhai::Dynamic/@rhai::Map, @rhai::Engine::register_type_with_name/@rhai::Engine::register_fn,
+  rhai / crate — @rhai::Engine/@rhai::Dynamic/@rhai::Map, @rhai::Module et le motif
+    @crate::engine::Target/@crate::engine::register_type_at/@crate::engine::register_at,
     @crate::RhaiRes, @crate::rhai_err, @crate::error_chain, @crate::get_client_name. Le mock
     ne tient qu'à @rhai + @crate::RhaiRes (+ @serde::Deserialize de @crate::http_mock::HttpMockItem
     pour les fixtures sérialisées façon mocking.md).
@@ -485,7 +488,7 @@ Tasks:
 #   statut jamais erreur côté script, `json_delete` enrobant contre `json_*` stricts, mock
 #   inchangé (setters muets, matching sans baseurl ni corps), panique contractuelle de
 #   `get_client_name`.
-  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::http::http_rhai_register sur le motif
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::http::http_rhai_register sur le motif
     posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::http::http_module.
     Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
     fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune

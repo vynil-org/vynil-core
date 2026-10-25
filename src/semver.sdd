@@ -123,14 +123,15 @@ Must:
     @std::hash::Hash : `v1.2.3 == 1.2.3` est vrai et `1.2.3 < v1.2.3` est faux, y compris via
     les opérateurs de script, et deux valeurs égales ont le même hash.
   @crate::semver::semver_rhai_register fait exactement un enregistrement de type et treize
-    enregistrements de fonction, et rien d'autre : @rhai::Engine::register_type_with_name
-    donnant au type le nom de script `Semver` pour `type_of` ; la fonction unaire `semver_from`
+    enregistrements de fonction, et rien d'autre, par le motif double cible importé de
+    ./engine.rs (@crate::engine::Target, @crate::engine::register_type_at et
+    @crate::engine::register_at) : le type sous le nom de script `Semver` pour `type_of` ; la fonction unaire `semver_from`
     sur une chaîne, collage de @crate::Semver::rhai_parse ; les méthodes `inc_major`,
     `inc_minor`, `inc_patch` — collages des trois infallibles — et `inc_beta`, `inc_alpha` —
     collages des deux versions @crate::RhaiRes ; les six opérateurs `==`, `!=`, `<`, `>`, `<=`,
     `>=` entre deux @crate::Semver passés par valeur et rendant @std::primitive::bool ; et la
     méthode `to_string` à zéro argument rendant @std::string::String.
-    @rhai::Engine::register_type_with_name n'exposant aucun champ public sans implémentation de
+    l'enregistrement du type (@rhai::Module::set_custom_type sous la voie module) n'exposant aucun champ public sans implémentation de
     @rhai::Field, l'objet de script ne voit ni `use_v` ni `version` ni de propriétés `major`,
     `minor`, `patch` : sa surface se limite à ces cinq méthodes mutantes, à `to_string` et à
     être opérande des six comparaisons. Chaque nom est aussi appelable en forme globale
@@ -149,7 +150,8 @@ Must:
     rien ; un échec de compteur porte l'affichage de @crate::Error::ParseInt,
     `ParseIntError ` suivi du texte de @std::num::ParseIntError. Les unes comme les autres sont des erreurs attrapables
     par un `try` de script.
-  Seuils de harnais : seul @crate::Semver::opt_parse porte `#[must_use]` ; chaque item public
+  Seuils de harnais : @crate::Semver::opt_parse et @crate::semver::semver_module seuls à porter
+    `#[must_use]` ; chaque item public
     porte sa rustdoc avec sa section `# Errors` pour les six fallibles ; la production est sans
     @std::result::Result::unwrap, @std::option::Option::expect ni @std::panic — le
     @std::option::Option::unwrap_or_default après @std::primitive::str::strip_prefix n'est pas
@@ -183,8 +185,9 @@ Depends on:
     @crate::rhai_err et @crate::error_chain — sous `rhai` ; le passage par @crate::rhai_err
     (chaîne de sources) distingue le texte d'erreur de celui de ./password.rs, qui employait
     `format!("{e}")` nu.
-  rhai — @rhai::Engine, @rhai::Engine::register_type_with_name, @rhai::Engine::register_fn,
-    @rhai::EvalAltResult, derrière la feature du même nom, verrouillée `1.25.1`.
+  rhai — @rhai::Engine, @rhai::Module, @rhai::EvalAltResult et le motif
+    @crate::engine::Target/@crate::engine::register_type_at/@crate::engine::register_at,
+    derrière la feature du même nom, plancher `1.23.3` au manifest, lock `1.25.1`.
 
 Exposes:
   @crate::Semver et @crate::semver::Semver — un seul et même type, cloneable et comparé, deux
@@ -373,7 +376,7 @@ Tasks:
     la provenance d'avant le bump serait fausse après), test d'abord. Documenter « resets
     minor/patch, clears prerelease and build » dans ./docs/rhai_helpers.md est la tâche
     jumelle de ./docs.sdd, à cocher dans le même commit.
-  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::semver::semver_rhai_register sur le motif
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::semver::semver_rhai_register sur le motif
     posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::semver::semver_module.
     Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
     fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune

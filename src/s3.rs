@@ -2,10 +2,14 @@
 //!
 //! Feature `s3` only (implies `rhai`). Uses `object_store` with S3 (and HTTP endpoint for mocks).
 
-use crate::{Error, RhaiRes, rhai_err};
+use crate::{
+    Error, RhaiRes,
+    engine::{Target, register_at},
+    rhai_err,
+};
 use futures::StreamExt;
 use object_store::{ObjectStore, path::Path};
-use rhai::{Dynamic, Engine};
+use rhai::{Dynamic, Engine, Module};
 
 /// Join `prefix` and `key` into one object key with a single `/` separator:
 /// trailing `/` trimmed from `prefix`, leading `/` trimmed from `key`, one `/`
@@ -132,11 +136,85 @@ pub fn s3_list_keys(
     .map_err(rhai_err)
 }
 
-/// Registers the S3 Rhai helpers on a Rhai `engine`.
+// ── Motif double cible (s3.sdd, issues #19 et #20) ──────────────────────────────
+// Les deux enregistrements sont définis UNE seule fois, dans `s3_fns`, comme une
+// liste (nom, fonction, noms des paramètres et commentaire `///` sous `metadata`).
+// La même liste s'applique soit directement à un Engine — les fonctions tombent
+// dans l'espace de noms global de l'engine et `rhai::Engine::gen_fn_signatures`
+// les voit comme avant l'introduction du motif, sans module global intermédiaire —,
+// soit à un Module dans ce même espace de noms global — le jumeau module,
+// enregistrable par `rhai::Engine::register_static_module` sous le nom que choisit
+// le consommateur. Le trio `Target` / `register_at` est celui du pilote de
+// ./engine.rs, centralisé là (`pub(crate)`) et importé ici.
+
+/// Les deux enregistrements `s3` définis une seule fois (motif double cible) : chaque
+/// entrée est un nom, sa fonction, ses noms de paramètres et son commentaire `///`
+/// (les deux sous `metadata` seule). Les corps sont verbatim ceux que
+/// `s3_rhai_register` enregistrait avant le motif — les deux portes publiques
+/// [`s3_get_yaml`] et [`s3_list_keys`], mêmes signatures toutes-chaînes, même corps
+/// par `crate::rt::block_on`.
+fn s3_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "s3_get_yaml",
+        &[
+            "/// Fetches object `prefix` + `key` (joined with one `/`) from `bucket`/`region`/`endpoint`",
+            "/// and parses it YAML → Rhai value. Empty `access_key` and `secret_key` use the default",
+            "/// credential chain; empty `endpoint` means AWS S3. Errors on split credentials, transport",
+            "/// failures, non-UTF-8 bytes or invalid YAML.",
+        ],
+        &[
+            "bucket: String",
+            "region: String",
+            "prefix: String",
+            "endpoint: String",
+            "access_key: String",
+            "secret_key: String",
+            "key: String",
+        ],
+        s3_get_yaml,
+    );
+    register_at(
+        target,
+        "s3_list_keys",
+        &[
+            "/// Lists keys under `prefix` in `bucket`/`region`/`endpoint` — full locations (prefix",
+            "/// included, never trimmed), sorted in lexicographic byte order; contents are never read.",
+            "/// Empty `access_key` and `secret_key` use the default credential chain; empty `endpoint`",
+            "/// means AWS S3. Errors on split credentials or transport failures.",
+        ],
+        &[
+            "bucket: String",
+            "region: String",
+            "prefix: String",
+            "endpoint: String",
+            "access_key: String",
+            "secret_key: String",
+        ],
+        s3_list_keys,
+    );
+}
+
+/// Registers the two S3 Rhai helpers (`s3_get_yaml`, `s3_list_keys`) directly on a
+/// Rhai `engine` — names in the engine's global namespace, no intermediate global
+/// module; [`Engine::gen_fn_signatures`] sees them as before this task. The
+/// registrations come from the single `s3_fns` list and replace any previous
+/// function of the same name; no type, no namespace, no other name is registered.
+///
+/// Module twin: [`s3_module`] — same single `s3_fns` list, same semantics.
 pub fn s3_rhai_register(engine: &mut Engine) {
-    engine
-        .register_fn("s3_get_yaml", s3_get_yaml)
-        .register_fn("s3_list_keys", s3_list_keys);
+    s3_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`s3_rhai_register`] (issue #19): the same two functions, under the
+/// global namespace of a fresh [`Module`], registrable by [`Engine::register_static_module`]
+/// under the name the consumer picks. A twin that drifts from its registrar is a defect:
+/// both share the single `s3_fns` list.
+#[must_use]
+pub fn s3_module() -> Module {
+    let mut module = Module::new();
+    s3_fns(&mut Target::Module(&mut module));
+    module
 }
 
 #[cfg(test)]
@@ -656,5 +734,370 @@ mod tests {
             .await
             .expect("préfixe sans objet : vide sans erreur");
         assert_eq!(keys, Vec::<String>::new());
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Tâche « Jumeau module et documentation » (issues #19 et #20) — Scenario
+    // « s3_module équivaut à s3_rhai_register » et Scenario « fonctions
+    // documentées sous metadata (s3) ». Le motif est celui du pilote de
+    // ./engine.rs : une seule liste d'enregistrements appliquée soit à l'Engine
+    // (fonctions DIRECTES, namespace global), soit au Module jumeau, enregistré
+    // par `register_static_module` sous `m` — mesuré sur les portages
+    // précédents : `FnNamespace::Global` rend les deux faces jouables, le nom
+    // nu comme le nom qualifié `m::nom`.
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// Les enregistrements du module, vus par leurs noms de script.
+    const NOMS_S3: [&str; 2] = ["s3_get_yaml", "s3_list_keys"];
+
+    /// Engine vierge portant le jumeau module enregistré par
+    /// `rhai::Engine::register_static_module` sous le nom `m` (face qualifiée du Scenario).
+    fn engine_with_module(module: rhai::Module) -> Engine {
+        let mut engine = Engine::new();
+        engine.register_static_module("m", module.into());
+        engine
+    }
+
+    /// Noms de fonctions d'un engine, hors packages standard de `rhai`
+    /// (introspection `collect_fn_metadata`, disponible sous toutes les portes).
+    fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    fn set_of(noms: &[&str]) -> std::collections::BTreeSet<String> {
+        noms.iter().map(|nom| (*nom).to_string()).collect()
+    }
+
+    /// Noms qu'un jumeau module ajoute à un `Engine::new` par
+    /// `register_static_module` sous `m` (diff sur la baseline, préfixe `m::`
+    /// retiré s'il est porté par le nom).
+    fn names_added_by_module(module: rhai::Module) -> std::collections::BTreeSet<String> {
+        let apres = registered_names(&engine_with_module(module));
+        let avant = registered_names(&Engine::new());
+        apres
+            .difference(&avant)
+            .map(|nom| {
+                let s = nom.as_str();
+                s.strip_prefix("m::").unwrap_or(s).to_string()
+            })
+            .collect()
+    }
+
+    /// Noms qu'un enregistreur ajoute à un `Engine::new` vierge (diff sur la baseline).
+    fn names_added_by(register: impl Fn(&mut Engine)) -> std::collections::BTreeSet<String> {
+        let mut engine = Engine::new();
+        register(&mut engine);
+        let apres = registered_names(&engine);
+        let avant = registered_names(&Engine::new());
+        apres.difference(&avant).cloned().collect()
+    }
+
+    /// Rejoue les appels représentatifs : nom nu sur l'engine de l'enregistreur,
+    /// nom nu ET qualifié `m::nom` sur l'engine du jumeau module — mêmes valeurs
+    /// rendues, et sur échec trois échecs portant le même noyau de message quand
+    /// le Scenario en nomme un (l'enveloppe d'appel qualifié vs nu appartient à
+    /// `rhai`, non contractée). Les appels sont choisis hors réseau : la garde
+    /// credentials de `build_store` parle avant toute requête, le corps est
+    /// donc atteint sans sortir de la machine (mêmes précautions que les
+    /// verrous « deux noms » et « credentials incomplets » ci-dessus).
+    fn assert_module_equivalent(calls: &[(&str, &str, Option<&str>)]) {
+        let mut nu = Engine::new();
+        crate::s3::s3_rhai_register(&mut nu);
+        let jumeau = engine_with_module(crate::s3::s3_module());
+        for (bare, qualified, marqueur) in calls {
+            let rn = nu.eval::<Dynamic>(bare);
+            let rb = jumeau.eval::<Dynamic>(bare);
+            let rq = jumeau.eval::<Dynamic>(qualified);
+            match (&rn, &rb, &rq) {
+                (Ok(vn), Ok(vb), Ok(vq)) => {
+                    assert_eq!(
+                        vn.to_string(),
+                        vb.to_string(),
+                        "divergence en nom nu entre enregistreur et jumeau : {bare}"
+                    );
+                    assert_eq!(
+                        vn.to_string(),
+                        vq.to_string(),
+                        "divergence entre nom nu ({bare}) et qualifié ({qualified})"
+                    );
+                }
+                (Err(en), Err(eb), Err(eq)) => {
+                    if let Some(marqueur) = marqueur {
+                        for (label, err) in [
+                            ("enregistreur", &**en),
+                            ("jumeau nu", &**eb),
+                            ("jumeau qualifié", &**eq),
+                        ] {
+                            assert!(
+                                err.to_string().contains(marqueur),
+                                "l'erreur {label} doit porter « {marqueur} », obtenu : {err}"
+                            );
+                        }
+                    }
+                }
+                _ => panic!(
+                    "divergence entre {bare} (enregistreur : {rn:?}) et {qualified} \
+                     (jumeau nu : {rb:?} / jumeau qualifié : {rq:?})"
+                ),
+            }
+        }
+    }
+
+    /// Scenario « `s3_module` équivaut à `s3_rhai_register` », premières faces :
+    /// les deux ensembles de noms de fonctions sont égaux (aucune fonction en
+    /// plus ni en moins) et les appels représentatifs — valeurs comme erreurs —
+    /// sont identiques entre nom nu sur l'engine de l'enregistreur, nom nu et
+    /// nom qualifié `m::nom` sur l'engine du jumeau module. Les échecs
+    /// représentatifs atteignent le corps par la garde credentials (hors réseau)
+    /// ou s'arrêtent en function-not-found (arité fausse, paramètre non chaîne).
+    #[test]
+    fn scenario_s3_module_equaut_a_s3_rhai_register() {
+        assert_eq!(
+            names_added_by_module(crate::s3::s3_module()),
+            names_added_by(crate::s3::s3_rhai_register),
+            "le jumeau module et l'enregistreur ajoutent exactement les mêmes noms"
+        );
+        assert_eq!(
+            names_added_by_module(crate::s3::s3_module()),
+            set_of(&NOMS_S3),
+            "le jumeau module rend exactement les deux noms du module, rien d'autre"
+        );
+        assert_module_equivalent(&[
+            // Les deux faces publiques atteignent le corps : la garde
+            // credentials (un seul des deux) parle avant toute requête.
+            (
+                r#"s3_list_keys("b", "r", "", "", "ak", "")"#,
+                r#"m::s3_list_keys("b", "r", "", "", "ak", "")"#,
+                Some("must be provided together"),
+            ),
+            (
+                r#"s3_get_yaml("b", "r", "", "", "ak", "", "k")"#,
+                r#"m::s3_get_yaml("b", "r", "", "", "ak", "", "k")"#,
+                Some("must be provided together"),
+            ),
+            (
+                r#"s3_list_keys("b", "r", "", "", "", "sk")"#,
+                r#"m::s3_list_keys("b", "r", "", "", "", "sk")"#,
+                Some("must be provided together"),
+            ),
+            // Arités fausses : trois échecs de fonction inconnue (le texte
+            // qualifié appartient à `rhai`, seul le fait d'échouer est rejoué).
+            (
+                r#"s3_list_keys("b", "r", "", "", "ak")"#,
+                r#"m::s3_list_keys("b", "r", "", "", "ak")"#,
+                None,
+            ),
+            (
+                r#"s3_get_yaml("b", "r", "", "", "ak", "", "k", "extra")"#,
+                r#"m::s3_get_yaml("b", "r", "", "", "ak", "", "k", "extra")"#,
+                None,
+            ),
+            // Paramètre non chaîne : la face ne voit que des toutes-chaînes.
+            (
+                r#"s3_get_yaml(1, "r", "", "", "ak", "", "k")"#,
+                r#"m::s3_get_yaml(1, "r", "", "", "ak", "", "k")"#,
+                None,
+            ),
+        ]);
+    }
+
+    /// Scenario « `s3_module` équivaut à `s3_rhai_register` », dernier `And`
+    /// (face introspection, sous `metadata`) : l'enregistreur garde ses
+    /// fonctions DIRECTEMENT sur l'engine — `gen_fn_signatures` les liste comme
+    /// avant la tâche, sans module global intermédiaire — et les signatures du
+    /// jumeau, préfixe `m::` retiré, sont celles de l'engine, fonction par
+    /// fonction.
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn scenario_s3_module_signatures_identiques_sous_metadata() {
+        let mut nu = Engine::new();
+        crate::s3::s3_rhai_register(&mut nu);
+        let signatures_nues: std::collections::BTreeSet<String> = nu
+            .gen_fn_signatures(false)
+            .into_iter()
+            .filter(|s| s.starts_with("s3_"))
+            .collect();
+        for nom in NOMS_S3 {
+            assert!(
+                signatures_nues.iter().any(|s| s.starts_with(&format!("{nom}("))),
+                "`{nom}` doit rester une fonction directe de l'engine, sans module \
+                 global intermédiaire : {signatures_nues:?}"
+            );
+        }
+        let jumeau = engine_with_module(crate::s3::s3_module());
+        let signatures_jumelles: std::collections::BTreeSet<String> = jumeau
+            .gen_fn_signatures(false)
+            .into_iter()
+            .filter_map(|s| {
+                let s = s.strip_prefix("m::").unwrap_or(&s);
+                s.starts_with("s3_").then(|| s.to_string())
+            })
+            .collect();
+        assert_eq!(
+            signatures_nues, signatures_jumelles,
+            "les signatures du jumeau module (préfixe `m::` retiré) doivent être celles \
+             de l'engine, fonction par fonction"
+        );
+    }
+
+    /// Scenario « fonctions documentées sous metadata (s3) » : sous la feature
+    /// `metadata`, chaque fonction enregistrée par `s3_rhai_register` porte un
+    /// commentaire non vide et les NOMS de ses paramètres, par les faces
+    /// d'introspection nommées par le Scenario (`gen_fn_metadata_to_json`, et
+    /// `gen_fn_signatures` — jouée par le membre
+    /// [`scenario_signatures_documentees_sous_metadata_s3`] pour rester sous le
+    /// plafond pedantic `too_many_lines`, assertions verbatim).
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn scenario_fonctions_documentees_sous_metadata_s3() {
+        let mut engine = Engine::new();
+        crate::s3::s3_rhai_register(&mut engine);
+        // Face 1 — `collect_fn_metadata` : commentaire non vide, paramètres nommés.
+        let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
+            None,
+            |f| {
+                Some((
+                    f.metadata.name.to_string(),
+                    f.metadata.params_info.len(),
+                    f.metadata.comments.len(),
+                ))
+            },
+            false,
+        );
+        for nom in NOMS_S3 {
+            let (_, params, commentaires) = documentees
+                .iter()
+                .find(|(n, _, _)| n == nom)
+                .unwrap_or_else(|| panic!("{nom} absente des métadonnées de l'engine"));
+            assert!(
+                *commentaires > 0,
+                "{nom} doit porter un commentaire non vide sous `metadata`"
+            );
+            assert!(
+                *params > 0,
+                "{nom} doit porter les noms de ses paramètres sous `metadata`"
+            );
+        }
+        // Face 3 — `gen_fn_metadata_to_json` : commentaire `///` et params nommés.
+        let json = engine
+            .gen_fn_metadata_to_json(false)
+            .expect("le JSON des métadonnées de l'engine se sérialise");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("JSON valide");
+        let functions = value["functions"]
+            .as_array()
+            .expect("le JSON porte un tableau « functions »");
+        for nom in NOMS_S3 {
+            let entree = functions
+                .iter()
+                .find(|f| f["name"] == nom)
+                .unwrap_or_else(|| panic!("{nom} absente du JSON des métadonnées"));
+            let commentaires = entree["docComments"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{nom} doit porter des docComments, obtenu {entree}"));
+            assert!(
+                commentaires.iter().any(|c| {
+                    c.as_str().unwrap_or_default().starts_with("///")
+                        && c.as_str().unwrap_or_default().len() > 3
+                }),
+                "le commentaire /// de {nom} doit être non vide, obtenu {entree}"
+            );
+            let params = entree["params"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{nom} doit porter des params nommés, obtenu {entree}"));
+            let attendu = if *nom == *"s3_get_yaml" { 7 } else { 6 };
+            assert_eq!(
+                params.len(),
+                attendu,
+                "les {attendu} paramètres de {nom} doivent être nommés, obtenu {entree}"
+            );
+            assert!(
+                params
+                    .iter()
+                    .all(|p| p["name"].as_str().unwrap_or_default() != "_"),
+                "les paramètres de {nom} doivent être nommés, obtenu {entree}"
+            );
+        }
+    }
+
+    /// Membre du Scenario « fonctions documentées sous metadata (s3) » : face
+    /// `gen_fn_signatures`, chaque signature nomme ses paramètres (assertions
+    /// verbatim de la face 2 du Scenario, déplacées ici sous le plafond pedantic
+    /// `too_many_lines`).
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn scenario_signatures_documentees_sous_metadata_s3() {
+        let mut engine = Engine::new();
+        crate::s3::s3_rhai_register(&mut engine);
+        // Face 2 — `gen_fn_signatures` : chaque signature nomme ses paramètres.
+        let signatures = engine.gen_fn_signatures(false);
+        for nom in NOMS_S3 {
+            let sigs: Vec<&String> = signatures
+                .iter()
+                .filter(|s| s.starts_with(&format!("{nom}(")))
+                .collect();
+            assert!(!sigs.is_empty(), "{nom} absente des signatures : {signatures:?}");
+            for signature in sigs {
+                for param in [
+                    "bucket",
+                    "region",
+                    "prefix",
+                    "endpoint",
+                    "access_key",
+                    "secret_key",
+                ] {
+                    assert!(
+                        signature.contains(param),
+                        "la signature de {nom} doit nommer son paramètre « {param} », \
+                         obtenu : {signature}"
+                    );
+                }
+                if nom == "s3_get_yaml" {
+                    assert!(
+                        signature.contains("key"),
+                        "la signature de {nom} doit nommer son paramètre « key », \
+                         obtenu : {signature}"
+                    );
+                }
+                assert!(
+                    !signature.contains("(_"),
+                    "la signature de {nom} ne doit pas réduire ses paramètres à des \
+                     underscores, obtenu : {signature}"
+                );
+            }
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata (s3) », membre And : sans
+    /// la feature `metadata`, les mêmes comportements passent sans différence —
+    /// la garde credentials atteint le corps en nom nu comme en nom qualifié,
+    /// mêmes noms enregistrés que sous la feature.
+    #[cfg(not(feature = "metadata"))]
+    #[test]
+    fn scenario_fonctions_documentees_sous_metadata_s3_sans_la_feature() {
+        let mut nu = Engine::new();
+        crate::s3::s3_rhai_register(&mut nu);
+        let err = nu
+            .eval::<Dynamic>(r#"s3_list_keys("b", "r", "", "", "ak", "")"#)
+            .expect_err("la garde credentials doit atteindre le corps, sans `metadata` non plus");
+        assert!(
+            err.to_string().contains("must be provided together"),
+            "sans `metadata`, le comportement est identique, obtenu : {err}"
+        );
+        let jumeau = engine_with_module(crate::s3::s3_module());
+        let err = jumeau
+            .eval::<Dynamic>(r#"m::s3_get_yaml("b", "r", "", "", "ak", "", "k")"#)
+            .expect_err("sans `metadata`, le jumeau qualifié atteint le corps pareil");
+        assert!(
+            err.to_string().contains("must be provided together"),
+            "sans `metadata`, le jumeau module rend les mêmes erreurs, obtenu : {err}"
+        );
+        assert_eq!(
+            names_added_by_module(crate::s3::s3_module()),
+            set_of(&NOMS_S3),
+            "sans `metadata`, le jumeau ajoute exactement les mêmes noms"
+        );
     }
 }

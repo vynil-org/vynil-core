@@ -64,7 +64,8 @@ Must:
     @crate::key::gen_private_key soit appelée. Le garde précède tout dispatch et s'applique
     donc aussi à `ed25519` : une taille négative échoue même pour cet algorithme qui
     n'utilise jamais `bits`.
-  @crate::key::key_rhai_register n'enregistre que deux @rhai::Engine::register_fn, tous deux
+  @crate::key::key_rhai_register n'enregistre que deux entrées @crate::engine::register_at (motif
+    importé de ./engine.rs), tous deux
     sous l'unique nom de script `gen_private_key`, et rien d'autre : unaire `algo` transmettant
     @crate::key::DEFAULT_RSA_BITS, binaire `algo, bits` avec le garde de
     @std::convert::TryFrom::try_from. Aucune coercition scalaire n'existe pour leurs paramètres
@@ -104,7 +105,8 @@ Depends on:
     de la pile appartient à openssl et n'est verrouillée nulle part ici.
   @crate::Error et @crate::Result sans condition dans le module ; @crate::RhaiRes sous la
     porte `rhai`.
-  rhai — @rhai::Engine et @rhai::Engine::register_fn derrière la feature du même nom.
+  rhai — @rhai::Engine, @rhai::Module et le motif @crate::engine::Target/@crate::engine::register_at
+    derrière la feature du même nom.
 
 Exposes:
   @crate::key::DEFAULT_RSA_BITS — `pub const DEFAULT_RSA_BITS: @std::primitive::u32 = 4096`,
@@ -164,7 +166,7 @@ Raises:
     plus, avant toute autre chose, le message exact `unsupported key size: <bits>` quand
     `bits` est négatif ou strictement supérieur à `4294967295` ; ce texte n'est pas un
     affichage de @crate::Error et ne porte ni `KEY-ALGO-001` ni `KEY-OPENSSL-001`.
-  @crate::key::key_rhai_register — rien : les deux @rhai::Engine::register_fn sont
+  @crate::key::key_rhai_register — rien : les deux entrées @crate::engine::register_at sont
     infaillibles.
 
 Handles:
@@ -222,7 +224,7 @@ Tasks:
   [x] Conserver la casse d'origine dans @crate::Error::UnsupportedKeyAlgorithm : comparer sur
     la copie lowercased mais alimenter la variante avec `algo` (décision actée : le lowercase
     perdu était un défaut de collage) ; test d'abord depuis le Scenario `DSA`.
-  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::key::key_rhai_register sur le motif
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::key::key_rhai_register sur le motif
     posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::key::key_module.
     Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
     fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune

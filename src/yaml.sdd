@@ -32,11 +32,14 @@ References:
 
 Must:
   @crate::yaml compile dans toutes les combinaisons de features : sa déclaration dans ./lib.rs
-    ne porte aucun `#[cfg]`, et ./yaml.rs ne porte que CINQ portes `#[cfg(feature = "rhai")]` en
-    production — le `use crate::{@crate::RhaiRes, @crate::rhai_err}`, le
-    `use rhai::{@rhai::Dynamic, @rhai::Engine, @rhai::ImmutableString, @rhai::Map}`, les deux
+    ne porte aucun `#[cfg]`, et ./yaml.rs ne porte de portes `#[cfg(feature = "rhai")]` que sur
+    la face publique Rhai et ce qu'elle impose — le `use` du motif
+    (@crate::engine::Target, @crate::engine::register_at), le
+    `use crate::{@crate::RhaiRes, @crate::rhai_err}`, le
+    `use rhai`, les deux
     conversions privées @dynamic_from_yaml_value et @yaml_key_to_string que la voie
-    @serde_yaml::Value a fait naître, et @crate::yaml::yaml_rhai_register — les trois helpers Rust
+    @serde_yaml::Value a fait naître, la liste @crate::yaml::yaml_fns, @crate::yaml::yaml_rhai_register
+    et @crate::yaml::yaml_module — les trois helpers Rust
     étant donc appelables sous `cargo test --no-default-features`. Le `#[cfg(test)]` du `mod tests`
     et ses portes internes ne comptent pas ici.
   Il n'existe qu'une seule conversion d'erreur dans le module, appliquée sur chaque appel
@@ -66,7 +69,7 @@ Must:
   @crate::yaml::yaml_all_serialize_to_string n'a aucun état ni repli partiel : la concaténation
     déjà produite au moment où une valeur échoue est abandonnée avec l'erreur, l'appelant ne
     voit jamais un préfixe tronqué.
-  @crate::yaml::yaml_rhai_register enregistre exactement quatre @rhai::Engine::register_fn sur
+  @crate::yaml::yaml_rhai_register enregistre exactement quatre entrées @crate::engine::register_at sur
     l'engine reçu et rien d'autre : deux surcharges du nom de script `yaml_encode` (paramètre
     @rhai::Dynamic puis paramètre @rhai::Map), `yaml_decode` (paramètre
     @rhai::ImmutableString) et `yaml_decode_multi` (paramètre @rhai::ImmutableString). Aucun
@@ -100,9 +103,10 @@ Must:
   Le module est sans état propre : aucune variable globale, aucune mise en cache, aucune I/O,
     aucune lecture d'environnement ; ses quatre fonctions sont réentrantes et appelables de
     plusieurs threads (la feature @rhai `sync` est activée au niveau crate).
-  ./yaml.rs ne porte aucun `#[allow(...)]`, aucun `#[must_use]`, aucun
-    @std::option::Option::unwrap ni @std::result::Result::unwrap ni @std::panic, et ses quatre
-    items `pub` portent chacun leur rustdoc avec une section `# Errors` (règle de harnais de
+  ./yaml.rs ne porte aucun `#[allow(...)]`, aucun @std::option::Option::unwrap ni
+    @std::result::Result::unwrap ni @std::panic, son seul `#[must_use]` est celui du jumeau
+    @crate::yaml::yaml_module, et ses items `pub` portent chacun leur rustdoc avec une section
+    `# Errors` pour les fallibles (règle de harnais de
     ../.specdd/bootstrap.project.md).
 
 Must not:
@@ -126,8 +130,8 @@ Depends on:
   serde — @serde::Serialize comme borne des deux helpers de sérialisation et
     @serde::Deserialize::deserialize pour les documents de `yaml_decode_multi` ; dépendance non
     gated, feature `derive`.
-  rhai — @rhai::Engine, @rhai::Engine::register_fn, @rhai::Dynamic, @rhai::Map,
-    @rhai::ImmutableString, derrière la feature du même nom ; suppose au niveau crate les
+  rhai — @rhai::Engine, @rhai::Module, @rhai::Dynamic, @rhai::Map,
+    @rhai::ImmutableString et le motif @crate::engine::Target/@crate::engine::register_at, derrière la feature du même nom ; suppose au niveau crate les
     features @rhai `sync` et `serde`, et pour @rhai::Map la feature `serde` de @smartstring
     (commentaire explicite de ./Cargo.toml), sans quoi ni l'encodage ni le décodage ne
     fonctionneraient.
@@ -319,7 +323,7 @@ Tasks:
     quatre items `pub` exige et qu'elle n'a pas depuis avant cette campagne (écart trouvé par
     l'agent `validator` en relisant la doc de HEAD, identique sur HEAD : ce n'est pas une régression
     introduite par la voie @serde_yaml::Value).
-  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::yaml::yaml_rhai_register sur le motif
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::yaml::yaml_rhai_register sur le motif
     posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::yaml::yaml_module.
     Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
     fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune

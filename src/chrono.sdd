@@ -58,14 +58,16 @@ Must:
     `try` de script ; côté Rust, @crate::chrono::DateTimeHandler::format retourne un
     @crate::Result portant @crate::Error::Other (message `Invalid date format '<fmt>'`).
   @crate::chrono::chrono_rhai_register enregistre exactement trois choses sur le
-    @rhai::Engine reçu, et rien d'autre : @rhai::Engine::register_type_with_name du type sous
-    le nom de script `DateTimeHandler`, @rhai::Engine::register_fn de
-    @crate::chrono::DateTimeHandler::now sous le nom de script `date_now` à zéro argument,
-    @rhai::Engine::register_fn de @crate::chrono::DateTimeHandler::rhai_format sous le nom de
-    script `format`, méthode d'un @crate::chrono::DateTimeHandler recevant une chaîne.
+    @rhai::Engine reçu, et rien d'autre, par le motif double cible importé de ./engine.rs
+    (@crate::engine::Target, @crate::engine::register_type_at et @crate::engine::register_at) :
+    le type sous le nom de script `DateTimeHandler`, la fonction
+    @crate::chrono::DateTimeHandler::now sous le nom de script `date_now` à zéro argument, la
+    fonction @crate::chrono::DateTimeHandler::rhai_format sous le nom de script `format`,
+    méthode d'un @crate::chrono::DateTimeHandler recevant une chaîne. Le jumeau
+    @crate::chrono::chrono_module pose les mêmes entrées sur un @rhai::Module.
   @crate::chrono::DateTimeHandler::rhai_format garde son récepteur `&mut self` et son
-    paramètre @std::string::String par valeur, signatures imposées par
-    @rhai::Engine::register_fn, et conserve en pair le
+    paramètre @std::string::String par valeur, signatures imposées par l'enregistrement
+    @rhai::FuncRegistration du motif, et conserve en pair le
     `#[allow(clippy::needless_pass_by_value)]` et son commentaire de justification d'une
     ligne citant vyvil-core.sdd (règle de harnais de ../.specdd/bootstrap.project.md).
   @crate::chrono::DateTimeHandler::now et @crate::chrono::DateTimeHandler::format gardent
@@ -96,11 +98,13 @@ Depends on:
     dépendance non gated de ./Cargo.toml avec `features = ["serde"]` sur les features par
     défaut — dont `clock`, indispensable à @chrono::Local::now — donc présente dans toutes
     les combinaisons de features de la crate.
-  rhai — @rhai::Engine, @rhai::ImmutableString, @rhai::Engine::register_type_with_name et
-    @rhai::Engine::register_fn, derrière la feature du même nom ; seuls
-    @crate::chrono::DateTimeHandler::rhai_format et @crate::chrono::chrono_rhai_register en
-    dépendent.
-  @derive.Clone — exigé par @rhai::Engine::register_type_with_name pour enregistrer le type ;
+  rhai — @rhai::Engine, @rhai::ImmutableString, @rhai::Module et le motif
+    @crate::engine::Target/@crate::engine::register_type_at/@crate::engine::register_at,
+    derrière la feature du même nom ; seuls
+    @crate::chrono::DateTimeHandler::rhai_format, @crate::chrono::chrono_rhai_register et
+    @crate::chrono::chrono_module en dépendent.
+  @derive.Clone — exigé par l'enregistrement du type (@crate::engine::register_type_at,
+    @rhai::Module::set_custom_type sous la voie module) ;
     @derive.Eq, @derive.PartialEq, @derive.Ord, @derive.PartialOrd, @derive.Hash et
     @derive.Debug ne servent que la face Rust : le module ne câble aucun crochet Rhai
     d'égalité ou de hachage de type personnalisé et n'enregistre aucune méthode associée.
@@ -205,7 +209,7 @@ Tasks:
     @std::fmt::Write::write_fmt, @crate::chrono::DateTimeHandler::rhai_format rend un
     @crate::RhaiRes ; les trois Scenario d'erreur ci-dessus sont à écrire en test d'abord, et
     les appelants Rust de `format` (./engine.rs, consommateurs) à répercuter.
-  [ ] Jumeau module et documentation (issues #19 et #20) : refaire @crate::chrono::chrono_rhai_register sur le motif
+  [x] Jumeau module et documentation (issues #19 et #20) : refaire @crate::chrono::chrono_rhai_register sur le motif
     posé par le pilote de ./engine.sdd (tâche « Poser le motif double cible »), puis livrer @crate::chrono::chrono_module.
     Une seule définition des fonctions sert l'engine et le module ; sous `metadata` chaque
     fonction porte son commentaire `///` et les noms de ses paramètres ; sans la feature, aucune

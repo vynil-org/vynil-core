@@ -9,7 +9,11 @@
 
 use std::sync::{LazyLock, OnceLock};
 
-use crate::{Error, Result, RhaiRes, rhai_err, rhai_err_str};
+use crate::{
+    Error, Result, RhaiRes,
+    engine::{Target, register_at, register_get_at, register_type_at},
+    rhai_err, rhai_err_str,
+};
 use k8s_openapi::api::{
     apps::v1::{DaemonSet, Deployment, StatefulSet},
     batch::v1::Job,
@@ -23,7 +27,7 @@ use kube::{
     discovery::{ApiCapabilities, ApiResource, Discovery, Scope},
     runtime::wait::{Condition, await_condition, conditions},
 };
-use rhai::{Dynamic, Engine, serde::to_dynamic};
+use rhai::{Dynamic, Engine, Module, serde::to_dynamic};
 use serde_json::json;
 use tokio::sync::RwLock;
 
@@ -1787,63 +1791,562 @@ impl K8sJob {
 }
 
 // ── Rhai registration ────────────────────────────────────────────────────────
+//
+// Motif double cible (k8s.sdd, issues #19 et #20) — reproduction du pilote de
+// ./engine.rs, ses auxiliaires `Target`/`register_at`/`register_get_at`/
+// `register_type_at` étant centralisés dans ./engine.rs (`pub(crate)`) et importés
+// ici. Chaque groupe est défini
+// UNE seule fois, dans sa fonction `*_fns`, comme une liste d'enregistrements (nom,
+// fonction, noms des paramètres et commentaire `///` sous `metadata`). La même liste
+// s'applique soit directement à un Engine — l'enregistreur, les fonctions tombent dans
+// l'espace de noms global de l'engine et @rhai::Engine::gen_fn_signatures les voit
+// comme avant le motif, sans module global intermédiaire (c'est explicitement pour
+// cela que l'enregistreur n'emprunte pas le jumeau) —, soit à un Module dans ce même
+// espace de noms global : le jumeau, enregistrable par
+// @rhai::Engine::register_static_module sous le nom que choisit le consommateur.
+//
+// Les quatre familles d'enregistrements du `Must` s'expriment dans le Module, sans
+// écart à remonter : TYPE par @rhai::Engine::register_type_with_name /
+// @rhai::Module::set_custom_type (précédent chrono/semver/hashes/oci), ACCESSEUR
+// (`register_get` des macros) par @rhai::FuncRegistration::new_getter — même nom
+// interne `get$…`, posé sous l'espace de noms global des deux côtés —, méthodes et
+// constructeurs comme fonctions du namespace global, objet en premier argument.
+// Les macros @crate::register_k8s_object/@crate::register_k8s_generic/
+// @crate::register_k8s_raw restent publiées inchangées : surface stable pour les
+// types custom en aval (vynil) et rejouées par ./k8s_mock.rs ; les enregistreurs ne
+// les emploient plus, leur définition unique est la liste `*_fns`.
+
+/// The `data` getter of `DynamicObject` (cloned, never the live map).
+fn dynamic_object_data(obj: &mut DynamicObject) -> Dynamic {
+    Dynamic::from(obj.data.clone())
+}
 
 /// Registers `K8sGeneric`, `K8sObject` and `DynamicObject` types on a Rhai engine.
+///
+/// Module twin: [`k8sgeneric_module`] — same list of registrations, same semantics.
 pub fn k8sgeneric_rhai_register(engine: &mut Engine) {
-    use crate::{register_k8s_generic, register_k8s_object};
-    engine
-        .register_type_with_name::<DynamicObject>("DynamicObject")
-        .register_get("data", |obj: &mut DynamicObject| -> Dynamic {
-            Dynamic::from(obj.data.clone())
-        });
-    register_k8s_object!(engine, K8sObject);
-    register_k8s_generic!(
-        engine,
-        K8sGeneric,
-        K8sObject,
+    k8sgeneric_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`k8sgeneric_rhai_register`] (issue #19): the same types and the
+/// same functions, under the global namespace of a fresh [`Module`], registrable by
+/// [`Engine::register_static_module`] under the name the consumer picks. A twin that
+/// drifts from its registrar is a defect: both share the single `k8sgeneric_fns` list.
+#[must_use]
+pub fn k8sgeneric_module() -> Module {
+    let mut module = Module::new();
+    k8sgeneric_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The `K8sGeneric` group defined once (motif double cible): three type entries, the
+/// getters and the functions, each with its parameter names and its `///` comment
+/// (both under `metadata` only). The group is too big for one list (pedantic
+/// `too_many_lines`); the sub-lists below keep it a single definition per entry.
+fn k8sgeneric_fns(target: &mut Target<'_>) {
+    k8sgeneric_dynamicobject_fns(target);
+    k8sgeneric_object_fns(target);
+    k8sgeneric_handle_fns(target);
+    k8sgeneric_reads_fns(target);
+    k8sgeneric_writes_fns(target);
+}
+
+/// The `DynamicObject` type entry and its `data` getter.
+fn k8sgeneric_dynamicobject_fns(target: &mut Target<'_>) {
+    register_type_at::<DynamicObject>(target, "DynamicObject");
+    register_get_at(
+        target,
+        "data",
+        &["/// Cloned `data` map of the dynamic object, as a Rhai value."],
+        &["obj: &mut DynamicObject"],
+        dynamic_object_data,
+    );
+}
+
+/// The `K8sObject` type entry, its three getters, `delete` and the six waits.
+fn k8sgeneric_object_fns(target: &mut Target<'_>) {
+    register_type_at::<K8sObject>(target, "K8sObject");
+    register_get_at(
+        target,
+        "kind",
+        &["/// Runtime kind of the object's type meta; empty string when absent (list items)."],
+        &["obj: &mut K8sObject"],
+        K8sObject::get_kind,
+    );
+    register_get_at(
+        target,
+        "original_kind",
+        &["/// Kind resolved when the handle was built; the reliable one."],
+        &["obj: &mut K8sObject"],
+        K8sObject::original_kind,
+    );
+    register_get_at(
+        target,
+        "metadata",
+        &["/// The object's `metadata` as a Rhai value."],
+        &["obj: &mut K8sObject"],
+        K8sObject::get_metadata,
+    );
+    register_at(
+        target,
+        "delete",
+        &["/// Deletes the object with Foreground propagation."],
+        &["obj: &mut K8sObject"],
+        K8sObject::rhai_delete,
+    );
+    register_at(
+        target,
+        "wait_condition",
+        &["/// Waits until status.conditions[type=condition].status is \"True\", up to `timeout` seconds."],
+        &["obj: &mut K8sObject", "condition: String", "timeout: i64"],
+        K8sObject::wait_condition,
+    );
+    register_at(
+        target,
+        "wait_status",
+        &["/// Waits until the boolean `status.<prop>` is true, up to `timeout` seconds."],
+        &["obj: &mut K8sObject", "prop: String", "timeout: i64"],
+        K8sObject::wait_status,
+    );
+    register_at(
+        target,
+        "wait_status_prop",
+        &["/// Waits until the non-boolean `status.<prop>` carries a truthy value, up to `timeout` seconds."],
+        &["obj: &mut K8sObject", "prop: String", "timeout: i64"],
+        K8sObject::wait_status_prop,
+    );
+    register_at(
+        target,
+        "wait_status_string",
+        &["/// Waits until `status.<prop>` equals the string `value`, up to `timeout` seconds."],
+        &[
+            "obj: &mut K8sObject",
+            "prop: String",
+            "value: String",
+            "timeout: i64",
+        ],
+        K8sObject::wait_status_string,
+    );
+    register_at(
+        target,
+        "wait_for",
+        &[
+            "/// Waits until `predicate` (evaluated on the full object at each watch event) returns true, up to `timeout` seconds.",
+        ],
+        &["obj: &mut K8sObject", "predicate: FnPtr", "timeout: i64"],
+        K8sObject::wait_for,
+    );
+    register_at(
+        target,
+        "wait_deleted",
+        &["/// Waits until this object's uid is observed as deleted, up to `timeout` seconds."],
+        &["obj: &mut K8sObject", "timeout: i64"],
+        K8sObject::rhai_wait_deleted,
+    );
+}
+
+/// The `K8sGeneric` type entry, its three `k8s_resource` constructors and the cache
+/// refresher.
+fn k8sgeneric_handle_fns(target: &mut Target<'_>) {
+    register_type_at::<K8sGeneric>(target, "K8sGeneric");
+    register_at(
+        target,
+        "k8s_resource",
+        &[
+            "/// Resolves `name` (kind or plural, any case) as an all-namespaces handle; never fails on an unresolved kind.",
+        ],
+        &["name: String"],
         K8sGeneric::new_global,
+    );
+    register_at(
+        target,
+        "k8s_resource",
+        &["/// Resolves `name` within namespace `ns` (empty treated as absent; no `default` ever)."],
+        &["name: String", "ns: String"],
         K8sGeneric::new_ns,
-        K8sGeneric::new_group_ns
+    );
+    register_at(
+        target,
+        "k8s_resource",
+        &[
+            "/// Resolves `name` by `api_version` (group split on '/'; without '/', the version is ignored) in `ns`.",
+        ],
+        &["api_version: String", "name: String", "ns: String"],
+        K8sGeneric::new_group_ns,
+    );
+    register_at(
+        target,
+        "list",
+        &["/// Lists the resource: the complete docobject, unpaged."],
+        &["h: &mut K8sGeneric"],
+        K8sGeneric::rhai_list,
+    );
+    register_at(
+        target,
+        "list",
+        &[
+            "/// Lists with a label selector string passed verbatim to the server (invalid selectors fail server-side).",
+        ],
+        &["h: &mut K8sGeneric", "labels: String"],
+        K8sGeneric::rhai_list_labels,
+    );
+    register_at(
+        target,
+        "update_k8s_crd_cache",
+        &[
+            "/// Rediscovers and replaces the cached discovery; the old cache is kept on failure or 60 s timeout.",
+        ],
+        &[],
+        update_cache,
+    );
+}
+
+/// The `K8sGeneric` read face: meta list, gets (a 404 is an error everywhere).
+fn k8sgeneric_reads_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "list_meta",
+        &["/// Lists the PartialObjectMeta of the resource (complete docobject list)."],
+        &["h: &mut K8sGeneric"],
+        K8sGeneric::rhai_list_meta,
+    );
+    register_at(
+        target,
+        "get",
+        &["/// Gets `name` as the complete docobject; a 404 is an error, never None."],
+        &["h: &mut K8sGeneric", "name: String"],
+        K8sGeneric::rhai_get,
+    );
+    register_at(
+        target,
+        "get_meta",
+        &["/// Gets the PartialObjectMeta of `name`; a 404 is an error."],
+        &["h: &mut K8sGeneric", "name: String"],
+        K8sGeneric::rhai_get_meta,
+    );
+    register_at(
+        target,
+        "get_obj",
+        &["/// Gets a `K8sObject` handle bound to `name`."],
+        &["h: &mut K8sGeneric", "name: String"],
+        K8sGeneric::rhai_get_obj,
+    );
+}
+
+/// The `K8sGeneric` write face (SSA forced for `patch`/`apply`, PUT for `replace`,
+/// Foreground for `delete`), plus `exist` and the `scope` getter.
+fn k8sgeneric_writes_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "delete",
+        &["/// Deletes `name` with Foreground propagation; a 404 is an error."],
+        &["h: &mut K8sGeneric", "name: String"],
+        K8sGeneric::rhai_delete,
+    );
+    register_at(
+        target,
+        "create",
+        &["/// Creates `data`, with `metadata.labels`/`ownerReferences` injected per the context providers."],
+        &["h: &mut K8sGeneric", "data: Dynamic"],
+        K8sGeneric::rhai_create,
+    );
+    register_at(
+        target,
+        "replace",
+        &["/// PUTs `data` as `name` without reading the resourceVersion; a 409 conflict surfaces as is."],
+        &["h: &mut K8sGeneric", "name: String", "data: Dynamic"],
+        K8sGeneric::rhai_replace,
+    );
+    register_at(
+        target,
+        "patch",
+        &[
+            "/// Server-side applies `data` to `name`: forced SSA, fieldManager = client name; no other patch kind exists.",
+        ],
+        &["h: &mut K8sGeneric", "name: String", "data: Dynamic"],
+        K8sGeneric::rhai_patch,
+    );
+    register_at(
+        target,
+        "apply",
+        &[
+            "/// Server-side applies `data` to `name`; an immutable-`Job` error on a completed Job returns the current object.",
+        ],
+        &["h: &mut K8sGeneric", "name: String", "data: Dynamic"],
+        K8sGeneric::rhai_apply,
+    );
+    register_at(
+        target,
+        "exist",
+        &[
+            "/// True when discovery resolved this kind at construction; says NOTHING about the object existing.",
+        ],
+        &["h: &mut K8sGeneric"],
+        K8sGeneric::rhai_exist,
+    );
+    register_get_at(
+        target,
+        "scope",
+        &["/// `\"cluster\"` or `\"namespace\"` per the resolved resource's scope."],
+        &["h: &mut K8sGeneric"],
+        K8sGeneric::rhai_get_scope,
     );
 }
 
 /// Registers the `K8sRaw` type (raw API access) on a Rhai engine.
+///
+/// Module twin: [`k8sraw_module`] — same list of registrations, same semantics.
 pub fn k8sraw_rhai_register(engine: &mut Engine) {
-    use crate::register_k8s_raw;
-    register_k8s_raw!(engine, K8sRaw, K8sRaw::new);
+    k8sraw_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`k8sraw_rhai_register`] (issue #19): the same type entry and the
+/// same functions, under the global namespace of a fresh [`Module`], registrable by
+/// [`Engine::register_static_module`] under the name the consumer picks. A twin that
+/// drifts from its registrar is a defect: both share the single `k8sraw_fns` list.
+#[must_use]
+pub fn k8sraw_module() -> Module {
+    let mut module = Module::new();
+    k8sraw_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The `K8sRaw` group defined once (motif double cible). `get_api_version` is RENAMED
+/// `get_cluster_version` in script (no alias — the script name is the contract).
+fn k8sraw_fns(target: &mut Target<'_>) {
+    register_type_at::<K8sRaw>(target, "K8sRaw");
+    register_at(
+        target,
+        "new_k8s_raw",
+        &["/// Builds a `K8sRaw` bound to the shared raw client."],
+        &[],
+        K8sRaw::new,
+    );
+    register_at(
+        target,
+        "get_url",
+        &[
+            "/// GETs `url` verbatim (relative or absolute) and returns the JSON body only; a non-2xx is an error.",
+        ],
+        &["raw: &mut K8sRaw", "url: String"],
+        K8sRaw::rhai_get_url,
+    );
+    register_at(
+        target,
+        "get_cluster_version",
+        &[
+            "/// GETs `/version` and returns the JSON body (script name of the API-version endpoint; no `get_api_version` alias).",
+        ],
+        &["raw: &mut K8sRaw"],
+        K8sRaw::rhai_get_api_version,
+    );
+    register_at(
+        target,
+        "get_api_resources",
+        &[
+            "/// GETs `/apis` raw with the discovery Accept header — the discovery cache is NOT consulted, nothing is filtered.",
+        ],
+        &["raw: &mut K8sRaw"],
+        K8sRaw::rhai_get_api_resources,
+    );
 }
 
 /// Registers the typed workload helpers (`K8sDeploy`, `K8sDaemonSet`, `K8sStatefulSet`,
 /// `K8sJob`) on a Rhai engine.
+///
+/// Module twin: [`k8sworkload_module`] — same list of registrations, same semantics.
 pub fn k8sworkload_rhai_register(engine: &mut Engine) {
-    engine
-        .register_type_with_name::<K8sDeploy>("K8sDeploy")
-        .register_fn("get_deployment", K8sDeploy::get_deployment)
-        .register_get("metadata", K8sDeploy::get_metadata)
-        .register_get("spec", K8sDeploy::get_spec)
-        .register_get("status", K8sDeploy::get_status)
-        .register_fn("wait_available", K8sDeploy::wait_available);
-    engine
-        .register_type_with_name::<K8sDaemonSet>("K8sDaemonSet")
-        .register_fn("get_deamonset", K8sDaemonSet::get_deamonset)
-        .register_get("metadata", K8sDaemonSet::get_metadata)
-        .register_get("spec", K8sDaemonSet::get_spec)
-        .register_get("status", K8sDaemonSet::get_status)
-        .register_fn("wait_available", K8sDaemonSet::wait_available);
-    engine
-        .register_type_with_name::<K8sStatefulSet>("K8sStatefulSet")
-        .register_fn("get_statefulset", K8sStatefulSet::get_sts)
-        .register_get("metadata", K8sStatefulSet::get_metadata)
-        .register_get("spec", K8sStatefulSet::get_spec)
-        .register_get("status", K8sStatefulSet::get_status)
-        .register_fn("wait_available", K8sStatefulSet::wait_available);
-    engine
-        .register_type_with_name::<K8sJob>("K8sJob")
-        .register_fn("get_job", K8sJob::get_job)
-        .register_get("metadata", K8sJob::get_metadata)
-        .register_get("spec", K8sJob::get_spec)
-        .register_get("status", K8sJob::get_status)
-        .register_fn("wait_done", K8sJob::wait_done);
+    k8sworkload_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`k8sworkload_rhai_register`] (issue #19): the same types and the
+/// same functions, under the global namespace of a fresh [`Module`], registrable by
+/// [`Engine::register_static_module`] under the name the consumer picks. A twin that
+/// drifts from its registrar is a defect: both share the single `k8sworkload_fns` list.
+#[must_use]
+pub fn k8sworkload_module() -> Module {
+    let mut module = Module::new();
+    k8sworkload_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The typed workloads group defined once (motif double cible): four types, each with
+/// one constructor (ns and name mandatory, NO `default` namespace — and the locked
+/// typo `get_deamonset`), three getters and one wait. One sub-list per type (pedantic
+/// `too_many_lines`); the entries stay a single definition.
+fn k8sworkload_fns(target: &mut Target<'_>) {
+    k8sworkload_deploy_fns(target);
+    k8sworkload_daemonset_fns(target);
+    k8sworkload_statefulset_fns(target);
+    k8sworkload_job_fns(target);
+}
+
+/// The `K8sDeploy` type entry and its surface.
+fn k8sworkload_deploy_fns(target: &mut Target<'_>) {
+    register_type_at::<K8sDeploy>(target, "K8sDeploy");
+    register_at(
+        target,
+        "get_deployment",
+        &["/// Fetches the Deployment `name` in `namespace` (empty namespace treated as absent)."],
+        &["namespace: String", "name: String"],
+        K8sDeploy::get_deployment,
+    );
+    register_get_at(
+        target,
+        "metadata",
+        &["/// The Deployment's metadata rendered via JSON; absent → unit."],
+        &["d: &mut K8sDeploy"],
+        K8sDeploy::get_metadata,
+    );
+    register_get_at(
+        target,
+        "spec",
+        &["/// The Deployment's spec rendered via JSON; absent → unit."],
+        &["d: &mut K8sDeploy"],
+        K8sDeploy::get_spec,
+    );
+    register_get_at(
+        target,
+        "status",
+        &["/// The Deployment's status rendered via JSON; absent → unit."],
+        &["d: &mut K8sDeploy"],
+        K8sDeploy::get_status,
+    );
+    register_at(
+        target,
+        "wait_available",
+        &[
+            "/// Waits until an `Available` status condition reads \"True\" (first match wins), up to `timeout` seconds.",
+        ],
+        &["d: &mut K8sDeploy", "timeout: i64"],
+        K8sDeploy::wait_available,
+    );
+}
+
+/// The `K8sDaemonSet` type entry and its surface (constructor under the locked typo).
+fn k8sworkload_daemonset_fns(target: &mut Target<'_>) {
+    register_type_at::<K8sDaemonSet>(target, "K8sDaemonSet");
+    register_at(
+        target,
+        "get_deamonset",
+        &[
+            "/// Fetches the DaemonSet `name` in `namespace` (typo locked; empty namespace treated as absent).",
+        ],
+        &["namespace: String", "name: String"],
+        K8sDaemonSet::get_deamonset,
+    );
+    register_get_at(
+        target,
+        "metadata",
+        &["/// The DaemonSet's metadata rendered via JSON; absent → unit."],
+        &["ds: &mut K8sDaemonSet"],
+        K8sDaemonSet::get_metadata,
+    );
+    register_get_at(
+        target,
+        "spec",
+        &["/// The DaemonSet's spec rendered via JSON; absent → unit."],
+        &["ds: &mut K8sDaemonSet"],
+        K8sDaemonSet::get_spec,
+    );
+    register_get_at(
+        target,
+        "status",
+        &["/// The DaemonSet's status rendered via JSON; absent → unit."],
+        &["ds: &mut K8sDaemonSet"],
+        K8sDaemonSet::get_status,
+    );
+    register_at(
+        target,
+        "wait_available",
+        &[
+            "/// Waits until desired_number_scheduled == number_available (absence = false), up to `timeout` seconds.",
+        ],
+        &["ds: &mut K8sDaemonSet", "timeout: i64"],
+        K8sDaemonSet::wait_available,
+    );
+}
+
+/// The `K8sStatefulSet` type entry and its surface.
+fn k8sworkload_statefulset_fns(target: &mut Target<'_>) {
+    register_type_at::<K8sStatefulSet>(target, "K8sStatefulSet");
+    register_at(
+        target,
+        "get_statefulset",
+        &["/// Fetches the StatefulSet `name` in `namespace` (empty namespace treated as absent)."],
+        &["namespace: String", "name: String"],
+        K8sStatefulSet::get_sts,
+    );
+    register_get_at(
+        target,
+        "metadata",
+        &["/// The StatefulSet's metadata rendered via JSON; absent → unit."],
+        &["sts: &mut K8sStatefulSet"],
+        K8sStatefulSet::get_metadata,
+    );
+    register_get_at(
+        target,
+        "spec",
+        &["/// The StatefulSet's spec rendered via JSON; absent → unit."],
+        &["sts: &mut K8sStatefulSet"],
+        K8sStatefulSet::get_spec,
+    );
+    register_get_at(
+        target,
+        "status",
+        &["/// The StatefulSet's status rendered via JSON; absent → unit."],
+        &["sts: &mut K8sStatefulSet"],
+        K8sStatefulSet::get_status,
+    );
+    register_at(
+        target,
+        "wait_available",
+        &["/// Waits until spec.replicas (absent counts 1) == available_replicas, up to `timeout` seconds."],
+        &["sts: &mut K8sStatefulSet", "timeout: i64"],
+        K8sStatefulSet::wait_available,
+    );
+}
+
+/// The `K8sJob` type entry and its surface (`wait_done`, not `wait_available`).
+fn k8sworkload_job_fns(target: &mut Target<'_>) {
+    register_type_at::<K8sJob>(target, "K8sJob");
+    register_at(
+        target,
+        "get_job",
+        &["/// Fetches the Job `name` in `namespace` (empty namespace treated as absent)."],
+        &["namespace: String", "name: String"],
+        K8sJob::get_job,
+    );
+    register_get_at(
+        target,
+        "metadata",
+        &["/// The Job's metadata rendered via JSON; absent → unit."],
+        &["j: &mut K8sJob"],
+        K8sJob::get_metadata,
+    );
+    register_get_at(
+        target,
+        "spec",
+        &["/// The Job's spec rendered via JSON; absent → unit."],
+        &["j: &mut K8sJob"],
+        K8sJob::get_spec,
+    );
+    register_get_at(
+        target,
+        "status",
+        &["/// The Job's status rendered via JSON; absent → unit."],
+        &["j: &mut K8sJob"],
+        K8sJob::get_status,
+    );
+    register_at(
+        target,
+        "wait_done",
+        &[
+            "/// Waits until the Job is completed (condition Complete=True or status.completionTime set), up to `timeout` seconds.",
+        ],
+        &["j: &mut K8sJob", "timeout: i64"],
+        K8sJob::wait_done,
+    );
 }
 
 // ── Macros ───────────────────────────────────────────────────────────────────
@@ -4681,6 +5184,641 @@ mod tests {
                 .expect_err("le cumul garde le generic")
                 .to_string()
                 .contains("Unsupported method")
+        );
+    }
+
+    // ════════════════════════════════════════════════════════════════════════════
+    // Tâche « Jumeau module et documentation » (issues #19 et #20) — Scenarios
+    // « k8sgeneric_module / k8sraw_module / k8sworkload_module équivaut à
+    // <enregistreur> » et « fonctions documentées sous metadata (k8s) ». Le motif est
+    // celui du pilote de ./engine.rs : une seule liste par groupe appliquée soit à
+    // l'engine (enregistreur, fonctions en espace de noms global, jamais dans un module
+    // global intermédiaire — `gen_fn_signatures` les voit comme avant), soit au jumeau
+    // module, enregistré par `rhai::Engine::register_static_module` sous `m`.
+    // Particularité k8s, vérifiée par sonde avant d'écrire (aucun écart à remonter) :
+    // les quatre familles s'expriment dans un Module — TYPE par
+    // `rhai::Module::set_custom_type` (précédent chrono/semver/hashes/oci), ACCESSEURS
+    // par `rhai::FuncRegistration::new_getter` (le `register_get` des macros, même nom
+    // interne `get$…`), méthodes et constructeurs par le `FuncRegistration` du motif
+    // sous l'espace de noms global. La face qualifiée des constructeurs qui touchent
+    // `CLIENT`/`CACHE` (workloads, `new_k8s_raw`) n'est pas rejouable sans cluster —
+    // verrouillée par l'égalité des ensembles de noms ; les faces rejouées sont celles
+    // que les Scenario de cette spec jouent déjà sans cluster (handle fantôme
+    // non-résolu, `current_thread`, mocks `tower-test`, objets typés construits en
+    // process).
+    // ════════════════════════════════════════════════════════════════════════════
+
+    /// Les 24 noms de fonctions (getters sous leur nom interne `get$…`) que
+    /// `k8sgeneric_rhai_register` ajoute à la baseline — surface du `Must` de k8s.sdd.
+    const K8SGENERIC_FNS: [&str; 24] = [
+        "k8s_resource",
+        "list",
+        "list_meta",
+        "get",
+        "get_meta",
+        "get_obj",
+        "delete",
+        "create",
+        "replace",
+        "patch",
+        "apply",
+        "exist",
+        "update_k8s_crd_cache",
+        "wait_condition",
+        "wait_status",
+        "wait_status_prop",
+        "wait_status_string",
+        "wait_for",
+        "wait_deleted",
+        "get$data",
+        "get$kind",
+        "get$original_kind",
+        "get$metadata",
+        "get$scope",
+    ];
+
+    /// Les 4 noms du registre raw, dont le RENOMMÉ `get_cluster_version` (k8s.sdd `Must`).
+    const K8SRAW_FNS: [&str; 4] = [
+        "new_k8s_raw",
+        "get_url",
+        "get_cluster_version",
+        "get_api_resources",
+    ];
+
+    /// Les 9 noms du registre workload (getters `get$…` dédupliqués entre les quatre
+    /// types), typo `get_deamonset` incluse (verrouillée).
+    const K8SWORKLOAD_FNS: [&str; 9] = [
+        "get_deployment",
+        "get_deamonset",
+        "get_statefulset",
+        "get_job",
+        "wait_available",
+        "wait_done",
+        "get$metadata",
+        "get$spec",
+        "get$status",
+    ];
+
+    /// Engine vierge portant le jumeau module enregistré par
+    /// `rhai::Engine::register_static_module` sous le nom `m` (face qualifiée du Scenario).
+    fn engine_with_module(module: rhai::Module) -> Engine {
+        let mut engine = Engine::new();
+        engine.register_static_module("m", module.into());
+        engine
+    }
+
+    /// Introspection de l'engine : noms de fonctions enregistrés sur lui, hors packages
+    /// standard de `@rhai` (`collect_fn_metadata`, feature `internals` toujours activée).
+    fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    fn set_of(noms: &[&str]) -> std::collections::BTreeSet<String> {
+        noms.iter().map(|nom| (*nom).to_string()).collect()
+    }
+
+    /// Noms qu'un jumeau module ajoute à un `Engine::new` par `register_static_module`
+    /// sous `m` (diff sur la baseline, préfixe `m::` retiré s'il est porté par le nom).
+    fn names_added_by_module(module: rhai::Module) -> std::collections::BTreeSet<String> {
+        let apres = registered_names(&engine_with_module(module));
+        let avant = registered_names(&Engine::new());
+        apres
+            .difference(&avant)
+            .map(|nom| {
+                let s = nom.as_str();
+                s.strip_prefix("m::").unwrap_or(s).to_string()
+            })
+            .collect()
+    }
+
+    /// Noms que l'enregistreur ajoute à un `Engine::new` par rapport à sa baseline.
+    fn names_added_by(register: impl Fn(&mut Engine)) -> std::collections::BTreeSet<String> {
+        let mut engine = Engine::new();
+        register(&mut engine);
+        let apres = registered_names(&engine);
+        let avant = registered_names(&Engine::new());
+        apres.difference(&avant).cloned().collect()
+    }
+
+    /// Comparaison d'un même script joué sur deux engines : mêmes valeurs rendues ; sur
+    /// échec, le même noyau de message porté des deux côtés (l'enveloppe d'appel
+    /// qualifié vs nu appartient à `@rhai`, non contractée — voix du pilote).
+    fn comparer_resultats(
+        origine: &str,
+        marqueur: Option<&str>,
+        a: crate::RhaiRes<rhai::Dynamic>,
+        b: crate::RhaiRes<rhai::Dynamic>,
+    ) {
+        match (a, b) {
+            (Ok(x), Ok(y)) => assert_eq!(
+                x.to_string(),
+                y.to_string(),
+                "valeur divergente pour « {origine} »"
+            ),
+            (Err(e), Err(f)) => {
+                let marqueur = marqueur.expect("jeu de test : les échecs portent un noyau de message");
+                assert!(
+                    e.to_string().contains(marqueur),
+                    "l'erreur de « {origine} » doit porter « {marqueur} », obtenu : {e}"
+                );
+                assert!(
+                    f.to_string().contains(marqueur),
+                    "l'erreur jumelle de « {origine} » doit porter « {marqueur} », obtenu : {f}"
+                );
+            }
+            (a, b) => panic!("divergence succès/échec pour « {origine} » : {a:?} vs {b:?}"),
+        }
+    }
+
+    /// Handle fantôme non-résolu (`api: None`) : les méthodes rendent
+    /// `Error::UnsupportedMethod` SANS appel API, `exist` rend faux, `scope`
+    /// rend la chaîne — les faces rejouables du Scenario sans cluster.
+    fn ghost_generic() -> K8sGeneric {
+        K8sGeneric {
+            api: None,
+            ns: None,
+            scope: Scope::Cluster,
+            kind: "ghost".to_string(),
+        }
+    }
+
+    fn ghost_scope() -> rhai::Scope<'static> {
+        let mut s = rhai::Scope::new();
+        s.push("h", ghost_generic());
+        s
+    }
+
+    /// Scenario « `k8sgeneric_module` équivaut à `k8sgeneric_rhai_register` ». Sous
+    /// `current_thread` : le pont des constructeurs `k8s_resource` rend l'`Error::Other`
+    /// de ./rt.sdd SANS toucher les `LazyLock` (même voie que le verrou
+    /// `k8s_resource_constructors_render_bridge_error_not_panic_on_current_thread`), et
+    /// `update_k8s_crd_cache` trace son warn de pont sans panic (verrou `warn_tests`).
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_k8sgeneric_module_equivalent_a_k8sgeneric_rhai_register() {
+        assert_eq!(
+            names_added_by(k8sgeneric_rhai_register),
+            set_of(&K8SGENERIC_FNS),
+            "l'enregistreur generic ajoute exactement les 24 fonctions du `Must`"
+        );
+        assert_eq!(
+            names_added_by_module(k8sgeneric_module()),
+            set_of(&K8SGENERIC_FNS),
+            "le jumeau generic rend exactement les noms de l'enregistreur, aucun en plus ni en moins"
+        );
+
+        let mut enregistreur = Engine::new();
+        k8sgeneric_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(k8sgeneric_module());
+        // (script nu, script qualifié sous `m` ou None pour les accesseurs — le nom
+        // interne `get$…` d'un accesseur n'est pas un identifiant de script ; la face
+        // qualifiée des accesseurs est couverte par l'égalité des ensembles de noms),
+        // noyau d'erreur le cas échéant.
+        let appels: Vec<(String, Option<String>, Option<&'static str>)> = vec![
+            // Scenario « pont du résolveur » : les trois arités de `k8s_resource`, en
+            // nu ET qualifié — mêmes erreurs du pont.
+            (
+                r#"k8s_resource("pods")"#.into(),
+                Some(r#"m::k8s_resource("pods")"#.into()),
+                Some("requires a multi-thread tokio runtime"),
+            ),
+            (
+                r#"k8s_resource("pods", "app")"#.into(),
+                Some(r#"m::k8s_resource("pods", "app")"#.into()),
+                Some("requires a multi-thread tokio runtime"),
+            ),
+            (
+                r#"k8s_resource("apps/v1", "deployments", "app")"#.into(),
+                Some(r#"m::k8s_resource("apps/v1", "deployments", "app")"#.into()),
+                Some("requires a multi-thread tokio runtime"),
+            ),
+            // `update_k8s_crd_cache` : unité des deux côtés (warn de pont sous
+            // `current_thread`, jamais de panic — verrou existant).
+            (
+                "update_k8s_crd_cache()".into(),
+                Some("m::update_k8s_crd_cache()".into()),
+                None,
+            ),
+            // Handle fantôme : `exist` faux (ouï-dire du cache, jamais d'erreur),
+            // `scope` la chaîne du scope, méthodes en `Unsupported method`.
+            ("h.exist()".into(), Some("m::exist(h)".into()), None),
+            ("h.scope".into(), None, None),
+            (
+                "h.list()".into(),
+                Some("m::list(h)".into()),
+                Some("Unsupported method"),
+            ),
+            (
+                "h.get(\"x\")".into(),
+                Some("m::get(h, \"x\")".into()),
+                Some("Unsupported method"),
+            ),
+            (
+                "h.get_obj(\"x\")".into(),
+                Some("m::get_obj(h, \"x\")".into()),
+                Some("Unsupported method"),
+            ),
+            (
+                "h.create(#{ kind: \"ConfigMap\" })".into(),
+                Some("m::create(h, #{ kind: \"ConfigMap\" })".into()),
+                Some("Unsupported method"),
+            ),
+            // Les trois types du registre portent leur nom des deux voies
+            // (`register_type_with_name` vs `set_custom_type`, consultés par `type_of`) ;
+            // le getter `data` de `DynamicObject` est joué nu sous les deux faces.
+            ("type_of(h)".into(), Some("type_of(h)".into()), None),
+        ];
+        for (nu, qualifie, marqueur) in appels {
+            let rn = enregistreur.eval_with_scope::<Dynamic>(&mut ghost_scope(), &nu);
+            let rm = par_module.eval_with_scope::<Dynamic>(&mut ghost_scope(), &nu);
+            comparer_resultats(&nu, marqueur, rn, rm);
+            if let Some(q) = &qualifie {
+                let rn = enregistreur.eval_with_scope::<Dynamic>(&mut ghost_scope(), &nu);
+                let rq = par_module.eval_with_scope::<Dynamic>(&mut ghost_scope(), q);
+                comparer_resultats(q, marqueur, rn, rq);
+            }
+        }
+        // Accesseurs nus : le getter `scope` est résolu À TRAVERS le module statique
+        // (précédent probes de la tâche) — la propriété seule, sans équivalent qualifié
+        // scriptable, est la face portable des accesseurs.
+        let prop_reg = enregistreur.eval_with_scope::<Dynamic>(&mut ghost_scope(), "h.scope");
+        let prop_mod = par_module.eval_with_scope::<Dynamic>(&mut ghost_scope(), "h.scope");
+        comparer_resultats("h.scope (double face)", None, prop_reg, prop_mod);
+    }
+
+    /// Scenario « `k8sraw_module` équivaut à `k8sraw_rhai_register` ». Le handle est un
+    /// `K8sRaw` sur faux API server `tower-test` (patron `mocked_raw`) ; `type_of` est
+    // jouable sans appel, `get_cluster_version` sert quatre requêtes (nu ×2 de
+    // l'enregistreur, nu et qualifié du jumeau). La face qualifiée de `new_k8s_raw`
+    /// touche `RAW_CLIENT` (panique contractuelle sans câblage) — hors jeu, verrouillée
+    /// par l'égalité des noms.
+    #[test]
+    fn test_k8sraw_module_equivalent_a_k8sraw_rhai_register() {
+        assert_eq!(
+            names_added_by(k8sraw_rhai_register),
+            set_of(&K8SRAW_FNS),
+            "l'enregistreur raw ajoute exactement les 4 fonctions du `Must`"
+        );
+        assert_eq!(
+            names_added_by_module(k8sraw_module()),
+            set_of(&K8SRAW_FNS),
+            "le jumeau raw rend exactement les noms de l'enregistreur"
+        );
+
+        let server_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (raw, handle) = server_rt.block_on(async { mocked_raw() });
+        let responder = server_rt.spawn(async move {
+            let mut handle = std::pin::pin!(handle);
+            for _ in 0..4 {
+                let (_req, send) = handle.next_request().await.expect("service not called");
+                send.send_response(
+                    http::Response::builder()
+                        .status(200)
+                        .header("Content-Type", "application/json")
+                        .body(Body::from(
+                            br#"{"major":"1","minor":"31","gitVersion":"v1.31.0"}"#.to_vec(),
+                        ))
+                        .unwrap(),
+                );
+            }
+        });
+        let mut enregistreur = Engine::new();
+        k8sraw_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(k8sraw_module());
+        let raw_scope = || {
+            let mut s = rhai::Scope::new();
+            s.push("r", raw.clone());
+            s
+        };
+        let appels: Vec<(String, Option<String>, Option<&'static str>)> = vec![
+            // Scenario « K8sRaw passe l'URL verbatim… » — le RENOMMÉ `get_cluster_version`
+            // sert le corps JSON `/version` des trois faces.
+            (
+                "r.get_cluster_version()".into(),
+                Some("m::get_cluster_version(r)".into()),
+                None,
+            ),
+            // Entrée de TYPE portable (`type_of`, aucun appel API).
+            ("type_of(r)".into(), None, None),
+        ];
+        for (nu, qualifie, marqueur) in appels {
+            let rn = enregistreur.eval_with_scope::<Dynamic>(&mut raw_scope(), &nu);
+            let rm = par_module.eval_with_scope::<Dynamic>(&mut raw_scope(), &nu);
+            comparer_resultats(&nu, marqueur, rn, rm);
+            if let Some(q) = &qualifie {
+                let rn = enregistreur.eval_with_scope::<Dynamic>(&mut raw_scope(), &nu);
+                let rq = par_module.eval_with_scope::<Dynamic>(&mut raw_scope(), q);
+                comparer_resultats(q, marqueur, rn, rq);
+            }
+        }
+        // Verrous de valeur : `type_of(r)` rend « K8sRaw » des deux faces.
+        assert_eq!(
+            enregistreur
+                .eval_with_scope::<String>(&mut raw_scope(), "type_of(r)")
+                .unwrap(),
+            "K8sRaw"
+        );
+        assert_eq!(
+            par_module
+                .eval_with_scope::<String>(&mut raw_scope(), "type_of(r)")
+                .unwrap(),
+            "K8sRaw"
+        );
+        responder.abort();
+        drop(raw);
+        server_rt.shutdown_background();
+    }
+
+    /// Les quatre handles typés construits EN PROCESS (client `tower-test` posé sur un
+    /// runtime dédié, objets `k8s_openapi` par défaut portant seul leur `metadata.name`).
+    fn typed_workload_handles() -> (
+        tokio::runtime::Runtime,
+        K8sDeploy,
+        K8sDaemonSet,
+        K8sStatefulSet,
+        K8sJob,
+    ) {
+        let server_rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = server_rt.block_on(async {
+            let (mock_service, _handle) =
+                tower_test::mock::pair::<http::Request<Body>, http::Response<Body>>();
+            kube::Client::new(mock_service, "ns")
+        });
+        let meta = |name: &str| k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+            name: Some(name.to_string()),
+            ..Default::default()
+        };
+        (
+            server_rt,
+            K8sDeploy {
+                api: Api::namespaced(client.clone(), "app"),
+                obj: k8s_openapi::api::apps::v1::Deployment {
+                    metadata: meta("d"),
+                    ..Default::default()
+                },
+            },
+            K8sDaemonSet {
+                api: Api::namespaced(client.clone(), "app"),
+                obj: k8s_openapi::api::apps::v1::DaemonSet {
+                    metadata: meta("ds"),
+                    ..Default::default()
+                },
+            },
+            K8sStatefulSet {
+                api: Api::namespaced(client.clone(), "app"),
+                obj: k8s_openapi::api::apps::v1::StatefulSet {
+                    metadata: meta("sts"),
+                    ..Default::default()
+                },
+            },
+            K8sJob {
+                api: Api::namespaced(client, "app"),
+                obj: k8s_openapi::api::batch::v1::Job {
+                    metadata: meta("j"),
+                    ..Default::default()
+                },
+            },
+        )
+    }
+
+    /// Scenario « `k8sworkload_module` équivaut à `k8sworkload_rhai_register` ». Les
+    /// quatre handles typés sont construits EN PROCESS (champs pubs, objet
+    /// `k8s_openapi` par défaut) : les getters `metadata`/`spec`/`status` et `type_of`
+    /// sont jouables sans cluster. Les constructeurs (`get_deployment`… et leurs faces
+    /// qualifiées) touchent `CLIENT` — panique contractuelle sans câblage, hors jeu,
+    /// verrouillés par l'égalité des ensembles de noms ; `wait_available`/`wait_done`
+    /// exigent un watch et voyagent dans les verrous `tower-test` existants.
+    #[test]
+    fn test_k8sworkload_module_equivalent_a_k8sworkload_rhai_register() {
+        assert_eq!(
+            names_added_by(k8sworkload_rhai_register),
+            set_of(&K8SWORKLOAD_FNS),
+            "l'enregistreur workload ajoute exactement les 9 noms du `Must` (typo incluse)"
+        );
+        assert_eq!(
+            names_added_by_module(k8sworkload_module()),
+            set_of(&K8SWORKLOAD_FNS),
+            "le jumeau workload rend exactement les noms de l'enregistreur"
+        );
+
+        let (_server_rt, deploy, daemon, sts, job) = typed_workload_handles();
+        let typed_scope = || {
+            let mut s = rhai::Scope::new();
+            s.push("d", deploy.clone());
+            s.push("ds", daemon.clone());
+            s.push("sts", sts.clone());
+            s.push("j", job.clone());
+            s
+        };
+        let mut enregistreur = Engine::new();
+        k8sworkload_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(k8sworkload_module());
+        let appels: Vec<(String, Option<String>, Option<&'static str>)> = vec![
+            // Entrées de TYPE des quatre types (verrou de portabilité en Module).
+            ("type_of(d)".into(), None, None),
+            ("type_of(ds)".into(), None, None),
+            ("type_of(sts)".into(), None, None),
+            ("type_of(j)".into(), None, None),
+            // Scenario « workloads — … spec/status absents UNIT » : getters `metadata`
+            // (map avec le nom), `spec`/`status` absents → @rhai::Dynamic::UNIT — nu des
+            // deux faces, la propriété passant par le module statique du jumeau.
+            ("d.metadata.name".into(), None, None),
+            ("ds.metadata.name".into(), None, None),
+            ("sts.metadata.name".into(), None, None),
+            ("j.metadata.name".into(), None, None),
+            ("d.status".into(), None, None),
+            ("j.spec".into(), None, None),
+        ];
+        for (nu, qualifie, marqueur) in appels {
+            let rn = enregistreur.eval_with_scope::<Dynamic>(&mut typed_scope(), &nu);
+            let rm = par_module.eval_with_scope::<Dynamic>(&mut typed_scope(), &nu);
+            comparer_resultats(&nu, marqueur, rn, rm);
+            if let Some(q) = &qualifie {
+                let rn = enregistreur.eval_with_scope::<Dynamic>(&mut typed_scope(), &nu);
+                let rq = par_module.eval_with_scope::<Dynamic>(&mut typed_scope(), q);
+                comparer_resultats(q, marqueur, rn, rq);
+            }
+        }
+        // Verrous de valeur (les mêmes sous `metadata` ou sans — la parité de face) :
+        // les quatre `type_of` nommés, `d.metadata.name` = « d ».
+        assert_eq!(
+            enregistreur
+                .eval_with_scope::<String>(
+                    &mut typed_scope(),
+                    r#"type_of(d) + "," + type_of(ds) + "," + type_of(sts) + "," + type_of(j)"#
+                )
+                .unwrap(),
+            "K8sDeploy,K8sDaemonSet,K8sStatefulSet,K8sJob"
+        );
+        assert_eq!(
+            par_module
+                .eval_with_scope::<String>(
+                    &mut typed_scope(),
+                    r#"type_of(d) + "," + type_of(ds) + "," + type_of(sts) + "," + type_of(j)"#
+                )
+                .unwrap(),
+            "K8sDeploy,K8sDaemonSet,K8sStatefulSet,K8sJob"
+        );
+        assert_eq!(
+            par_module
+                .eval_with_scope::<String>(&mut typed_scope(), "d.metadata.name")
+                .unwrap(),
+            "d"
+        );
+    }
+
+    /// Scenario « <jumeau> équivaut à <enregistreur> », dernier `And` des trois (porte
+    /// `metadata`) : sur l'engine de l'enregistreur, `rhai::Engine::gen_fn_signatures`
+    /// sans les paquets liste les fonctions DIRECTEMENT — l'enregistreur n'a pas
+    /// déplacé ses fonctions dans un module global (c'est explicitement pourquoi il
+    /// n'emprunte pas le jumeau).
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn test_k8s_enregistreurs_fonctions_directement_sur_l_engine() {
+        type Groupe = (&'static str, fn(&mut Engine), &'static [&'static str]);
+        let groupes: [Groupe; 3] = [
+            ("generic", k8sgeneric_rhai_register, &K8SGENERIC_FNS),
+            ("raw", k8sraw_rhai_register, &K8SRAW_FNS),
+            ("workload", k8sworkload_rhai_register, &K8SWORKLOAD_FNS),
+        ];
+        for (groupe, register, noms) in groupes {
+            let mut engine = Engine::new();
+            register(&mut engine);
+            let signatures = engine.gen_fn_signatures(false);
+            for nom in noms {
+                assert!(
+                    signatures.iter().any(|s| s.starts_with(&format!("{nom}("))),
+                    "{groupe} : {nom} doit être une fonction directe de l'engine, signatures : {signatures:?}"
+                );
+            }
+            assert!(
+                !signatures.iter().any(|s| s.contains("m::")),
+                "l'enregistreur ne déplace rien dans un module"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata (k8s) » : sous `metadata`,
+    /// chaque fonction des trois enregistreurs porte un commentaire non vide et, quand
+    /// elle a des paramètres, leurs NOMS (`gen_fn_signatures`, `collect_fn_metadata`) —
+    /// getters `get$…` inclus (posés par `rhai::FuncRegistration::new_getter`).
+    #[cfg(feature = "metadata")]
+    #[test]
+    fn test_k8s_fonctions_documentees_sous_metadata() {
+        let zero_arg = ["update_k8s_crd_cache", "new_k8s_raw"];
+        let mut engine = Engine::new();
+        k8sgeneric_rhai_register(&mut engine);
+        k8sraw_rhai_register(&mut engine);
+        k8sworkload_rhai_register(&mut engine);
+        let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
+            None,
+            |f| {
+                Some((
+                    f.metadata.name.to_string(),
+                    f.metadata.params_info.len(),
+                    f.metadata.comments.len(),
+                ))
+            },
+            false,
+        );
+        for nom in K8SGENERIC_FNS
+            .into_iter()
+            .chain(K8SRAW_FNS)
+            .chain(K8SWORKLOAD_FNS)
+        {
+            let (name, params, commentaires) = documentees
+                .iter()
+                .find(|(n, _, _)| n == nom)
+                .unwrap_or_else(|| panic!("{nom} absente des métadonnées de l'engine"));
+            let _ = name;
+            assert!(
+                *commentaires > 0,
+                "{nom} doit porter un commentaire non vide sous `metadata`"
+            );
+            if !zero_arg.contains(&nom) {
+                assert!(
+                    *params > 0,
+                    "{nom} doit porter les noms de ses paramètres sous `metadata`"
+                );
+            }
+        }
+        // Des signatures nomment leurs paramètres (plus de `(_` réduit aux types).
+        let signatures = engine.gen_fn_signatures(false);
+        for (nom, param) in [
+            ("k8s_resource", "api_version"),
+            ("list", "labels"),
+            ("get", "name"),
+            ("create", "data"),
+            ("wait_condition", "condition"),
+            ("wait_status_string", "value"),
+            ("get_url", "url"),
+            ("get_deployment", "namespace"),
+            ("get_deamonset", "name"),
+        ] {
+            let signature = signatures
+                .iter()
+                .find(|s| s.starts_with(&format!("{nom}(")) && s.contains(param))
+                .unwrap_or_else(|| panic!("une signature de {nom} doit nommer « {param} » : {signatures:?}"));
+            assert!(
+                !signature.contains("(_"),
+                "la signature de {nom} ne réduit pas le paramètre à un underscore : {signature}"
+            );
+        }
+    }
+
+    /// Scenario « fonctions documentées sous metadata (k8s) », face « sans la feature,
+    /// les mêmes tests de comportement passent sans différence » : valeurs verrouillées
+    /// des faces jouables (enregistreur nu, jumeau nu, jumeau qualifié), en l'absence
+    /// de toute métadonnée.
+    #[cfg(not(feature = "metadata"))]
+    #[test]
+    fn test_k8s_parity_sans_metadata() {
+        let mut enregistreur = Engine::new();
+        k8sgeneric_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(k8sgeneric_module());
+        assert_eq!(
+            names_added_by(k8sgeneric_rhai_register),
+            names_added_by_module(k8sgeneric_module()),
+            "mêmes ensembles de noms sans `metadata`"
+        );
+        for (engine, script) in [
+            (&enregistreur, "h.scope"),
+            (&par_module, "h.scope"),
+            (&par_module, "m::exist(h)"),
+        ] {
+            let rendu = engine
+                .eval_with_scope::<Dynamic>(&mut ghost_scope(), script)
+                .unwrap_or_else(|e| panic!("{script} doit rendre : {e}"));
+            let _ = engine;
+            let _ = rendu;
+        }
+        assert_eq!(
+            enregistreur
+                .eval_with_scope::<String>(&mut ghost_scope(), "h.scope")
+                .unwrap(),
+            "cluster"
+        );
+        assert_eq!(
+            par_module
+                .eval_with_scope::<String>(&mut ghost_scope(), "h.scope")
+                .unwrap(),
+            "cluster"
+        );
+        assert!(
+            !par_module
+                .eval_with_scope::<Dynamic>(&mut ghost_scope(), "m::exist(h)")
+                .unwrap()
+                .as_bool()
+                .unwrap(),
+            "handle non résolu : exist faux des deux faces"
         );
     }
 }

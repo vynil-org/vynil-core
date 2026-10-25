@@ -58,8 +58,10 @@ pub fn url_encode(arg: &str) -> String {
 // par @rhai::Engine::register_static_module sous le nom que choisit le consommateur.
 
 /// Double cible du motif : une même liste d'enregistrements appliquée à un [`Engine`]
-/// (l'enregistreur) ou à un [`Module`] (le jumeau module).
-enum Target<'a> {
+/// (l'enregistreur) ou à un [`Module`] (le jumeau module). Porté centralisé (motif
+/// double cible, issues #19 et #20) : les modules qui l'utilisaient en copie privée
+/// l'importent désormais d'ici.
+pub(crate) enum Target<'a> {
     Engine(&'a mut Engine),
     Module(&'a mut Module),
 }
@@ -70,7 +72,7 @@ enum Target<'a> {
 /// n'existent que sous cette feature de `rhai`. Sans la feature, rien n'est posé —
 /// l'enregistrement est identique, la documentation n'est qu'une métadonnée.
 #[must_use]
-fn documented(reg: FuncRegistration, comments: &[&str], params: &[&str]) -> FuncRegistration {
+pub(crate) fn documented(reg: FuncRegistration, comments: &[&str], params: &[&str]) -> FuncRegistration {
     #[cfg(feature = "metadata")]
     {
         reg.with_comments(comments.iter().copied())
@@ -87,7 +89,14 @@ fn documented(reg: FuncRegistration, comments: &[&str], params: &[&str]) -> Func
 /// voyagent dans le [`FuncRegistration`] sous l'espace de noms global, la fonction est
 /// posée sur l'engine (`rhai::FuncRegistration::register_into_engine`) ou sur le module
 /// (`rhai::FuncRegistration::set_into_module`) selon la cible.
-fn register_at<A: 'static, const N: usize, const X: bool, R: Variant + Clone, const FALLIBLE: bool, FUNC>(
+pub(crate) fn register_at<
+    A: 'static,
+    const N: usize,
+    const X: bool,
+    R: Variant + Clone,
+    const FALLIBLE: bool,
+    FUNC,
+>(
     target: &mut Target<'_>,
     name: &'static str,
     comments: &[&str],
@@ -101,6 +110,50 @@ fn register_at<A: 'static, const N: usize, const X: bool, R: Variant + Clone, co
         comments,
         params,
     );
+    match target {
+        Target::Engine(engine) => {
+            let _ = reg.register_into_engine(engine, func);
+        }
+        Target::Module(module) => {
+            let _ = reg.set_into_module(module, func);
+        }
+    }
+}
+
+/// L'entrée de TYPE du motif : `rhai::Engine::register_type_with_name` sur l'engine,
+/// `rhai::Module::set_custom_type` sur le module (précédent chrono/semver/hashes/oci) —
+/// `type_of` passe par `map_type_name`, qui consulte les deux. Centralisé : les modules
+/// qui en portaient une copie privée (générique ou à type concret durci) l'importent
+/// désormais d'ici, le type visé se nommant à l'appel (`register_type_at::<T>`).
+pub(crate) fn register_type_at<T: Variant + Clone>(target: &mut Target<'_>, name: &str) {
+    match target {
+        Target::Engine(engine) => {
+            let _ = engine.register_type_with_name::<T>(name);
+        }
+        Target::Module(module) => {
+            let _ = module.set_custom_type::<T>(name);
+        }
+    }
+}
+
+/// Une entrée ACCESSEUR du motif (l'équivalent de `register_get` des macros, même nom
+/// interne `get$…`) : [`FuncRegistration::new_getter`] pose le nom sous l'espace de
+/// noms global, la cible décide entre l'engine (`rhai::FuncRegistration::register_into_engine`)
+/// et le module (`rhai::FuncRegistration::set_into_module`). Le dot nu `obj.propriété`
+/// résout l'accesseur des deux faces (les fonctions du module statique portent l'espace
+/// de noms global). Seul `k8s` pose des accessemurs : porté sous la feature qui l'emploie
+/// (qui implique `rhai`), la porte de compilation effective de sa copie privée d'origine.
+#[cfg(feature = "k8s")]
+pub(crate) fn register_get_at<A: 'static, const X: bool, R: Variant + Clone, const FALLIBLE: bool, FUNC>(
+    target: &mut Target<'_>,
+    name: &'static str,
+    comments: &[&str],
+    params: &[&str],
+    func: FUNC,
+) where
+    FUNC: RhaiNativeFunc<A, 1, X, R, FALLIBLE> + Send + Sync + 'static,
+{
+    let reg = documented(FuncRegistration::new_getter(name), comments, params);
     match target {
         Target::Engine(engine) => {
             let _ = reg.register_into_engine(engine, func);
