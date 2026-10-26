@@ -282,6 +282,10 @@ Tasks:
     `rt` et `rt::block_on` publics ; `Changed` : `cancel` compilé sans feature ; ./AGENTS.md et
     ./.opencode/agents/validator.md — la porte `--no-default-features --features rt` (test et
     clippy). Jumelle de « Ajouter la porte `rt` » de ./tooling.sdd, cochée dans le même commit.
+  [ ] Reprendre le CHANGELOG pour `Error::Cancelled` (revue de la PR #24) : ./CHANGELOG.md, section
+    0.9.0 — `Added` : la variante `Error::Cancelled` (`CANCEL-001 operation cancelled`) ; `Changed` :
+    l'annulation de `sleep` et de `rt::block_on` la rend, et non plus `Error::Other("cancelled")`.
+    Jumelle de « Ajouter @variant-Error::Cancelled » de ./src/lib.sdd, cochée dans le même commit.
 
   [x] Reprendre la batterie rustdoc (issue #25) : ./AGENTS.md et ./.opencode/agents/validator.md passent de
     `cargo doc --no-deps --all-features` seule aux trois commandes `cargo doc --no-deps`,

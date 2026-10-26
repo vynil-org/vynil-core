@@ -253,6 +253,16 @@ Tasks:
     `cargo hack --each-feature` ne compile que la face, pas ce verrou d'exécution. Jumelle de
     ./.github/workflows/workflows.sdd (entrée `rt` de la matrice et de la boucle clippy) et de
     « Reprendre le CHANGELOG 0.9.0 et la batterie » de ./vyvil-core.sdd, cochée dans le même commit.
+  [ ] Jouer `specdd lint` en CI à la place du script de contrôle de forme maison (revue de la PR #24) :
+    le contrôle de forme des `.sdd` est la commande de l'outil officiel, `specdd lint` (version
+    épinglée, installée par `npm install --global specdd@<version>` sous Node 22), et non un
+    classifieur Python embarqué dans ./.github/workflows/test.yml. Cette tâche REMPLACE la
+    tâche close « Interdire en CI le retour des deux défauts de forme `.sdd` » : le script, ses
+    dix cas rouges/verts et leur contractualisation sortent du dépôt. Compromis acté (décision du
+    développeur principal) : le défaut (a) — repli de phrase à deux espaces, que `specdd lint` ne
+    voit pas parce qu'une ligne à deux espaces est syntaxiquement une nouvelle entrée — n'est plus
+    contrôlé en CI ; le défaut (b), lui, l'est (`Invalid SpecDD syntax` sur une note non-tâche dans
+    `Tasks:`). Tâche jumelle de ./.github/workflows/workflows.sdd, cochée dans le même commit.
 
   [x] Tendre les lints rustdoc à tous les graphes de features (issue #25) : remplacer par du texte brut
     les liens intra-doc vers des items gated (table des features et sections de ./src/lib.rs,

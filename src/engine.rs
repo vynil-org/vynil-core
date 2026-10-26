@@ -396,7 +396,7 @@ fn core_host_fns(target: &mut Target<'_>) {
 /// thread it sleeps the whole requested duration in one [`std::thread::sleep`] (no ceiling —
 /// an operator's script may legitimately wait); with a token installed by
 /// [`crate::cancel::scope`] it waits in slices of at most `crate::cancel::WAIT_SLICE`
-/// (25 ms) and fails with `cancelled` as soon as the flag is seen set — including a token
+/// (25 ms) and fails with [`Error::Cancelled`] as soon as the flag is seen set — including a token
 /// already cancelled at entry, where no slice is slept at all. Zero and negative durations
 /// stay immediate no-ops either way. This is not an `rhai::Engine::on_progress` hook,
 /// which cannot get the hand inside a native call; a script catching the error with `try`
@@ -426,7 +426,7 @@ fn core_sleep_fns(target: &mut Target<'_>) {
         &[
             "/// Block the thread for `seconds` whole seconds; zero and negatives are immediate no-ops.",
             "/// No ceiling. With a cancel token installed for the calling thread by the host,",
-            "/// waits in slices of 25 ms and fails with `cancelled` once the flag is seen — entry included.",
+            "/// waits in slices of 25 ms and fails with `CANCEL-001 operation cancelled` once the flag is seen — entry included.",
         ],
         &["seconds: i64"],
         |seconds: i64| -> RhaiRes<()> {
@@ -451,7 +451,7 @@ fn core_sleep_fns(target: &mut Target<'_>) {
                         remaining = remaining.saturating_sub(slice);
                     }
                     if token.is_cancelled() {
-                        return Err(rhai_err(Error::Other("cancelled".to_string())));
+                        return Err(rhai_err(Error::Cancelled));
                     }
                 }
             }
@@ -1273,8 +1273,8 @@ fn run(args) { return "fallback/1"; }
         let err = res.expect_err("sleep(30) annulé doit rendre une erreur, pas dormir les 30 s");
         assert!(matches!(err, Error::RhaiError(_)), "got {err:?}");
         assert!(
-            err.to_string().contains("cancelled"),
-            "l'erreur doit porter le texte cancelled, got {err}"
+            err.to_string().contains("CANCEL-001 operation cancelled"),
+            "l'erreur doit porter le texte de Error::Cancelled, got {err}"
         );
         assert!(
             elapsed < std::time::Duration::from_millis(500),
@@ -1295,8 +1295,8 @@ fn run(args) { return "fallback/1"; }
             .expect_err("jeton déjà annulé à l'entrée ⇒ erreur sur toute durée strictement positive");
         let elapsed = start.elapsed();
         assert!(
-            err.to_string().contains("cancelled"),
-            "l'erreur doit porter le texte cancelled, got {err}"
+            err.to_string().contains("CANCEL-001 operation cancelled"),
+            "l'erreur doit porter le texte de Error::Cancelled, got {err}"
         );
         assert!(
             elapsed < std::time::Duration::from_millis(250),

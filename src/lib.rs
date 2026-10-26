@@ -128,10 +128,11 @@ use thiserror::Error;
 /// kept out of its [`std::fmt::Display`] — bodies can carry tokens or personal data that
 /// must not leak into logs — and is reachable only through [`Error::http_body`].
 ///
-/// Two Display texts embed a raw searchable code, frozen in the format string and exposed
+/// Three Display texts embed a raw searchable code, frozen in the format string and exposed
 /// with no constant (settled decision): `KEY-ALGO-001` ([`Error::UnsupportedKeyAlgorithm`],
-/// ungated) and `KEY-OPENSSL-001` (`Error::OpenSSL`, feature `crypto`). They are stable
-/// identifiers meant to be searched for by consumers — part of the API contract.
+/// ungated), `KEY-OPENSSL-001` (`Error::OpenSSL`, feature `crypto`) and `CANCEL-001`
+/// ([`Error::Cancelled`], ungated). They are stable identifiers meant to be searched for by
+/// consumers — part of the API contract.
 #[derive(Error, Debug)]
 pub enum Error {
     /// JSON serialization / deserialization failure.
@@ -231,6 +232,12 @@ pub enum Error {
     /// Password generation spec was invalid.
     #[error("{0}")]
     PasswordSpec(String),
+
+    /// A blocking native call was cancelled by the cancellation token of its thread (see
+    /// [`crate::cancel`]): raised by `sleep`, and by `rt::block_on` (under `rt`) when the token is
+    /// cancelled at entry or while the future runs. Match on the variant, not on the text.
+    #[error("CANCEL-001 operation cancelled")]
+    Cancelled,
 
     /// Catch-all.
     #[error("Error: {0}")]
@@ -631,7 +638,7 @@ mod tests {
         assert_eq!(error_chain(&err), expected);
     }
 
-    // ── Display exacts des 15 variantes non gated (compilent sans aucune feature) ──
+    // ── Display exacts des 16 variantes non gated (compilent sans aucune feature) ──
     fn serde_err() -> serde_json::Error {
         serde_json::from_str::<serde_json::Value>("{oops").unwrap_err()
     }
@@ -681,7 +688,7 @@ mod tests {
         use base64::Engine as _;
         let e = Error::MethodFailed("GET".to_string(), 503, "body".to_string());
         assert_eq!(e.http_body(), Some("body"));
-        // Les 14 autres variantes non gated (les 13 gated sont couvertes dans leurs modules
+        // Les 15 autres variantes non gated (les 13 gated sont couvertes dans leurs modules
         // `#[cfg(feature = ...)]`).
         let cases: Vec<Error> = vec![
             Error::SerializationError(serde_err()),
@@ -702,8 +709,9 @@ mod tests {
             Error::UnsupportedKeyAlgorithm("ed9999".to_string()),
             Error::PasswordSpec("minimum length 8".to_string()),
             Error::Other("x".to_string()),
+            Error::Cancelled,
         ];
-        assert_eq!(cases.len(), 14);
+        assert_eq!(cases.len(), 15);
         for case in &cases {
             assert_eq!(
                 case.http_body(),
@@ -809,6 +817,15 @@ mod tests {
         let err = Error::Other("something odd".to_string());
         assert_eq!(err.to_string(), "Error: something odd");
         assert!(err.source().is_none());
+    }
+
+    // ── Scenario « Error::Cancelled a un Display exact sans aucune feature » ──
+    #[test]
+    fn display_cancelled_is_frozen_and_ungated() {
+        let err = Error::Cancelled;
+        assert_eq!(err.to_string(), "CANCEL-001 operation cancelled");
+        assert!(err.source().is_none());
+        assert!(matches!(err, Error::Cancelled));
     }
 
     // ── Scenario « JsonError n'a pas de From » ──

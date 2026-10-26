@@ -35,7 +35,7 @@ Must:
     texte vient des attributs `#[error(...)]`, et @core::error::Error::source est alimenté
     par les seuls `#[from]`/`#[source]`. L'enum compile et reste stable à
     `--no-default-features`.
-  28 variantes tuple, champs publics accessibles par déstructuration : 15 non gated, 13
+  29 variantes (tuple, sauf les unités), champs publics accessibles par déstructuration : 16 non gated, 13
     gated chacune avec `#[cfg(feature = ...)]` + `#[cfg_attr(docsrs, doc(cfg(...)))]`.
   Display exacts, contrats caractère par caractère — variantes NON gated (compilées même
     sans aucune feature) :
@@ -64,6 +64,11 @@ Must:
     @variant-Error::UnsupportedKeyAlgorithm — @std::string::String — le texte
       `KEY-ALGO-001 Unsupported key algorithm: {0}` ;
     @variant-Error::PasswordSpec — @std::string::String — affiché BRUT sans préfixe : `{0}` ;
+    @variant-Error::Cancelled — unité — `CANCEL-001 operation cancelled` : l'annulation d'un appel
+      natif bloquant par le jeton du fil (./cancel.sdd, ./rt.sdd, ./engine.sdd `sleep`), distincte de
+      toute autre erreur sans comparer de chaîne. `CANCEL-001` est un identifiant stable cherchable,
+      figé dans le format comme `KEY-ALGO-001` et `KEY-OPENSSL-001` (décision actée, revue de la
+      PR #24 ; issue #23) ;
     @variant-Error::Other — @std::string::String — fourre-tout — `Error: {0}`.
   Display exacts des 13 variantes gated (feature → variantes → texte) :
     `hbs` → @variant-Error::HbsTemplateError `Registering template failed with error: {0}`,
@@ -186,7 +191,7 @@ Depends on:
     @fn-error_chain.
 
 Exposes:
-  API racine sous features par défaut : @variant-Error (28 variantes, dont 15 sans gate),
+  API racine sous features par défaut : @variant-Error (29 variantes, dont 16 sans gate),
     @type-Result, @type-RhaiRes (rhai), @fn-error_chain, @fn-rhai_err, @fn-rhai_err_str
     (rhai), @fn-client_name_is_set, @fn-get_client_name, @fn-set_client_name,
     @struct-Semver, @struct-Script (rhai), @struct-HandleBars (hbs) ; + @fn-update_cache
@@ -290,6 +295,14 @@ Tasks:
 
   [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : la table des features et les sections de la rustdoc racine ne lient plus `engine`, `hbs`, `http`, `http_mock` ni `Error::OpenSSL`. Jumelle de « Tendre les
     lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
+
+  [x] Ajouter @variant-Error::Cancelled dans ./lib.rs (revue de la PR #24) : variante unité NON gated,
+    `#[error("CANCEL-001 operation cancelled")]`, rustdoc de l'enum à trois identifiants stables
+    (`KEY-ALGO-001`, `KEY-OPENSSL-001`, `CANCEL-001`), les décomptes de variantes des tests de
+    ./lib.rs à 29 / 16 non gated. Tests d'abord (Display exact, présence sans aucune feature).
+    Tâche jumelle de « Rendre l'annulation @variant-Error::Cancelled » de ./cancel.sdd, de
+    ./rt.sdd et de ./engine.sdd, cochée dans le même commit (les trois lecteurs ne compilent plus
+    sinon).
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   mocks publics, module `password` ungated, gate `rhai` de `glob`, `error_chain` sans gate.

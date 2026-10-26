@@ -37,13 +37,17 @@ functions carry introspection metadata, and the blocking native calls became can
   from synchronous Rhai native functions: a multi-thread runtime is blocked on in place, a
   runtime-less thread gets a temporary `current_thread` runtime, a `current_thread` runtime
   gets an explicit error. `http`, `oci`, `s3` and `k8s` now depend on `rt` instead of `tokio`.
+- **`Error::Cancelled`** (#28): a unit variant, ungated, displayed `CANCEL-001 operation
+  cancelled`. `CANCEL-001` is a stable searchable identifier, frozen in the format like
+  `KEY-ALGO-001` and `KEY-OPENSSL-001`. Match on the variant rather than on the text.
 
 ### Changed
 
 - `sleep` and the async → sync bridge `rt::block_on` (used by `http`, `oci`, `s3` and `k8s`)
-  now honour the thread's cancel token: they wait in 25 ms slices and return an error of text
-  `cancelled` as soon as the token is cancelled (the pending future is dropped, not left
-  running). Without an open scope the behaviour is unchanged.
+  now honour the thread's cancel token: they wait in 25 ms slices and return
+  `Error::Cancelled` (`CANCEL-001 operation cancelled`) as soon as the token is cancelled (the
+  pending future is dropped, not left running). Without an open scope the behaviour is
+  unchanged. Previously the error was `Error::Other` of text `cancelled`.
 - `cancel` is compiled without any feature (#23): `cancel::CancelToken` and `cancel::scope`
   are available under `--no-default-features`, as is the token read by `rt::block_on`. Only
   `sleep` stays behind `rhai`.

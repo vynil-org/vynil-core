@@ -24,8 +24,8 @@ References:
     `mod rt;` privé sous `any(http, oci, s3, k8s)`). La feature `rt = ["dep:tokio"]` de ../Cargo.toml
     ne tire ni `rhai` ni rien d'autre : `http`, `oci`, `s3` et `k8s` en dépendent désormais, au
     lieu de `dep:tokio`. Le module est une API PUBLIQUE de la crate (pré-1.0, instable comme le
-    reste). Variantes @Error consommées : @variant-Error::Other et @variant-Error::Stdio,
-    toutes deux non gated.
+    reste). Variantes @Error consommées : @variant-Error::Other, @variant-Error::Stdio et
+    @variant-Error::Cancelled, toutes non gated.
   ./cancel.sdd — le jeton lu (@crate::cancel::CancelToken, lecture du jeton courant du fil,
     tranche de 25 ms).
   ./http.sdd, ./oci.sdd, ./s3.sdd, ./k8s.sdd — les quatre appelants ; chacun y renvoie par
@@ -98,7 +98,7 @@ Returns:
 Raises:
   @variant-Error::Other `requires a multi-thread tokio runtime` sur un runtime `current_thread`.
   @variant-Error::Stdio si le runtime temporaire ne peut pas être construit.
-  @variant-Error::Other `cancelled` quand le jeton du fil est annulé, avant ou pendant
+  @variant-Error::Cancelled quand le jeton du fil est annulé, avant ou pendant
     l'exécution, quelle que soit la stratégie.
   Aucune panique de ce module, hormis le cas du runtime sans pilote de temps décrit aux Handles.
 
@@ -146,6 +146,11 @@ Tasks:
     compilé avec la seule feature `rt`, `cfg(feature = "rt")`). Tâche jumelle de « Déclarer `rt`
     public » de ./lib.sdd et de « Exposer la feature `rt` » de ../vyvil-core.sdd, cochée dans le
     même commit. Prérequis : « Lever la porte `rhai` de ./cancel.rs » de ./cancel.sdd coché.
+  [x] Rendre l'annulation @variant-Error::Cancelled dans ./rt.rs et ./tests/rt_block_on_public.rs (revue de la
+    PR #24) : les deux sorties `cancelled` de `block_on` (jeton annulé à l'entrée, annulé pendant
+    l'attente), la section `# Errors` de la rustdoc et les trois tests de ./rt.rs, plus les deux
+    assertions du binaire d'intégration, passent de `Error::Other("cancelled")` à
+    `Error::Cancelled`. Tâche jumelle de « Ajouter @variant-Error::Cancelled » de ./lib.sdd.
 
 Scenario: multi-thread, le futur s'exécute
   Given un `#[tokio::test(flavor = "multi_thread")]`
@@ -176,7 +181,7 @@ Scenario: futur non Send
 Scenario: annulation avant l'appel
   Given un jeton déjà annulé et une portée ouverte par @crate::cancel::scope
   When `block_on` reçoit un futur qui lève un drapeau observable
-  Then l'@variant-Error::Other `cancelled` est rendu et le drapeau n'est pas levé
+  Then l'@variant-Error::Cancelled est rendu et le drapeau n'est pas levé
   And le résultat est le même sous un runtime multi-thread (`#[tokio::test(flavor = "multi_thread")]`)
     et hors de tout runtime
 
@@ -184,7 +189,7 @@ Scenario: annulation pendant l'attente
   Given une portée ouverte avec un jeton, et un futur qui dort 30 s en portant un témoin de
     destruction (`Drop` qui lève un drapeau)
   When un autre fil annule le jeton 100 ms après le début de `block_on`
-  Then `block_on` rend @variant-Error::Other `cancelled` en moins de 500 ms au total
+  Then `block_on` rend @variant-Error::Cancelled en moins de 500 ms au total
   And le témoin de destruction a été levé : le futur est abandonné, pas laissé en vie
   And les deux stratégies qui exécutent (multi-thread, et hors runtime) le prouvent
 
@@ -209,5 +214,5 @@ Scenario: consommateur externe, annulation
   Given le même binaire et un jeton `vynil_core::cancel::CancelToken` installé par
     `vynil_core::cancel::scope`, annulé par un autre fil 100 ms plus tard
   When `block_on` reçoit un futur qui dort 30 s en portant un témoin de destruction
-  Then l'@variant-Error::Other `cancelled` est rendu en moins de 500 ms au total
+  Then l'@variant-Error::Cancelled est rendu en moins de 500 ms au total
   And le témoin de destruction est levé : le futur est abandonné

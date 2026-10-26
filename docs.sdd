@@ -189,6 +189,11 @@ Tasks:
     l'exigence du pilote de temps) et dans ./README.md (table des features). Jumelle des tâches
     « Exposer `block_on` » de ./src/rt.sdd et « Lever la porte `rhai` de ./cancel.rs » de ./src/cancel.sdd,
     cochée dans le même commit.
+  [ ] Reprendre la variante d'annulation (revue de la PR #24) : ./docs/rhai_helpers.md (section 15 :
+    l'erreur est `Error::Cancelled`, message `CANCEL-001 operation cancelled`, et non plus
+    `Error::Other` de texte `cancelled`). Jumelle de « Ajouter @variant-Error::Cancelled » de
+    ./src/lib.sdd et de « Reprendre le CHANGELOG pour `Error::Cancelled` » de ./vyvil-core.sdd, cochée
+    dans le même commit.
 
   [x] ./docs/handlebars_helpers.md : reprendre la section `new_restricted` sur la construction par liste
     d'autorisation (issue #27) — plus de « moins six helpers » : seuls les groupes sûrs sont
