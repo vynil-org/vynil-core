@@ -234,7 +234,7 @@ pub enum Error {
     PasswordSpec(String),
 
     /// A blocking native call was cancelled by the cancellation token of its thread (see
-    /// [`crate::cancel`]): raised by `sleep`, and by [`crate::rt::block_on`] when the token is
+    /// [`crate::cancel`]): raised by `sleep`, and by `rt::block_on` (under `rt`) when the token is
     /// cancelled at entry or while the future runs. Match on the variant, not on the text.
     #[error("CANCEL-001 operation cancelled")]
     Cancelled,
