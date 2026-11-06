@@ -80,6 +80,7 @@ cargo test --no-default-features --features hbs,crypto         # helper crypto d
 cargo test --no-default-features --features rhai,shell         # les cinq verrous shell (signal, rc, extrait stderr)
 cargo test --no-default-features --features rhai,fs            # branche gated `fs` des enregistrements de `new_bare` (`--each-feature` ne la compile pas)
 cargo test --no-default-features --features rhai,password      # branche gated `password` des enregistrements de `new_bare`, idem
+cargo test --no-default-features --features rhai,quantity      # branche gated `quantity` des enregistrements de `new_bare`, idem
 cargo test --no-default-features --features rt                 # pont public `rt::block_on` sans `rhai` (issue #23), tests d'intégration hors crate
 cargo clippy --all-targets -- -D warnings              # harnais default, code de test inclus (zéro warning toléré)
 cargo clippy --no-default-features --features k8s --all-targets -- -D warnings
@@ -92,6 +93,7 @@ cargo clippy --no-default-features --features hbs,crypto --all-targets -- -D war
 cargo clippy --no-default-features --features rhai,shell --all-targets -- -D warnings
 cargo clippy --no-default-features --features rhai,fs --all-targets -- -D warnings
 cargo clippy --no-default-features --features rhai,password --all-targets -- -D warnings
+cargo clippy --no-default-features --features rhai,quantity --all-targets -- -D warnings
 cargo clippy --no-default-features --features rt --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo hack check --each-feature --no-dev-deps             # matrice chaque feature isolée
@@ -111,7 +113,7 @@ compilent et lintent chaque feature isolée (y compris `fs`, `shell`, `password`
 `http`, `hbs-scripting`…), là où la liste explicite ci-dessus ne nomme que des combinaisons à
 verrou désigné — toute feature qu'aucun verrou nommé ne désigne n'est jouée que par elle.
 Elles **ne remplacent pas** les combinaisons explicites qui portent un sens (`k8s,oci,s3`,
-`--all-features`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`, `rhai,fs`, `rhai,password`), qui restent en plus (voir `tooling.sdd`) :
+`--all-features`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`, `rhai,fs`, `rhai,password`, `rhai,quantity`), qui restent en plus (voir `tooling.sdd`) :
 une porte qui n'existe que parce qu'un verrou précis n'y tourne pas se nomme dans la liste, elle
 ne se déduit pas de `--each-feature` qui ne fait que compiler.
 

@@ -189,7 +189,7 @@ Tasks:
     l'exigence du pilote de temps) et dans ./README.md (table des features). Jumelle des tâches
     « Exposer `block_on` » de ./src/rt.sdd et « Lever la porte `rhai` de ./cancel.rs » de ./src/cancel.sdd,
     cochée dans le même commit.
-  [ ] Reprendre la variante d'annulation (revue de la PR #24) : ./docs/rhai_helpers.md (section 15 :
+  [x] Reprendre la variante d'annulation (revue de la PR #24) : ./docs/rhai_helpers.md (section 15 :
     l'erreur est `Error::Cancelled`, message `CANCEL-001 operation cancelled`, et non plus
     `Error::Other` de texte `cancelled`). Jumelle de « Ajouter @variant-Error::Cancelled » de
     ./src/lib.sdd et de « Reprendre le CHANGELOG pour `Error::Cancelled` » de ./vyvil-core.sdd, cochée
@@ -200,6 +200,22 @@ Tasks:
     enregistrés, tout helper hôte (fichier, environnement, réseau) l'est jamais, y compris ceux
     qu'une montée amont ou une feature du graphe ajouterait. Jumelle de « Construire new_restricted
     par liste d'autorisation » de ./src/hbs.sdd, cochée dans le même commit.
+
+  [x] Documenter la livraison 0.9.1 : ./docs/rhai_helpers.md — `regex_is_match` dans la table du groupe PUR
+    et les décomptes « seize noms communs » (dix-sept), la feature `quantity` (table des features) et
+    ses deux fonctions `cpu_millis_of`/`memory_bytes_of` avec la grammaire, `json_subset`/`json_equal` et
+    `ReadMethod::Post` dans la section `http`, section 15 (annulation par réveil : plus de tranche de
+    25 ms, plus d'exigence de `enable_all()` pour le runtime du consommateur, plus de panique « timers
+    are disabled ») ; ./README.md — table des features (`quantity`). Les pages ne contractent rien : la
+    spec du module fait foi. Jumelle des tâches 0.9.1 de ./src/http.sdd, ./src/engine.sdd,
+    ./src/cancel.sdd, ./src/rt.sdd et ./src/quantity.sdd, cochée dans le même commit que la dernière
+    d'entre elles. À cocher avec « Reprendre la variante d'annulation » ci-dessus, qui touche la même
+    section 15.
+  [x] Documenter le catalogue de modules (décision du 2026-11-06) : ./docs/rhai_helpers.md — une table
+    « module → autorité → fonctions → nom global » à la place de la description par groupes de 0.9.0,
+    l'usage `register_static_module("core", core_module())`, la règle des noms courts ; ./README.md si
+    elle cite les anciens enregistreurs. Jumelle de la tâche de ../vyvil-core.sdd, cochée dans le même
+    commit que la dernière des specs ci-dessus.
 
 Done when:
   Les trois pages et ./README.md ne contiennent plus une phrase contredisant la spec d'un module,

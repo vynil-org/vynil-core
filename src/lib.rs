@@ -23,6 +23,7 @@
 //! | `s3` | ❌ | S3 helpers (`s3::s3_get_yaml`, `s3::s3_list_keys`). Implies `rhai` |
 //! | `fs` | ❌ | Filesystem access from Rhai (`file_read`, `file_write`, …) |
 //! | `shell` | ❌ | Shell execution (`shell::run` / `shell::get_out` + Rhai `shell_run` / `shell_output`); unix-only, commands are interpreted by a literal `sh -c` |
+//! | `quantity` | ❌ | Kubernetes `Quantity` parser (`quantity::cpu_millis_of`, `quantity::memory_bytes_of`), exact arithmetic; its Rhai glue needs `rhai` too |
 //! | `password` | ❌ | Auto-wires `gen_password` / `gen_password_alphanum` into `new_bare` and registers the Handlebars helpers; the Rhai glue itself compiles under `rhai` alone (opt-in to avoid name collisions) |
 //! | `metadata` | ❌ | Rhai introspection metadata: `///` comments + parameter names on registered script functions, consumed by `gen_fn_signatures` / `gen_fn_metadata_to_json`. Implies `rhai` |
 //! | `rt` | ❌ | async → sync bridge `rt::block_on` for consumers; pulls `tokio`; does not imply `rhai` |
@@ -79,7 +80,7 @@ assert_eq!(out, "Hello world!");
 //! `shell_*` (feature `shell`), and `Registry` (feature `oci`).
 //! Never injected by `new_bare`, even with every feature enabled: `s3_*`, `RestClient`
 //! and `k8s_*` are registered only on the caller's consent — `s3_rhai_register`,
-//! `http_rhai_register` and the `k8s_*_rhai_register` registrars.
+//! `http_rhai_register` and the `k8s_rhai_register` registrar.
 //!
 //! Scripts also get `assert` and `import_run` / `import_template` shims for optional imports.
 //!
@@ -381,6 +382,11 @@ pub mod password;
 pub mod semver;
 /// YAML ↔ JSON helpers.
 pub mod yaml;
+
+#[cfg(feature = "quantity")]
+#[cfg_attr(docsrs, doc(cfg(feature = "quantity")))]
+/// Kubernetes `Quantity` parsing (`cpu_millis_of`, `memory_bytes_of`), exact arithmetic.
+pub mod quantity;
 
 #[cfg(feature = "crypto")]
 #[cfg_attr(docsrs, doc(cfg(feature = "crypto")))]

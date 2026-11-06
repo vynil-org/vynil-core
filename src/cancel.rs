@@ -8,6 +8,11 @@
 //! native calls, which then return an error (crate-wide: [`Error::Cancelled`], displayed
 //! `CANCEL-001 operation cancelled`) instead of waiting.
 //!
+//! [`CancelToken::cancel`](crate::cancel::CancelToken::cancel) wakes the waiting calls at once:
+//! no polling, no time slice. The
+//! waits are a waker registered by a pending future, and a condition variable for the
+//! bounded blocking wait.
+//!
 //! The token is carried by the calling thread (thread-local), not by a parameter: the
 //! native functions and the `block_on` callers have no signature to change, and the
 //! synchronous Rhai evaluation stays on the thread that started it (including under
@@ -22,18 +27,25 @@
 //! **Not cancellable**: calls that block on a child process (`shell_run`, `shell_output`,
 //! `sign_image` through `cosign`) never read the token and return when the process ends.
 //!
-//! This module depends on neither tokio nor rhai: `Arc<AtomicBool>` and a thread-local
-//! are enough. It compiles without any feature; the readers of the token are `sleep` (under
-//! `rhai`) and `rt::block_on` (under `rt`), and the reading functions exist only where one
-//! of them is compiled.
+//! This module depends on neither tokio nor rhai: `std` and `core` are enough. It compiles
+//! without any feature; the readers of the token are `sleep` (under `rhai`, the bounded
+//! wait) and `rt::block_on` (under `rt`, the cancellation future), and each reading function
+//! exists only where its reader is compiled.
 
-#[cfg(any(feature = "rhai", feature = "rt"))] use std::time::Duration;
+#[cfg(feature = "rhai")] use std::time::{Duration, Instant};
 use std::{
     cell::RefCell,
     sync::{
-        Arc,
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
+    task::Waker,
+};
+#[cfg(feature = "rt")]
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
 };
 
 thread_local! {
@@ -41,6 +53,32 @@ thread_local! {
     /// Read through `try_with` only: during thread destruction its absence is reported,
     /// never a panic.
     static CURRENT: RefCell<Option<CancelToken>> = const { RefCell::new(None) };
+}
+
+/// State shared by every clone of a token: the flag, the wakers of the pending waits and
+/// the condition variable of the bounded waits. The flag is also reachable from the lock,
+/// which is what makes a wait's re-read race-free.
+#[derive(Debug)]
+struct Shared {
+    flag: AtomicBool,
+    waiters: Mutex<Waiters>,
+    cond: Condvar,
+}
+
+/// The pending waits of a token. `wakers` holds one entry per registered
+/// [`Cancelled`] future, under the identity that future removes itself by.
+#[derive(Debug, Default)]
+struct Waiters {
+    wakers: Vec<(u64, Waker)>,
+    /// Source of the identities above; only the cancellation futures draw from it.
+    #[cfg(feature = "rt")]
+    next_id: u64,
+}
+
+/// Lock the waiters, recovering a poisoned lock: the list stays usable, a panic elsewhere
+/// never turns a cancellation into a panic.
+fn lock(waiters: &Mutex<Waiters>) -> MutexGuard<'_, Waiters> {
+    waiters.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Cancellation flag shared between every clone of a token and read by the crate's
@@ -52,7 +90,7 @@ thread_local! {
 /// token stays cancelled — there is no reset.
 #[derive(Clone, Debug)]
 pub struct CancelToken {
-    flag: Arc<AtomicBool>,
+    shared: Arc<Shared>,
 }
 
 impl CancelToken {
@@ -60,26 +98,131 @@ impl CancelToken {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            flag: Arc::new(AtomicBool::new(false)),
+            shared: Arc::new(Shared {
+                flag: AtomicBool::new(false),
+                waiters: Mutex::new(Waiters::default()),
+                cond: Condvar::new(),
+            }),
         }
     }
 
     /// Cancel this token — and, through the shared flag, every one of its clones.
     /// Idempotent and permanent: cancelling an already-cancelled token does nothing.
+    ///
+    /// Wakes every pending wait of the token: the flag is raised BEFORE the waiters lock is
+    /// taken, so a wait that re-reads the flag under that lock either sees it or is woken.
+    /// The wakers are called outside the lock.
     pub fn cancel(&self) {
-        self.flag.store(true, Ordering::Relaxed);
+        self.shared.flag.store(true, Ordering::Release);
+        let wakers = {
+            let mut waiters = lock(&self.shared.waiters);
+            self.shared.cond.notify_all();
+            std::mem::take(&mut waiters.wakers)
+        };
+        for (_, waker) in wakers {
+            waker.wake();
+        }
     }
 
     /// Whether this token (or any of its clones) has been cancelled.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.flag.load(Ordering::Relaxed)
+        self.shared.flag.load(Ordering::Acquire)
+    }
+
+    /// A future resolving as soon as this token (or any of its clones) is cancelled: at
+    /// once when it already is, otherwise on the [`CancelToken::cancel`] that wakes it. No
+    /// polling and no timer: the latency is the wake-up itself.
+    #[cfg(feature = "rt")]
+    pub(crate) fn cancelled(&self) -> Cancelled {
+        Cancelled {
+            token: self.clone(),
+            id: None,
+        }
+    }
+
+    /// Block the calling thread for at most `timeout`, returning `true` when the token is
+    /// cancelled before that (`false` when the whole `timeout` elapsed without cancellation).
+    /// Woken at once by [`CancelToken::cancel`]; spurious wake-ups re-read the flag and wait
+    /// for the time still remaining, so the call never sleeps longer than `timeout`.
+    #[cfg(feature = "rhai")]
+    pub(crate) fn wait_timeout(&self, timeout: Duration) -> bool {
+        let mut waiters = lock(&self.shared.waiters);
+        let mut remaining = timeout;
+        loop {
+            // Under the lock: a `cancel` that raised the flag before this point is seen here.
+            if self.is_cancelled() {
+                return true;
+            }
+            if remaining.is_zero() {
+                return false;
+            }
+            let started = Instant::now();
+            let (guard, _) = self
+                .shared
+                .cond
+                .wait_timeout(waiters, remaining)
+                .unwrap_or_else(PoisonError::into_inner);
+            waiters = guard;
+            remaining = remaining.saturating_sub(started.elapsed());
+        }
     }
 }
 
 impl Default for CancelToken {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Future of [`CancelToken::cancelled`]. While pending it holds an entry in the token's
+/// waker list, removed on drop; `cancel` wakes and drains every entry.
+#[cfg(feature = "rt")]
+pub(crate) struct Cancelled {
+    token: CancelToken,
+    /// Identity of this future's entry in the waker list, drawn on the first pending poll.
+    id: Option<u64>,
+}
+
+#[cfg(feature = "rt")]
+impl Future for Cancelled {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        let this = self.get_mut();
+        if this.token.is_cancelled() {
+            return Poll::Ready(());
+        }
+        let mut waiters = lock(&this.token.shared.waiters);
+        // Re-read under the lock: no wake-up is lost between the check above and the sleep.
+        if this.token.is_cancelled() {
+            return Poll::Ready(());
+        }
+        let id = *this.id.get_or_insert_with(|| {
+            let id = waiters.next_id;
+            waiters.next_id = waiters.next_id.wrapping_add(1);
+            id
+        });
+        match waiters.wakers.iter_mut().find(|(known, _)| *known == id) {
+            Some((_, registered)) => {
+                if !registered.will_wake(cx.waker()) {
+                    registered.clone_from(cx.waker());
+                }
+            }
+            None => waiters.wakers.push((id, cx.waker().clone())),
+        }
+        Poll::Pending
+    }
+}
+
+#[cfg(feature = "rt")]
+impl Drop for Cancelled {
+    fn drop(&mut self) {
+        if let Some(id) = self.id {
+            lock(&self.token.shared.waiters)
+                .wakers
+                .retain(|(known, _)| *known != id);
+        }
     }
 }
 
@@ -149,12 +292,6 @@ pub(crate) fn current() -> Option<CancelToken> {
     CURRENT.try_with(|cell| cell.borrow().clone()).ok().flatten()
 }
 
-/// Common wait slice of 25 ms: the bound on a native call's cancellation latency,
-/// shared by `sleep` and `block_on` — each waits at most this long before re-reading
-/// [`current`] and its flag.
-#[cfg(any(feature = "rhai", feature = "rt"))]
-pub(crate) const WAIT_SLICE: Duration = Duration::from_millis(25);
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,7 +300,7 @@ mod tests {
     /// drapeau ?
     #[cfg(any(feature = "rhai", feature = "rt"))]
     fn installed_is(token: &CancelToken) -> bool {
-        current().is_some_and(|seen| Arc::ptr_eq(&seen.flag, &token.flag))
+        current().is_some_and(|seen| Arc::ptr_eq(&seen.shared, &token.shared))
     }
 
     // ── Scenario « sans portée, aucun jeton » ──
@@ -270,7 +407,7 @@ mod tests {
     }
 
     // ── Assertions affirmées par test (cancel.sdd Must) : Clone/Debug/Default/Send/Sync,
-    // Default non annulé, tranche commune de 25 ms. ──
+    // Default non annulé. ──
     #[test]
     fn token_is_send_sync_clone_debug_default() {
         fn assert_send_sync<T: Send + Sync>() {}
@@ -281,14 +418,276 @@ mod tests {
         assert!(!CancelToken::default().is_cancelled(), "Default est non annulé");
     }
 
-    // ── Tranche d'attente commune : 25 ms (borne de latence partagée par sleep et block_on) ──
+    // ── Scenario « un verrou empoisonné ne panique pas » (annulation) ──
     #[test]
-    #[cfg(any(feature = "rhai", feature = "rt"))]
-    fn wait_slice_is_25_ms() {
-        assert_eq!(
-            WAIT_SLICE,
-            Duration::from_millis(25),
-            "la tranche d'attente commune fait 25 ms (borne de latence partagée par sleep et block_on)"
+    fn poisoned_waker_lock_does_not_panic_on_cancel() {
+        let token = CancelToken::new();
+        poison(&token);
+        token.cancel();
+        assert!(
+            token.is_cancelled(),
+            "le drapeau est levé malgré le verrou empoisonné"
         );
+    }
+
+    /// Empoisonne le verrou des wakers par la panique d'un fil.
+    fn poison(token: &CancelToken) {
+        let shared = Arc::clone(&token.shared);
+        let poisoner = std::thread::spawn(move || {
+            let _guard = shared.waiters.lock();
+            panic!("poison du verrou des wakers");
+        });
+        assert!(poisoner.join().is_err(), "le fil empoisonneur a paniqué");
+        assert!(
+            token.shared.waiters.is_poisoned(),
+            "le verrou est bien empoisonné"
+        );
+    }
+
+    // ── Futur d'annulation et attente bornée : chacun ne se compile que sous sa feature ──
+
+    #[cfg(feature = "rt")]
+    mod future_tests {
+        use super::*;
+        use std::{
+            future::Future,
+            pin::pin,
+            sync::{PoisonError, atomic::AtomicUsize},
+            task::{Context, Wake},
+        };
+
+        /// Waker témoin : compte les réveils.
+        struct CountingWaker(AtomicUsize);
+
+        impl Wake for CountingWaker {
+            fn wake(self: Arc<Self>) {
+                self.wake_by_ref();
+            }
+
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+
+        fn counting_waker() -> (Arc<CountingWaker>, Waker) {
+            let counter = Arc::new(CountingWaker(AtomicUsize::new(0)));
+            let waker = Waker::from(Arc::clone(&counter));
+            (counter, waker)
+        }
+
+        fn wakes(counter: &CountingWaker) -> usize {
+            counter.0.load(Ordering::SeqCst)
+        }
+
+        /// Nombre de wakers actuellement enregistrés sur le jeton.
+        fn registered(token: &CancelToken) -> usize {
+            token
+                .shared
+                .waiters
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .wakers
+                .len()
+        }
+
+        // ── Scenario « le futur d'annulation résout au réveil » ──
+        #[test]
+        fn cancelled_future_resolves_on_wake() {
+            let token = CancelToken::new();
+            let (counter, waker) = counting_waker();
+            let mut cx = Context::from_waker(&waker);
+            let mut fut = pin!(token.cancelled());
+            assert!(
+                fut.as_mut().poll(&mut cx).is_pending(),
+                "jeton non annulé : le futur attend"
+            );
+            let canceller = token.clone();
+            std::thread::spawn(move || canceller.cancel())
+                .join()
+                .expect("le fil annuleur rend sa main");
+            assert!(wakes(&counter) >= 1, "le waker témoin a été réveillé");
+            assert!(
+                fut.as_mut().poll(&mut cx).is_ready(),
+                "le futur résout à l'interrogation suivante"
+            );
+        }
+
+        #[test]
+        fn cancelled_future_ready_at_first_poll_when_already_cancelled() {
+            let token = CancelToken::new();
+            token.cancel();
+            let (_counter, waker) = counting_waker();
+            let mut cx = Context::from_waker(&waker);
+            let mut fut = pin!(token.cancelled());
+            assert!(
+                fut.as_mut().poll(&mut cx).is_ready(),
+                "jeton déjà annulé : résolution dès la première interrogation"
+            );
+        }
+
+        // ── Scenario « plusieurs attentes sur des clones » ──
+        #[test]
+        fn every_waiter_on_clones_is_woken_and_dropped_one_leaves_nothing() {
+            let token = CancelToken::new();
+            let clone = token.clone();
+            let (first_counter, first_waker) = counting_waker();
+            let (second_counter, second_waker) = counting_waker();
+            let mut first_cx = Context::from_waker(&first_waker);
+            let mut second_cx = Context::from_waker(&second_waker);
+            let mut first = pin!(token.cancelled());
+            let mut second = pin!(clone.cancelled());
+            assert!(first.as_mut().poll(&mut first_cx).is_pending());
+            assert!(second.as_mut().poll(&mut second_cx).is_pending());
+            assert_eq!(registered(&token), 2, "deux wakers enregistrés");
+
+            token.cancel();
+            assert!(wakes(&first_counter) >= 1, "le premier waker est réveillé");
+            assert!(wakes(&second_counter) >= 1, "le second waker est réveillé");
+            assert!(first.as_mut().poll(&mut first_cx).is_ready());
+            assert!(second.as_mut().poll(&mut second_cx).is_ready());
+        }
+
+        #[test]
+        fn future_dropped_before_cancel_leaves_no_waker() {
+            let token = CancelToken::new();
+            let (_counter, waker) = counting_waker();
+            let mut cx = Context::from_waker(&waker);
+            {
+                let mut fut = pin!(token.cancelled());
+                assert!(fut.as_mut().poll(&mut cx).is_pending());
+                assert_eq!(registered(&token), 1, "le futur en attente a un waker");
+            }
+            assert_eq!(
+                registered(&token),
+                0,
+                "un futur détruit avant l'annulation ne laisse aucun waker"
+            );
+        }
+
+        // ── Scenario « un verrou empoisonné ne panique pas » (futur) ──
+        #[test]
+        fn poisoned_lock_neither_panics_nor_blocks_the_future() {
+            let token = CancelToken::new();
+            poison(&token);
+            let (_counter, waker) = counting_waker();
+            let mut cx = Context::from_waker(&waker);
+            let mut fut = pin!(token.cancelled());
+            assert!(
+                fut.as_mut().poll(&mut cx).is_pending(),
+                "un verrou empoisonné ne résout pas le futur avant l'annulation"
+            );
+            token.cancel();
+            assert!(fut.as_mut().poll(&mut cx).is_ready());
+        }
+    }
+
+    #[cfg(feature = "rhai")]
+    mod wait_tests {
+        use super::*;
+        use std::time::{Duration, Instant};
+
+        // ── Scenario « l'attente bornée est interrompue par l'annulation » ──
+        #[test]
+        fn bounded_wait_is_interrupted_by_cancel() {
+            let token = CancelToken::new();
+            let canceller = {
+                let t = token.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(100));
+                    t.cancel();
+                })
+            };
+            let start = Instant::now();
+            let interrupted = token.wait_timeout(Duration::from_secs(30));
+            let elapsed = start.elapsed();
+            canceller.join().expect("le fil annuleur rend sa main");
+            assert!(interrupted, "l'attente rend « annulé »");
+            assert!(
+                elapsed < Duration::from_millis(500),
+                "rendu en moins de 500 ms au total, obtenu {elapsed:?}"
+            );
+        }
+
+        #[test]
+        fn bounded_wait_without_cancel_reports_elapsed() {
+            let token = CancelToken::new();
+            let start = Instant::now();
+            let interrupted = token.wait_timeout(Duration::from_millis(50));
+            assert!(!interrupted, "sans annulation, l'attente rend « terminé »");
+            assert!(
+                start.elapsed() >= Duration::from_millis(40),
+                "l'attente dure au moins sa durée (marge 10 ms), obtenu {:?}",
+                start.elapsed()
+            );
+        }
+
+        #[test]
+        fn bounded_wait_on_already_cancelled_token_returns_at_once() {
+            let token = CancelToken::new();
+            token.cancel();
+            let start = Instant::now();
+            assert!(token.wait_timeout(Duration::from_secs(30)));
+            assert!(start.elapsed() < Duration::from_millis(500));
+        }
+
+        // Durée `Duration::MAX` (borne « illimitée » d'un appelant) : ni panique (addition de
+        // l'instant limite débordante), ni attente infinie — l'annulation à ~100 ms la rend.
+        #[test]
+        fn bounded_wait_with_max_duration_neither_panics_nor_blocks() {
+            let token = CancelToken::new();
+            let canceller = {
+                let t = token.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(100));
+                    t.cancel();
+                })
+            };
+            let start = Instant::now();
+            let interrupted = token.wait_timeout(Duration::MAX);
+            let elapsed = start.elapsed();
+            canceller.join().expect("le fil annuleur rend sa main");
+            assert!(interrupted, "l'attente de Duration::MAX rend « annulé »");
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "l'attente de Duration::MAX rend à l'annulation, obtenu {elapsed:?}"
+            );
+        }
+
+        // ── Scenario « aucun réveil perdu » : la course annulation/endormissement, rejouée ──
+        // Une perte de réveil ferait dormir les 30 s de l'attente à chaque tour.
+        #[test]
+        fn no_lost_wakeup_across_a_thousand_races() {
+            for round in 0..1000 {
+                let token = CancelToken::new();
+                let canceller = {
+                    let t = token.clone();
+                    std::thread::spawn(move || t.cancel())
+                };
+                let start = Instant::now();
+                let interrupted = token.wait_timeout(Duration::from_secs(30));
+                let elapsed = start.elapsed();
+                canceller.join().expect("le fil annuleur rend sa main");
+                assert!(interrupted, "tour {round} : l'attente rend « annulé »");
+                assert!(
+                    elapsed < Duration::from_secs(5),
+                    "tour {round} : réveil perdu, l'attente a dormi {elapsed:?}"
+                );
+            }
+        }
+
+        // ── Scenario « un verrou empoisonné ne panique pas » (attente bornée) ──
+        #[test]
+        fn poisoned_lock_neither_panics_nor_blocks_the_bounded_wait() {
+            let token = CancelToken::new();
+            poison(&token);
+            let start = Instant::now();
+            assert!(
+                !token.wait_timeout(Duration::from_millis(50)),
+                "sans annulation, l'attente rend « terminé » même verrou empoisonné"
+            );
+            token.cancel();
+            assert!(token.wait_timeout(Duration::from_secs(30)));
+            assert!(start.elapsed() < Duration::from_secs(5));
+        }
     }
 }

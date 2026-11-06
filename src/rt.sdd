@@ -27,7 +27,7 @@ References:
     reste). Variantes @Error consommées : @variant-Error::Other, @variant-Error::Stdio et
     @variant-Error::Cancelled, toutes non gated.
   ./cancel.sdd — le jeton lu (@crate::cancel::CancelToken, lecture du jeton courant du fil,
-    tranche de 25 ms).
+    futur « annulation » réveillé par `cancel()`).
   ./http.sdd, ./oci.sdd, ./s3.sdd, ./k8s.sdd — les quatre appelants ; chacun y renvoie par
     « voir ./rt.sdd ».
   ./Cargo.toml — @tokio optionnel `1.48`, features `macros`, `rt-multi-thread`, `net` et `time` :
@@ -54,13 +54,13 @@ Must:
     les TROIS stratégies d'exécution et sans changer la signature : jeton déjà annulé à
     l'entrée → le futur n'est pas interrogé du tout et l'erreur est rendue ; annulé pendant
     l'exécution → le futur est ABANDONNÉ (détruit, pas poursuivi en tâche de fond) et l'erreur
-    est rendue au plus tard une tranche de 25 ms plus tard, par une course entre le futur et
-    un contrôle périodique du drapeau dans le même runtime (@tokio::select! sur
-    @tokio::time::interval ; aucun thread, aucune tâche supplémentaire). Sans jeton, le
+    est rendue dès le réveil du jeton (issue #26), par une course entre le futur et le futur
+    d'annulation de ./cancel.sdd dans le même runtime (@tokio::select! ; ni minuteur, ni
+    `interval`, ni thread, ni tâche supplémentaire — donc sans pilote de temps requis). Sans jeton, le
     chemin est exactement celui d'avant.
   Être `pub` sous la feature `rt`, signature de `block_on` inchangée, avec une rustdoc d'API
     publique : section `# Errors` (les trois erreurs de `Raises`), les trois stratégies, le jeton
-    d'annulation, l'exigence du pilote de temps (`enable_all()`) sous jeton, l'absence de borne
+    d'annulation, le fonctionnement sans pilote de temps sous jeton, l'absence de borne
     `Send`, la voie « aucun runtime » en secours.
   Documenter que la voie « aucun runtime » est un secours (coût d'un runtime par appel) : en
     production les scripts tournent dans le runtime du consommateur.
@@ -81,7 +81,7 @@ Depends on:
   tokio — @tokio::runtime::Handle (`try_current`, `runtime_flavor`, `block_on`),
     @tokio::runtime::RuntimeFlavor, @tokio::runtime::Builder (`new_current_thread`,
     `enable_all`, `build`), @tokio::task::block_in_place.
-  crate — @crate::Result, @crate::Error, @crate::cancel (jeton courant du fil et tranche).
+  crate — @crate::Result, @crate::Error, @crate::cancel (jeton courant du fil et futur « annulation »).
 
 Exposes:
   `vynil_core::rt::block_on` — `pub fn block_on<F: Future>(fut: F) -> @crate::Result<F::Output>`
@@ -100,19 +100,18 @@ Raises:
   @variant-Error::Stdio si le runtime temporaire ne peut pas être construit.
   @variant-Error::Cancelled quand le jeton du fil est annulé, avant ou pendant
     l'exécution, quelle que soit la stratégie.
-  Aucune panique de ce module, hormis le cas du runtime sans pilote de temps décrit aux Handles.
+  Aucune panique de ce module.
 
 Handles:
   Appel imbriqué : un `block_on` lancé depuis le runtime temporaire d'un `block_on` extérieur
     rencontre un runtime `current_thread` et rend l'erreur explicite plutôt que de paniquer.
   Jeton annulé depuis un autre fil pendant que le fil appelant attend : le fil appelant est
-    rendu en moins de 500 ms (tranche de 25 ms, marge d'ordonnancement CI), le futur est détruit.
+    rendu en moins de 500 ms (réveil par le jeton, marge d'ordonnancement CI), le futur est détruit.
   Jeton installé sur un AUTRE fil que celui de l'appel : ignoré (le jeton est par fil,
     ./cancel.sdd) ; sur `spawn_blocking` ou une tâche, le consommateur ouvre sa portée dedans.
   Runtime du consommateur construit sans le pilote de temps (ni `enable_time` ni `enable_all`) :
-    avec un jeton installé, `tokio::time::interval` panique (« timers are disabled ») — cas non pris
-    en charge, documenté en rustdoc de `block_on` ; le consommateur construit son runtime avec
-    `enable_all()`. Sans jeton aucun minuteur n'est touché, la voie « aucun runtime » active tout.
+    avec ou sans jeton, `block_on` ne touche aucun minuteur et ne panique pas ; l'annulation est vue
+    par réveil (issue #26). La voie « aucun runtime » active tout pour son runtime temporaire.
   Futur qui panique lui-même : la panique du futur traverse (c'est celle de l'appelant), le
     module n'en ajoute aucune.
 
@@ -151,6 +150,15 @@ Tasks:
     l'attente), la section `# Errors` de la rustdoc et les trois tests de ./rt.rs, plus les deux
     assertions du binaire d'intégration, passent de `Error::Other("cancelled")` à
     `Error::Cancelled`. Tâche jumelle de « Ajouter @variant-Error::Cancelled » de ./lib.sdd.
+
+  [x] Honorer l'annulation par réveil (issue #26), selon le `Must` amendé : dans ./rt.rs, remplacer la
+    course `tokio::select!` sur `tokio::time::interval` par une course sur le futur d'annulation de
+    ./cancel.rs, dans les TROIS stratégies ; signature de `block_on`, appelants et API publique inchangés.
+    Tests d'abord, depuis le Scenario « runtime sans pilote de temps sous jeton » ci-dessous ; les quatre
+    Scenario d'annulation existants et le binaire d'intégration restent verts. La rustdoc de `block_on` et
+    ../docs/rhai_helpers.md (tâche de ../docs.sdd) retirent l'exigence de `enable_all()`. À cocher dans le
+    même commit que les tâches jumelles de ./cancel.sdd et ./engine.sdd. À la clôture : reprendre
+    `Purpose`, `Depends on` (plus de `tokio::time`) et `Raises` à l'état produit.
 
 Scenario: multi-thread, le futur s'exécute
   Given un `#[tokio::test(flavor = "multi_thread")]`
@@ -216,3 +224,11 @@ Scenario: consommateur externe, annulation
   When `block_on` reçoit un futur qui dort 30 s en portant un témoin de destruction
   Then l'@variant-Error::Cancelled est rendu en moins de 500 ms au total
   And le témoin de destruction est levé : le futur est abandonné
+
+Scenario: runtime sans pilote de temps sous jeton
+  Given un runtime multi-thread construit par `Builder::new_multi_thread()` SANS `enable_time` ni
+    `enable_all`, un jeton installé par `scope` et un futur qui rend `7`
+  When `block_on` s'exécute depuis une tâche de ce runtime
+  Then `Ok(7)` est rendu, sans panique
+  Given le même runtime, un futur qui attend indéfiniment un signal, et un autre fil qui annule le jeton
+  Then `block_on` rend `Error::Cancelled` en moins de 500 ms, sans panique

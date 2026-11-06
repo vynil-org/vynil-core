@@ -144,6 +144,30 @@ Must:
     `form field '<clé>' must be a scalar` (décision actée) — POSTé par
     @reqwest::RequestBuilder::form (`application/x-www-form-urlencoded`) ; l'en-tête
     `Content-Type`, SANS TENIR COMPTE DE LA CASSE, est SAUTÉ à l'application des en-têtes.
+  Lire par POST (issue #39, 0.9.1) : @crate::http::ReadMethod gagne la variante
+    @crate::http::ReadMethod::Post, `Get` restant le défaut. @crate::http::RestClient::obj_read avec
+    `Post` émet un `POST` sur le MÊME chemin complet que `Get` (`path`, puis `/<key>` si `key` non
+    vide), à CORPS VIDE, avec les mêmes en-têtes (`Accept` compris) que `Get`, et traite la réponse
+    exactement comme le bras `Get` (mêmes erreurs, même politique JSON). Décisions du développeur
+    principal : la signature de `obj_read` reste INCHANGÉE — le corps de requête est hors périmètre, et
+    s'il vient ce sera une fonction additionnelle, jamais un changement de signature ; `ReadMethod`
+    n'est PAS `#[non_exhaustive]` (les `match` restent exhaustifs, cf. plus haut), l'ajout est donc cassant
+    pour qui fait un `match` exhaustif et se range en `Changed` du CHANGELOG 0.9.1 ; aucun garde-fou ici
+    pour le flux `writes` de kuberest (vérification d'existence avant create/update), où `Post` n'a pas de
+    sens : c'est kuberest qui le rejette ou le documente.
+  Comparer un objet observé et un objet voulu (issue #40, 0.9.1) : deux fonctions libres de la face
+    http, PURES (aucune E/S), sur @serde_json::Value côté Rust et @rhai::Dynamic côté script (converti
+    par @rhai::serde::from_dynamic ; un argument non convertible, pointeur de fonction par exemple, est
+    une erreur @crate::RhaiRes, jamais une panique). `json_subset(observé, voulu) -> bool` : vrai quand
+    chaque clé de `voulu` existe dans `observé` avec une valeur qui satisfait la même relation
+    récursivement si les deux sont des objets, l'égalité stricte sinon (tableaux compris : ordre et
+    longueur) ; les clés en plus côté `observé` sont ignorées ; une clé de `voulu` absente de `observé`
+    est une différence même quand sa valeur est `null` ; un `voulu` objet vide est toujours satisfait par
+    un `observé` objet. `json_equal(observé, voulu) -> bool` : égalité stricte, clés en plus des deux
+    côtés comprises (mode `exact`). Typage STRICT, aucune normalisation : `"1"` ≠ `1`, et `1` ≠ `1.0`
+    (entier ≠ flottant, comme @serde_json::Number). Enregistrées par @crate::http::http_rhai_register et
+    son jumeau module avec les autres noms libres ; le module d'accueil `http` est un choix du
+    développeur principal.
   Contracter la face Rust NON-enregistrée : @crate::http::RestClient::header_head ÉMET UN VRAI
     HEAD (décision actée : le GET « par économie » n'a jamais été voulu, et téléchargeait le
     corps pour rien), label `Head`, et rend les paires sans lire le corps ; les cinq
@@ -180,13 +204,14 @@ Must:
   Enregistrer dans @crate::http::http_rhai_register, par le motif double cible importé de
     ./engine.rs (@crate::engine::Target/@crate::engine::register_type_at/@crate::engine::register_at) :
     le type
-    `"RestClient"` et VINGT-NEUF noms exactement : `new_http_client` ET `new_client`
+    `"RestClient"` et TRENTE-ET-UN noms exactement (l'enregistreur ; le jumeau module n'en pose que vingt-deux,
+    sans les alias `http_*` ni `new_http_client`, les libres étant qualifiées seulement sous leur nom court) : `new_http_client` ET `new_client`
     (jumeaux vers @crate::http::RestClient::new), `headers_reset`, `set_baseurl`,
     `set_server_ca`, `set_mtls_cert_key`, `add_header` (2 chaînes), `add_header_json`,
     `add_header_bearer`, `add_header_basic`, les sept verbes à double alias `get`/`http_get`,
     `head`/`http_head` (alias ajouté, décision actée), `delete`/`http_delete`,
     `delete_with_body`/`http_delete_with_body`, `patch`/`http_patch`, `post`/`http_post`,
-    `put`/`http_put`, `post_form`/`http_post_form`, et les libres `http_get_yaml`, `headers_get`, `headers_has`. AUCUN
+    `put`/`http_put`, `post_form`/`http_post_form`, et les libres `http_get_yaml`, `headers_get`, `headers_has`, `json_subset`, `json_equal`. AUCUN
     `body_*`/`json_*`/`obj_*`/`header_head` n'existe en script.
   Simuler dans @crate::http_mock::RestClientMock (`#[derive(Clone, Debug)]`, champs PRIVÉS
     `baseurl` — stocké JAMAIS LU — et `mocks` @std::vec::Vec de @crate::http_mock::HttpMockItem) :
@@ -282,10 +307,11 @@ Exposes:
   Rhai : @crate::http::RestClient::rhai_get/rhai_head (une chaîne),
     @crate::http::RestClient::rhai_patch/rhai_put/rhai_post/rhai_delete_with_body (@rhai::Dynamic),
     @crate::http::RestClient::rhai_post_form (@rhai::Map), @crate::http::RestClient::rhai_delete (une chaîne).
-  Énum publics : @crate::http::ReadMethod (Get seul), @crate::http::CreateMethod (Post défaut, Put),
+  Énum publics : @crate::http::ReadMethod (Get défaut, Post), @crate::http::CreateMethod (Post défaut, Put),
     @crate::http::UpdateMethod (Patch défaut, Put, Post, None), @crate::http::DeleteMethod (Delete seul).
   Libres : @crate::http::headers_get, @crate::http::headers_has (`#[must_use]`),
-    @crate::http::http_get_yaml, @crate::http::http_rhai_register.
+    @crate::http::http_get_yaml, @crate::http::json_subset, @crate::http::json_equal (`#[must_use]`),
+    @crate::http::http_rhai_register, @crate::http::http_module.
   @crate::http_mock::HttpMethod — `pub enum` à dérive @serde::Serialize/@serde::Deserialize/
     @core::default::Default (Get défaut) : Get, Head, Delete, Patch, Post, Put ;
     @crate::http_mock::HttpMockItem — `pub struct` à dérive Serde sur trois champs PUBLICS
@@ -296,8 +322,12 @@ Exposes:
   @crate::http_mock::httpmock_rhai_register — `pub fn(engine, mocks)` ; seul point d'entrée mock.
   @crate::http::http_module — `#[must_use] pub fn() -> @rhai::Module`, porte `http`, jumeau de
     @crate::http::http_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
+    même comportement, enregistrable par @rhai::Engine::register_static_module sous le nom `http` ;
+    décision du 2026-11-06 (règle des noms de ../vyvil-core.sdd) : la liste des fonctions libres prend des noms courts, qualifiés seulement (`http::new_client`,
+    `http::get_yaml` pour `http_get_yaml`, `http::headers_get`, `http::headers_has`, `http::json_subset`,
+    `http::json_equal`), les méthodes (`get`, `post`…) restent globales, et les alias `http_*` ainsi que
+    `new_http_client` ne sont posés que par l'enregistreur. L'enregistreur garde les noms
+    historiques dans l'espace global, inchangé pour ses appelants.
   Rien de plus dans les deux fichiers (le `fn get_client` de ./http.rs est PRIVÉ).
 
 Accepts:
@@ -506,6 +536,12 @@ Tasks:
     pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
     d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
     un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
+  [x] Noms courts du jumeau (décision du 2026-11-06) : `http_module` ne pose ni les alias `http_*` ni
+    `new_http_client` (`http::new_client`, `http::get`, `http::get_yaml`, `http::headers_get`,
+    `http::headers_has`, `http::json_subset`, `http::json_equal`), les méthodes restent globales, les
+    libres qualifiées seulement ; `http_rhai_register` garde tous ses noms. Reprendre le Scenario
+    « le registre des 31 noms » (compte de l'enregistreur 31, du jumeau moins les alias) et
+    « http_module équivaut à http_rhai_register ». Jumelle de la tâche de ../vyvil-core.sdd.
 
 Scenario: http par défaut mais jamais auto-wired
   Given la crate en default (`http` y est, ./Cargo.toml ligne 50) et un
@@ -627,11 +663,48 @@ Scenario: obj_update répond sans serveur quand None, et double-slash quand use_
   Then aucune branche `_` n'existe : les `match` sont exhaustifs et @variant-Error::UnsupportedMethod
     n'est plus construit
 
-Scenario: le registre des 29 noms
+  [x] Lire par POST (issue #39) : ajouter `ReadMethod::Post` et son bras dans `obj_read` de ./http.rs, selon
+    le `Must`. Tests d'abord, depuis le Scenario « obj_read POST lit sans rien créer » ci-dessous
+    (@wiremock). `Default` reste `Get` ; les `match` restent exhaustifs sans branche `_` ; signature de
+    `obj_read` inchangée. À la clôture : reprendre `Exposes` (« Get seul » devient « Get défaut, Post »),
+    le Scenario « ReadMethod/CreateMethod/UpdateMethod/DeleteMethod exhaustifs » et la face schemars
+    (`["Get","Post"]`). Jumelle de « Livrer 0.9.1 » de ../vyvil-core.sdd (CHANGELOG, `Changed`) et de
+    la tâche 0.9.1 de ../docs.sdd, cochée dans le même commit.
+  [x] Comparer observé et voulu (issue #40) : ajouter `json_subset` et `json_equal` à ./http.rs (fonctions
+    Rust publiques sur @serde_json::Value, glue Rhai sur @rhai::Dynamic) et les enregistrer dans
+    @crate::http::http_rhai_register ET @crate::http::http_module, avec commentaire `///` et noms de
+    paramètres sous `metadata` (signatures `json_subset(observed: Dynamic, wanted: Dynamic) -> bool`).
+    Tests d'abord, depuis les Scenario « json_subset ignore les clés en plus, json_equal non » et le
+    registre. À la clôture : le décompte du Scenario « le registre des 31 noms » (29 → 31, `Must` et
+    Scenario) et `Exposes` (« Libres ») sont repris à l'état produit. Jumelle de « Livrer 0.9.1 » de
+    ../vyvil-core.sdd et de la tâche 0.9.1 de ../docs.sdd.
+
+Scenario: obj_read POST lit sans rien créer
+  Given un serveur @wiremock répondant 200 `{"token":"t"}` à `POST /api/v1/x` et un client vers lui
+  When `obj_read(ReadMethod::Post, "api/v1/x", "")` s'exécute
+  Then la requête reçue est un `POST` sur `/api/v1/x`, de corps vide, portant les en-têtes du client et
+    `Accept: application/json`, et la valeur rendue est `{"token":"t"}`
+  Given une clé `k` non vide
+  Then l'URL visée est `/api/v1/x/k`
+  Given un serveur répondant 500 au `POST`
+  Then l'erreur rendue est celle que rend `Get` pour le même statut
+  And `ReadMethod::default()` est `Get`, et le schéma JSON de l'énum liste `Get` et `Post`
+
+Scenario: json_subset ignore les clés en plus, json_equal non
+  Given l'observé `{"a":1,"b":{"c":2,"d":3},"t":[1,2]}`
+  Then `json_subset` rend vrai pour les voulus `{"a":1}`, `{"b":{"c":2}}`, `{"t":[1,2]}` et `{}`
+  And faux pour `{"b":{"c":9}}`, `{"z":null}`, `{"t":[2,1]}`, `{"t":[1]}`, `{"a":"1"}` et `{"a":1.0}`
+  And `json_equal(observé, observé)` est vrai, `json_equal(observé, {"a":1})` est faux
+  And un voulu scalaire contre un observé objet (ou l'inverse) est faux
+  And les mêmes verdicts sortent d'un script Rhai (`json_subset(#{a: 1, b: #{c: 2}}, #{a: 1})`)
+  And un pointeur de fonction en argument est une erreur de script, sans panique
+
+Scenario: le registre des 31 noms
   Given un engine frais + @crate::http::http_rhai_register
-  Then type "RestClient", et les VINGT-NEUF noms §Must — jumeaux `new_client`/`new_http_client`
+  Then type "RestClient", et les TRENTE-ET-UN noms §Must — jumeaux `new_client`/`new_http_client`
     fonctionnels, sept verbes à double alias (`head`/`http_head` compris), `http_get_yaml`/
-    `headers_get`/`headers_has` libres
+    `headers_get`/`headers_has`/`json_subset`/`json_equal` libres
+  And le jumeau module n'en pose que vingt-deux (ni alias `http_*` ni `new_http_client`)
   Given un script `let c = new_http_client("http://x")`
   Then `type_of(c)` est "RestClient" ; `header_head`, `body_get`, `json_get`, `obj_read`,
     `add_header_json_content` sont TOUS inconnus en script
@@ -660,9 +733,9 @@ Scenario: http_module équivaut à http_rhai_register
   Given un @rhai::Engine où http_rhai_register est appelé et un second, vierge, où le résultat de
     @crate::http::http_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
-    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+    (nom nu sur le premier ; sur le second, méthodes nues et fonctions libres qualifiées `m::nom_court`, un nom court libre appelé nu étant une fonction inconnue)
   Then les résultats et les erreurs sont identiques
-  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+  And les deux ensembles de noms de fonctions correspondent à la table écrite à la main (nom global → nom de module) de la tâche « noms courts » (aucune fonction en plus ni en moins, hors alias réservés à l'enregistreur ;
     comparés sous `metadata`, par l'introspection de Rhai)
   And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
     fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global

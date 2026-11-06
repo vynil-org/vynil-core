@@ -354,6 +354,17 @@ Tasks:
     le manifest : hors `default`, active `rhai`) et à la liste de `References`
     (`Cargo.toml`). Jumelle de « Exposer la feature `metadata` » de ../vyvil-core.sdd, cochée
     dans le même commit.
+  [x] Déclarer `quantity` et reprendre les décomptes (0.9.1) : ./lib.rs déclare `#[cfg(feature =
+    "quantity")]` + `cfg_attr(docsrs, doc(cfg(feature = "quantity")))` + `pub mod quantity;` sans
+    ré-export racine ; la table de doc des features nomme `quantity` (hors `default`, sans `rhai`
+    requis pour la face Rust, glue Rhai sous `rhai`) ; `Purpose`/`Exposes` parlent de « dix-sept noms
+    communs » et de « chacun de ces modules » sans chiffre. Jumelle de ./quantity.sdd, de
+    « Exposer la feature `quantity` » de ../vyvil-core.sdd et de la tâche `regex_is_match` de
+    ./engine.sdd, cochée dans le même commit.
+  [x] Reprendre ./lib.rs après le recoupage par domaine (décision du 2026-11-06) : ré-exports et rustdoc
+    racine, table des features, `Purpose` (« neuf enregistreurs, neuf jumeaux », catalogue `core`, `host`,
+    `crypto`, `password`, `semver`, `http`, `oci`, `s3`, `k8s`). Jumelle de la tâche de ../vyvil-core.sdd.
+
 Scenario: error_chain remonte la source de l'extérieur vers la racine
   Given une erreur à trois niveaux calquée sur un échec DNS reqwest
   When @fn-error_chain la rend

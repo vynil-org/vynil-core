@@ -13,10 +13,11 @@ Owns:
 References:
   ./lib.rs — déclare `pub mod chrono;` sans aucune porte `cfg` : le module et son API Rust
     existent sous toutes les combinaisons de features.
-  ./engine.rs — @Script::new_bare est l'unique appelant de
-    @crate::chrono::chrono_rhai_register et l'appelle sans condition locale : l'enregistrement
-    est donc fait à chaque engine construit puisque ./engine.rs ne compile que sous la feature
-    `rhai`.
+  ./engine.rs — le groupe `core` (@crate::engine::core_rhai_register et son jumeau
+    @crate::engine::core_module, décision du 2026-11-06, catalogue de ../vyvil-core.sdd) appelle
+    @crate::chrono::chrono_fns : l'enregistrement est fait à chaque engine construit par
+    @Script::new_bare, puisque ./engine.rs ne compile que sous la feature `rhai`. Ce fichier ne
+    porte plus d'enregistreur ni de jumeau publics.
   ./docs/rhai_helpers.md — la doc des helpers Rhai présente la même surface `date_now` +
     `format` et renvoie à la page strftime de @chrono pour la grille reconnue.
 
@@ -57,14 +58,15 @@ Must:
     invalide appelée depuis un script devient un @crate::RhaiRes en échec, rattrapable par un
     `try` de script ; côté Rust, @crate::chrono::DateTimeHandler::format retourne un
     @crate::Result portant @crate::Error::Other (message `Invalid date format '<fmt>'`).
-  @crate::chrono::chrono_rhai_register enregistre exactement trois choses sur le
-    @rhai::Engine reçu, et rien d'autre, par le motif double cible importé de ./engine.rs
+  @crate::chrono::chrono_fns (`pub(crate)`, sous `rhai`) pose exactement trois choses sur la
+    cible (@crate::engine::Target) reçue, et rien d'autre, par le motif double cible importé de ./engine.rs
     (@crate::engine::Target, @crate::engine::register_type_at et @crate::engine::register_at) :
     le type sous le nom de script `DateTimeHandler`, la fonction
     @crate::chrono::DateTimeHandler::now sous le nom de script `date_now` à zéro argument, la
     fonction @crate::chrono::DateTimeHandler::rhai_format sous le nom de script `format`,
-    méthode d'un @crate::chrono::DateTimeHandler recevant une chaîne. Le jumeau
-    @crate::chrono::chrono_module pose les mêmes entrées sur un @rhai::Module.
+    méthode d'un @crate::chrono::DateTimeHandler recevant une chaîne. La cible est l'engine pour
+    @crate::engine::core_rhai_register, un @rhai::Module pour @crate::engine::core_module : une seule
+    liste, mêmes noms (aucun nom court, `date_now` et `format` ne répètent pas le module `core`).
   @crate::chrono::DateTimeHandler::rhai_format garde son récepteur `&mut self` et son
     paramètre @std::string::String par valeur, signatures imposées par l'enregistrement
     @rhai::FuncRegistration du motif, et conserve en pair le
@@ -101,8 +103,7 @@ Depends on:
   rhai — @rhai::Engine, @rhai::ImmutableString, @rhai::Module et le motif
     @crate::engine::Target/@crate::engine::register_type_at/@crate::engine::register_at,
     derrière la feature du même nom ; seuls
-    @crate::chrono::DateTimeHandler::rhai_format, @crate::chrono::chrono_rhai_register et
-    @crate::chrono::chrono_module en dépendent.
+    @crate::chrono::DateTimeHandler::rhai_format, @crate::chrono::chrono_fns en dépendent.
   @derive.Clone — exigé par l'enregistrement du type (@crate::engine::register_type_at,
     @rhai::Module::set_custom_type sous la voie module) ;
     @derive.Eq, @derive.PartialEq, @derive.Ord, @derive.PartialOrd, @derive.Hash et
@@ -124,18 +125,16 @@ Exposes:
   @crate::chrono::DateTimeHandler::rhai_format — liaison Rhai de la méthode précédente,
     `pub fn rhai_format(&mut self, fmt:` @std::string::String `) ->`
     @crate::RhaiRes de @rhai::ImmutableString, présente seulement sous la feature `rhai`.
-  @crate::chrono::chrono_rhai_register — seule fonction `pub` libre du module, sous la
-    feature `rhai` : `pub fn chrono_rhai_register(engine: &mut` @rhai::Engine `)`,
-    enregistreuse du type et de ses deux noms de script.
+  @crate::chrono::chrono_fns — `pub(crate) fn chrono_fns(target: &mut` @crate::engine::Target `)`
+    sous la feature `rhai`, liste d'entrées du type et de ses deux noms de script ; le module n'a
+    plus aucune fonction `pub` d'enregistrement (décision du 2026-11-06).
   Fonction de script `date_now()` — zéro argument, retourne un
     @crate::chrono::DateTimeHandler ; aucun constructeur nommé d'après le type
     n'étant enregistré, `date_now` est l'unique façon d'obtenir une valeur de script.
   Méthode de script `<DateTimeHandler>.format(fmt)` — une chaîne en argument, retourne une
     chaîne ; @type_of d'une valeur du handler rendu vaut `DateTimeHandler`.
-  @crate::chrono::chrono_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
-    @crate::chrono::chrono_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
+  Le jumeau module et l'enregistreur de ces entrées sont ceux du groupe `core` de ./engine.sdd
+    (@crate::engine::core_module / @crate::engine::core_rhai_register).
 
 Accepts:
   @crate::chrono::DateTimeHandler::now — rien, et ne consulte ni argument, ni variable
@@ -146,9 +145,8 @@ Accepts:
   @crate::chrono::DateTimeHandler::rhai_format — exactement une @std::string::String
     possédée, par valeur ; @rhai ne convertit pas un entier, un booléen ou un autre scalaire
     en chaîne pour ce paramètre.
-  @crate::chrono::chrono_rhai_register — un `&mut` @rhai::Engine fourni par l'appelant,
-    qu'elle ne lit pas et sur lequel elle n'ajoute que le type `DateTimeHandler`, `date_now`
-    et `format`.
+  @crate::chrono::chrono_fns — un `&mut` @crate::engine::Target fourni par l'appelant,
+    sur lequel elle n'ajoute que le type `DateTimeHandler`, `date_now` et `format`.
 
 Returns:
   @crate::chrono::DateTimeHandler::now — un @crate::chrono::DateTimeHandler frais sur
@@ -158,7 +156,7 @@ Returns:
     l'erreur d'un motif invalide ; jamais d'option.
   @crate::chrono::DateTimeHandler::rhai_format — un @crate::RhaiRes de
     @rhai::ImmutableString portant la même chaîne, vu d'un script comme le type `string`.
-  @crate::chrono::chrono_rhai_register — `()`.
+  @crate::chrono::chrono_fns — `()`.
 
 Raises:
   @crate::chrono::DateTimeHandler::format et @crate::chrono::DateTimeHandler::rhai_format —
@@ -168,7 +166,7 @@ Raises:
     @crate::chrono::DateTimeHandler::rhai_format, l'erreur est portée par le @crate::RhaiRes
     (via @crate::rhai_err).
   @crate::chrono::DateTimeHandler::now — rien.
-  @crate::chrono::chrono_rhai_register — rien : les trois enregistrements ne peuvent
+  @crate::chrono::chrono_fns — rien : les trois enregistrements ne peuvent
     échouer.
 
 Handles:
@@ -227,6 +225,10 @@ Tasks:
     du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
     Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
     commit.
+  [x] Fusion dans `core` (décision du 2026-11-06) : retirer le `chrono_rhai_register` et le `chrono_module`
+    publics de ./chrono.rs et poser leur liste d'entrées en `pub(crate)` appelée par l'enregistreur
+    `core` de ./engine.rs. Noms inchangés (`date_now`, `format`, type `DateTimeHandler`). Jumelle de
+    « Fournir `core` et `host` » de ./engine.sdd, cochée dans le même commit.
 
 Scenario: rendu local d'un motif valide
   Given un @crate::chrono::DateTimeHandler dont @crate::chrono::DateTimeHandler::date est une
@@ -312,27 +314,27 @@ Scenario: API Rust vivante sans la feature rhai
   Given la crate compilée avec `--no-default-features`
   When la surface publique de @crate::chrono est inspectée
   Then @crate::chrono::DateTimeHandler, @crate::chrono::DateTimeHandler::date, @crate::chrono::DateTimeHandler::now et @crate::chrono::DateTimeHandler::format compilent et s'appellent depuis leur module
-  But @crate::chrono::chrono_rhai_register et @crate::chrono::DateTimeHandler::rhai_format n'existent pas
+  But @crate::chrono::chrono_fns et @crate::chrono::DateTimeHandler::rhai_format n'existent pas
     (clause tenue par les `#[cfg(feature = "rhai")]` et la compile-gate du test, pas par une
     exécution : sous cette porte les deux noms ne peuvent même pas être nommés depuis le test)
 
 Scenario: le type rendu par date_now est nommé
-  Given un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `type_of(date_now())`
   Then `DateTimeHandler` est retourné
 
 Scenario: la date courante formatée depuis un script
-  Given un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `let d = date_now(); d.format("%Y")`
   Then la chaîne retournée est une année à quatre chiffres, identique à celle que rend la même commande appliquée en Rust au @crate::chrono::DateTimeHandler rendu par @crate::chrono::DateTimeHandler::now
 
 Scenario: un handler construit en Rust se met en forme depuis un script
-  Given un @crate::chrono::DateTimeHandler injecté dans le scope d'un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register, avec l'heure locale `2024-05-06 07:08:09` sans nanoseconde
+  Given un @crate::chrono::DateTimeHandler injecté dans le scope d'un @rhai::Engine enregistré par @crate::engine::core_rhai_register, avec l'heure locale `2024-05-06 07:08:09` sans nanoseconde
   When un script évalue `d.format("%Y-%m-%d %H:%M:%S")` sur cette variable
   Then `2024-05-06 07:08:09` est retourné
 
 Scenario: le champ date n'est pas accessible depuis un script
-  Given un @crate::chrono::DateTimeHandler dans le scope d'un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  Given un @crate::chrono::DateTimeHandler dans le scope d'un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `d.date`
   Then l'évaluation échoue en erreur de propriété inconnue
     (voie mesurée sur @rhai 1.25.1 : @rhai::EvalAltResult::ErrorDotExpr, « Unknown property
@@ -349,19 +351,19 @@ Scenario: le champ date n'est pas accessible depuis un script
     l'échec reste une erreur @rhai et non une panique)
 
 Scenario: la méthode format ne s'applique qu'aux handlers
-  Given un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `"2024-05-06".format("%Y")`
   Then l'évaluation échoue en erreur de fonction inconnue, aucune fonction globale `format` n'ayant été créée pour les chaînes
   But `d.format("%Y")` sur une variable de type @crate::chrono::DateTimeHandler réussit
 
 Scenario: un argument non chaîne n'est pas converti
-  Given un @crate::chrono::DateTimeHandler dans le scope d'un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  Given un @crate::chrono::DateTimeHandler dans le scope d'un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `d.format(2024)`
   Then l'évaluation échoue en erreur de fonction inconnue, aucune coercition scalaire vers @std::string::String n'existant pour cette méthode
   And `d.format()` sans argument échoue de même
 
 Scenario: sans enregistrement, date_now est inconnue
-  Given un @rhai::Engine fraîchement créé, sans appel de @crate::chrono::chrono_rhai_register
+  Given un @rhai::Engine fraîchement créé, sans appel de @crate::engine::core_rhai_register
   When un script évalue `date_now().format("%Y")`
   Then l'évaluation échoue en erreur de fonction inconnue
   And ce refus vient du non-enregistrement, pas du module : @crate::chrono::DateTimeHandler::now et @crate::chrono::DateTimeHandler::format ne lèvent rien
@@ -373,7 +375,7 @@ Scenario: new_bare fournit date_now et format
   And le type de `d` vu par `type_of` reste `DateTimeHandler`
 
 Scenario: un motif invalide dans un script devient une erreur rattrapable
-  Given un @crate::chrono::DateTimeHandler dans le scope d'un @rhai::Engine enregistré par @crate::chrono::chrono_rhai_register
+  Given un @crate::chrono::DateTimeHandler dans le scope d'un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `let r = ""; try { r = d.format("%Q"); } catch (e) { r = "rattrape"; } r`,
     seule forme qui rende la valeur du rattrapage par l'évaluation elle-même : @rhai ne donne
     l'instruction `try` que pour valeur `()`, la valeur du bloc n'étant pas la valeur du script
@@ -383,9 +385,9 @@ Scenario: un motif invalide dans un script devient une erreur rattrapable
   Then l'évaluation retourne `rattrape`
   And sans `try`, l'évaluation échoue en erreur @rhai portant `Invalid date format '%Q'`, sans panic
 
-Scenario: chrono_module équivaut à chrono_rhai_register
-  Given un @rhai::Engine où chrono_rhai_register est appelé et un second, vierge, où le résultat de
-    @crate::chrono::chrono_module est enregistré par register_static_module sous le nom `m`
+Scenario: core_module équivaut à core_rhai_register pour chrono
+  Given un @rhai::Engine où @crate::engine::core_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::engine::core_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
     (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
   Then les résultats et les erreurs sont identiques
@@ -396,7 +398,7 @@ Scenario: chrono_module équivaut à chrono_rhai_register
 
 Scenario: fonctions documentées sous metadata (chrono)
   Given la crate compilée avec la feature `metadata` (porte `--all-features`)
-  When l'introspection de l'engine (chrono_rhai_register) liste ses fonctions
+  When l'introspection de l'engine (core_rhai_register) liste les fonctions de chrono
     (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
   Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
     pas seulement leurs types

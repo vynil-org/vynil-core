@@ -9,12 +9,13 @@ Owns:
   ./glob.rs
 
 References:
-  @Script::new_bare — unique point d'appel de @glob::glob_rhai_register dans la crate.
+  ./engine.rs — le groupe `core` (@crate::engine::core_rhai_register, @crate::engine::core_module,
+    décision du 2026-11-06) appelle @glob::glob_fns, unique point d'appel dans la crate.
 
 Must:
   Le module ne compile que sous la feature `rhai` : le `#[cfg(feature = "rhai")]` porte la
     déclaration `pub mod glob;` de ./lib.rs et le fichier ne porte aucune autre porte `cfg`.
-  @glob::glob_rhai_register enregistre @glob::glob_fn sous l'unique nom de script `glob` —
+  @glob::glob_fns enregistre @glob::glob_fn sous l'unique nom de script `glob` —
     pas d'alias, pas de surcharge, pas d'autre nom.
   La fonction de script `glob` reçoit le texte en premier et le motif en second ; cet ordre
     d'arguments est contractuel — `glob("a.txt", "*.txt")` est vrai et `glob("*.txt", "a.txt")`
@@ -35,8 +36,8 @@ Must:
     commentaire de justification d'une ligne citant la spec se maintiennent ensemble.
 
 Must not:
-  Exposer à côté de @glob::glob_rhai_register une API Rust de correspondance — le seul point
-    d'entrée Rust public du module reste la fonction d'enregistrement.
+  Exposer à côté de @glob::glob_fns une API Rust publique de correspondance — le module n'a
+    AUCUN item `pub` (décision du 2026-11-06 : l'enregistrement est celui du groupe `core`).
   Enregistrer un pendant Handlebars du helper `glob` depuis ce module.
   Relâcher l'ancrage du motif, rendre la comparaison insensible à la casse ou normaliser le
     texte ou le motif avant comparaison.
@@ -49,24 +50,22 @@ Depends on:
     gated par feature, présente dans le graphe même sans `rhai`.
 
 Exposes:
-  @glob::glob_rhai_register — seul item `pub` du module, présent sous la feature `rhai`, qui
-    enregistre la fonction de script `glob` dans le @rhai::Engine fourni.
+  @glob::glob_fns — `pub(crate) fn glob_fns(target: &mut` @crate::engine::Target `)` sous la
+    feature `rhai`, qui pose la fonction de script `glob` sur la cible fournie (engine ou module) ;
+    aucun item `pub` dans le module.
   Fonction de script `glob(text, pattern) -> bool` — nom exact côté script `glob`, retour
     `bool` et jamais @RhaiRes, portée par la fonction privée @glob::glob_fn.
-  @crate::glob::glob_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
-    @crate::glob::glob_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
+  L'enregistreur et le jumeau module de `glob` sont ceux du groupe `core` de ./engine.sdd.
 
 Accepts:
-  @glob::glob_rhai_register — un `&mut @rhai::Engine` fourni par l'appelant, qu'elle ne lit
-    pas et sur lequel elle n'ajoute que la fonction `glob`.
+  @glob::glob_fns — un `&mut` @crate::engine::Target fourni par l'appelant, sur lequel elle
+    n'ajoute que la fonction `glob`.
   La fonction de script `glob` — exactement deux @rhai::ImmutableString dans l'ordre texte
     puis motif, au contenu libre, chaînes vides incluses, sans aucune validation ni
     normalisation.
 
 Returns:
-  @glob::glob_rhai_register — `()`.
+  @glob::glob_fns — `()`.
   La fonction de script `glob` — `true` si et seulement si le motif couvre la totalité du
     texte, `false` sinon, y compris pour un motif aberrant ; toujours un `bool`, jamais une
     erreur.
@@ -80,7 +79,7 @@ Handles:
 Tasks:
   [x] Convertir chaque Scenario de cette spec en test Rust passant, dans un `mod tests`
     sous `#[cfg(test)]` de ./glob.rs, évaluant la fonction de script sur un engine enregistré
-    par @glob::glob_rhai_register, la fonction privée restant privée et testée via `super` ;
+    par @crate::engine::core_rhai_register, la fonction privée restant privée et testée via `super` ;
     les Scenario de gating `rhai` et d'intégration @Script::new_bare peuvent vivre dans
     ./engine.rs ou la batterie de features, mais doivent être verrouillés quelque part.
     Aucun test inline n'existe à ce jour dans ./glob.rs : les dix-sept Scenario sont à
@@ -103,6 +102,9 @@ Tasks:
     du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
     Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
     commit.
+  [x] Fusion dans `core` (décision du 2026-11-06) : retirer `glob_rhai_register` et `glob_module`
+    publics de ./glob.rs, liste d'entrées `pub(crate)` appelée par `core`. Nom inchangé (`glob`).
+    Jumelle de « Fournir `core` et `host` » de ./engine.sdd, cochée dans le même commit.
 
 Scenario: correspondance littérale exacte
   Given un engine avec la fonction `glob` enregistrée
@@ -178,7 +180,7 @@ Scenario: motif aberrant sans erreur
 
 Scenario: enregistrement sur un engine nu
   Given un @rhai::Engine fraîchement créé, sans `glob`
-  When @glob::glob_rhai_register(&mut engine) est appelé
+  When @crate::engine::core_rhai_register(&mut engine) est appelé
   Then `glob("a", "a")` évalué sur cet engine donne `true`
 
 Scenario: helper absent tant que non enregistré
@@ -195,11 +197,11 @@ Scenario: new_bare injecte le helper
 Scenario: module absent sans la feature rhai
   Given la crate compilée sans la feature `rhai`, par exemple `cargo check --no-default-features`
   When l'API publique de la crate est inspectée
-  Then @glob::glob_rhai_register n'existe pas et `glob` n'est disponible dans aucun script
+  Then @crate::engine::core_rhai_register n'existe pas et `glob` n'est disponible dans aucun script
 
-Scenario: glob_module équivaut à glob_rhai_register
-  Given un @rhai::Engine où glob_rhai_register est appelé et un second, vierge, où le résultat de
-    @crate::glob::glob_module est enregistré par register_static_module sous le nom `m`
+Scenario: core_module équivaut à core_rhai_register pour glob
+  Given un @rhai::Engine où @crate::engine::core_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::engine::core_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
     (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
   Then les résultats et les erreurs sont identiques
@@ -210,7 +212,7 @@ Scenario: glob_module équivaut à glob_rhai_register
 
 Scenario: fonctions documentées sous metadata (glob)
   Given la crate compilée avec la feature `metadata` (porte `--all-features`)
-  When l'introspection de l'engine (glob_rhai_register) liste ses fonctions
+  When l'introspection de l'engine (core_rhai_register) liste les fonctions de glob
     (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
   Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
     pas seulement leurs types

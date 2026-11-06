@@ -4,7 +4,7 @@
 //! `gen_password_alphanum`) compile under `rhai` alone; only the automatic
 //! registration by `Script::new_bare` is gated behind the `password` feature.
 
-#[cfg(feature = "rhai")] use crate::engine::{Target, register_at};
+#[cfg(feature = "rhai")] use crate::engine::{Target, register_free_at};
 use crate::{Error, Result};
 use rand::{
     rng,
@@ -152,9 +152,10 @@ pub fn password_module() -> Module {
 /// bodies are verbatim the ones `password_rhai_register` used before the motif.
 #[cfg(feature = "rhai")]
 fn password_fns(target: &mut Target<'_>) {
-    register_at(
+    register_free_at(
         target,
         "gen_password",
+        "gen",
         &[
             "/// Random password of `len` chars, minimum one per class (lower/upper/digits/symbols).",
             "/// Negative `len` is clamped to 0 and refused; errors carry the raw PWD-SPEC text.",
@@ -165,9 +166,10 @@ fn password_fns(target: &mut Target<'_>) {
             generate(length, 1, 1, 1, 1).map_err(|e| format!("{e}").into())
         },
     );
-    register_at(
+    register_free_at(
         target,
         "gen_password",
+        "gen",
         &[
             "/// Random password of `len` chars with per-class minimums read from `spec`.",
             "/// An absent key defaults to 1; a present non-integer is refused (PWD-SPEC-003, naming the key);",
@@ -186,9 +188,10 @@ fn password_fns(target: &mut Target<'_>) {
             generate(length, lower, upper, digits, symbols).map_err(|e| format!("{e}").into())
         },
     );
-    register_at(
+    register_free_at(
         target,
         "gen_password_alphanum",
+        "gen_alphanum",
         &[
             "/// Random alphanumeric password of `len` chars: minimums 1/1/1/0, so never a symbol.",
             "/// Negative `len` is clamped to 0 and refused; errors carry the raw PWD-SPEC text.",
@@ -1059,8 +1062,8 @@ mod jumeau_module_password {
         );
         assert_eq!(
             names_added_by_module(crate::password::password_module()),
-            set_of(&PASSWORD_FNS),
-            "le jumeau module rend exactement les noms de l'enregistreur, aucun en plus ni en moins"
+            set_of(&["gen", "gen_alphanum"]),
+            "le jumeau module rend exactement gen et gen_alphanum (noms courts)"
         );
         let mut enregistreur = Engine::new();
         crate::password::password_rhai_register(&mut enregistreur);
@@ -1070,59 +1073,63 @@ mod jumeau_module_password {
             // exacte et type verrouillés, joués sans comparer la valeur (tirage frais).
             (
                 r#"gen_password(20).type_of() == "string" && gen_password(20).len() == 20"#.into(),
-                Some(
-                    r#"m::gen_password(20).type_of() == "string" && m::gen_password(20).len() == 20"#.into(),
-                ),
+                Some(r#"m::gen(20).type_of() == "string" && m::gen(20).len() == 20"#.into()),
                 None,
             ),
             // Scenario « gen_password binaire lit ses minima » : la surcharge binaire
             // passe la Map par valeur des deux voies.
             (
                 r"gen_password(40, #{ lower: 8, upper: 2, digits: 4, symbols: 6 }).len() == 40".into(),
-                Some(
-                    r"m::gen_password(40, #{ lower: 8, upper: 2, digits: 4, symbols: 6 }).len() == 40".into(),
-                ),
+                Some(r"m::gen(40, #{ lower: 8, upper: 2, digits: 4, symbols: 6 }).len() == 40".into()),
                 None,
             ),
             // Scenario « une classe à zéro exclut la classe » : la Map vide équivaut à
             // la surcharge unaire, la valeur déterminable (zéro symbole) est comparée en booléen.
             (
                 r#"gen_password(30, #{ symbols: 0 }).index_of("!") == -1"#.into(),
-                Some(r#"m::gen_password(30, #{ symbols: 0 }).index_of("!") == -1"#.into()),
+                Some(r#"m::gen(30, #{ symbols: 0 }).index_of("!") == -1"#.into()),
                 None,
             ),
             // Scenario « la longueur négative puis nulle est refusée » : texte brut
             // PWD-SPEC-001 porté à l'identique des deux voies.
             (
                 "gen_password(0)".into(),
-                Some("m::gen_password(0)".into()),
+                Some("m::gen(0)".into()),
                 Some("PWD-SPEC-001 sum of class minimums (4) exceeds requested length (0)"),
             ),
             (
                 "gen_password_alphanum(0)".into(),
-                Some("m::gen_password_alphanum(0)".into()),
+                Some("m::gen_alphanum(0)".into()),
                 Some("PWD-SPEC-001 sum of class minimums (3) exceeds requested length (0)"),
             ),
             // Scenario « une clé de spec non entière est une erreur » : PWD-SPEC-003
             // citant sa clé, porté à l'identique.
             (
                 r#"gen_password(20, #{ lower: "5" })"#.into(),
-                Some(r#"m::gen_password(20, #{ lower: "5" })"#.into()),
+                Some(r#"m::gen(20, #{ lower: "5" })"#.into()),
                 Some("PWD-SPEC-003 spec key 'lower' must be an integer"),
             ),
             // Scenario « aucune coercition d'arité ni de type » : fonction inconnue des
             // deux côtés, generate jamais exécutée.
-            ("gen_password(\"12\")".into(), None, Some("gen_password")),
+            (
+                "gen_password(\"12\")".into(),
+                Some("m::gen(\"12\")".into()),
+                Some("gen"),
+            ),
             (
                 "gen_password_alphanum(\"a\")".into(),
-                None,
-                Some("gen_password_alphanum"),
+                Some("m::gen_alphanum(\"a\")".into()),
+                Some("gen"),
             ),
         ];
         for (nu, qualifie, marqueur) in appels {
-            let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
+            // Contrat amendé (Must « Noms courts du jumeau », ./password.sdd) : les libres du
+            // jumeau ne se résolvent jamais nues ; seul l'appel qualifié est comparé.
             let rb = par_module.eval::<rhai::Dynamic>(&nu);
-            comparer_resultats(&nu, marqueur, rn, rb);
+            assert!(
+                rb.is_err_and(|e| e.to_string().contains("Function not found")),
+                "libre nue inconnue du jumeau attendue : {nu}"
+            );
             if let Some(q) = &qualifie {
                 let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
                 let rq = par_module.eval::<rhai::Dynamic>(q);
@@ -1243,14 +1250,14 @@ mod jumeau_module_password {
                 .expect("gen_password réussit sans `metadata`")
                 .to_string(),
             par_module
-                .eval::<rhai::Dynamic>(r"m::gen_password(20).len() == 20")
+                .eval::<rhai::Dynamic>(r"m::gen(20).len() == 20")
                 .expect("la voie jumelle rend la même valeur sans `metadata`")
                 .to_string(),
         );
         assert_eq!(
-            names_added_by(crate::password::password_rhai_register),
             names_added_by_module(crate::password::password_module()),
-            "sans `metadata`, les deux ensembles de noms restent égaux"
+            set_of(&["gen", "gen_alphanum"]),
+            "sans `metadata`, le jumeau pose les noms courts gen et gen_alphanum"
         );
     }
 }
@@ -1268,6 +1275,13 @@ mod signatures_documentees {
             "gen_password_alphanum",
             "gen_password_alphanum(len: i64) -> string",
         ),
+    ];
+
+    /// Signatures du jumeau module : noms courts (libres qualifiées seulement).
+    const SIGNATURES_JUMEAU: &[(&str, &str)] = &[
+        ("gen", "gen(len: i64) -> string"),
+        ("gen", "gen(len: i64, spec: map) -> string"),
+        ("gen_alphanum", "gen_alphanum(len: i64) -> string"),
     ];
 
     /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
@@ -1290,10 +1304,10 @@ mod signatures_documentees {
     }
 
     /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
-    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, table: &[(&str, &str)], face: &str) {
         let mut obtenues = ajoutees;
         obtenues.sort();
-        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+        let mut attendues: Vec<String> = table
             .iter()
             .map(|(_, signature)| (*signature).to_string())
             .collect();
@@ -1303,12 +1317,12 @@ mod signatures_documentees {
 
     #[test]
     fn scenario_signatures_documentees_enregistreur_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), SIGNATURES_ATTENDUES, "enregistreur");
     }
 
     #[test]
     fn scenario_signatures_documentees_jumeau_module_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+        assert_egale_a_la_table(ajoutees_par_module(), SIGNATURES_JUMEAU, "jumeau module");
     }
 
     #[test]
@@ -1335,5 +1349,55 @@ mod signatures_documentees {
                 "signature hors vocabulaire rhai : {signature}"
             );
         }
+    }
+}
+
+// Table « Noms courts du jumeau » (décision du 2026-11-06, ./password.sdd) : `gen_password`
+// (toutes arités) devient `gen`, `gen_password_alphanum` devient `gen_alphanum`, libres,
+// qualifiées seulement dans le jumeau.
+#[cfg(all(test, feature = "password"))]
+mod table_noms_courts {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn noms_de(engine: &rhai::Engine) -> BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn table_enregistreur_garde_les_noms_historiques() {
+        let mut engine = rhai::Engine::new();
+        password_rhai_register(&mut engine);
+        let ajoutes: BTreeSet<String> = noms_de(&engine)
+            .difference(&noms_de(&rhai::Engine::new()))
+            .cloned()
+            .collect();
+        let attendus: BTreeSet<String> = ["gen_password", "gen_password_alphanum"]
+            .map(str::to_string)
+            .into();
+        assert_eq!(ajoutes, attendus);
+    }
+
+    #[test]
+    fn table_jumeau_pose_les_noms_courts_qualifies() {
+        let mut engine = rhai::Engine::new();
+        engine.register_static_module("password", password_module().into());
+        let ajoutes: BTreeSet<String> = noms_de(&engine)
+            .difference(&noms_de(&rhai::Engine::new()))
+            .map(|nom| nom.strip_prefix("password::").unwrap_or(nom).to_string())
+            .collect();
+        let attendus: BTreeSet<String> = ["gen", "gen_alphanum"].map(str::to_string).into();
+        assert_eq!(ajoutes, attendus);
+        let longueur: i64 = engine
+            .eval(r"password::gen(12).len()")
+            .expect("la forme qualifiée `password::gen` répond");
+        assert_eq!(longueur, 12);
+        assert!(
+            engine.eval::<String>(r"gen(12)").is_err(),
+            "libre du jumeau jamais nue"
+        );
     }
 }

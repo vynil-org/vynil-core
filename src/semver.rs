@@ -5,7 +5,7 @@
 //! `semver_rhai_register`.
 
 #[cfg(feature = "rhai")]
-use crate::engine::{Target, register_at, register_type_at};
+use crate::engine::{Target, register_at, register_free_at, register_type_at};
 use crate::{Error, Result};
 #[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
 #[cfg(feature = "rhai")] use rhai::{Engine, Module};
@@ -236,9 +236,10 @@ pub fn semver_module() -> Module {
 #[allow(clippy::too_many_lines)]
 fn semver_fns(target: &mut Target<'_>) {
     register_type_at::<Semver>(target, "Semver");
-    register_at(
+    register_free_at(
         target,
         "semver_from",
+        "from",
         &[
             "/// Parses `text` as a semantic version, optionally prefixed with a single `v`; errors on any other input.",
         ],
@@ -1328,13 +1329,13 @@ mod tests {
             // Scenario « le v initial est mémorisé, reproduit » — constructeur + rendu.
             (
                 r#"to_string(semver_from("1.2.3"))"#.into(),
-                Some(r#"m::to_string(m::semver_from("1.2.3"))"#.into()),
+                Some(r#"m::to_string(m::from("1.2.3"))"#.into()),
                 None,
             ),
             // Scenario « Display reproduit le v initial puis la queue complète ».
             (
                 r#"to_string(semver_from("v1.2.3-alpha.1+b"))"#.into(),
-                Some(r#"m::to_string(m::semver_from("v1.2.3-alpha.1+b"))"#.into()),
+                Some(r#"m::to_string(m::from("v1.2.3-alpha.1+b"))"#.into()),
                 None,
             ),
             // Scenario « l'objet Rhai connaît ses méthodes » — entrée de TYPE : type_of
@@ -1342,62 +1343,62 @@ mod tests {
             // set_custom_type dans le module).
             (
                 r#"type_of(semver_from("1.2.3"))"#.into(),
-                Some(r#"type_of(m::semver_from("1.2.3"))"#.into()),
+                Some(r#"type_of(m::from("1.2.3"))"#.into()),
                 None,
             ),
             // Scenario « la mutation reste visible » — forme globale, mutatrice.
             (
                 r#"let v = semver_from("1.2.3"); inc_minor(v); to_string(v)"#.into(),
-                Some(r#"let v = m::semver_from("1.2.3"); m::inc_minor(v); m::to_string(v)"#.into()),
+                Some(r#"let v = m::from("1.2.3"); m::inc_minor(v); m::to_string(v)"#.into()),
                 None,
             ),
             // Forme pointée + mutatrice fallible depuis beta.N.
             (
                 r#"let v = semver_from("1.2.3-beta.1"); v.inc_beta(); to_string(v)"#.into(),
-                Some(r#"let v = m::semver_from("1.2.3-beta.1"); v.inc_beta(); m::to_string(v)"#.into()),
+                Some(r#"let v = m::from("1.2.3-beta.1"); v.inc_beta(); m::to_string(v)"#.into()),
                 None,
             ),
             // Les six opérateurs — fermetures enregistrées entre deux `Semver`, dont la
             // transparence du `v` (Scenario « l'ordre suit semver »).
             (
                 r#"semver_from("1.2.3") == semver_from("v1.2.3")"#.into(),
-                Some(r#"m::semver_from("1.2.3") == m::semver_from("v1.2.3")"#.into()),
+                Some(r#"m::from("1.2.3") == m::from("v1.2.3")"#.into()),
                 None,
             ),
             (
                 r#"semver_from("1.2.3") != semver_from("1.2.4")"#.into(),
-                Some(r#"m::semver_from("1.2.3") != m::semver_from("1.2.4")"#.into()),
+                Some(r#"m::from("1.2.3") != m::from("1.2.4")"#.into()),
                 None,
             ),
             (
                 r#"semver_from("1.2.3") < semver_from("1.2.4")"#.into(),
-                Some(r#"m::semver_from("1.2.3") < m::semver_from("1.2.4")"#.into()),
+                Some(r#"m::from("1.2.3") < m::from("1.2.4")"#.into()),
                 None,
             ),
             (
                 r#"semver_from("1.2.4") > semver_from("1.2.3")"#.into(),
-                Some(r#"m::semver_from("1.2.4") > m::semver_from("1.2.3")"#.into()),
+                Some(r#"m::from("1.2.4") > m::from("1.2.3")"#.into()),
                 None,
             ),
             (
                 r#"semver_from("1.2.3") <= semver_from("1.2.3")"#.into(),
-                Some(r#"m::semver_from("1.2.3") <= m::semver_from("1.2.3")"#.into()),
+                Some(r#"m::from("1.2.3") <= m::from("1.2.3")"#.into()),
                 None,
             ),
             (
                 r#"semver_from("1.2.4") >= semver_from("1.2.3")"#.into(),
-                Some(r#"m::semver_from("1.2.4") >= m::semver_from("1.2.3")"#.into()),
+                Some(r#"m::from("1.2.4") >= m::from("1.2.3")"#.into()),
                 None,
             ),
             // Erreurs : rejet de parse et rejet de compteur, portés à l'identique.
             (
                 r#"semver_from("nope")"#.into(),
-                Some(r#"m::semver_from("nope")"#.into()),
+                Some(r#"m::from("nope")"#.into()),
                 Some("Semver error "),
             ),
             (
                 r#"let w = semver_from("1.2.3-beta.rc"); w.inc_beta();"#.into(),
-                Some(r#"let w = m::semver_from("1.2.3-beta.rc"); w.inc_beta();"#.into()),
+                Some(r#"let w = m::from("1.2.3-beta.rc"); w.inc_beta();"#.into()),
                 Some("ParseIntError "),
             ),
         ]
@@ -1417,10 +1418,14 @@ mod tests {
             set_of(&SEMVER_FNS),
             "l'enregistreur ajoute exactement les treize fonctions du `Must`"
         );
+        let attendus_jumeau: std::collections::BTreeSet<String> = SEMVER_FNS
+            .iter()
+            .map(|nom| if *nom == "semver_from" { "from" } else { nom }.to_string())
+            .collect();
         assert_eq!(
             names_added_by_module(semver_module()),
-            set_of(&SEMVER_FNS),
-            "le jumeau module rend exactement les noms de l'enregistreur, aucun en plus ni en moins"
+            attendus_jumeau,
+            "le jumeau module rend exactement les noms de l'enregistreur, semver_from devenu from"
         );
 
         // Face rejouée : nu sur l'enregistreur ; nu ET `m::` qualifié sur le jumeau.
@@ -1428,9 +1433,18 @@ mod tests {
         semver_rhai_register(&mut enregistreur);
         let par_module = engine_with_module(semver_module());
         for (nu, qualifie, marqueur) in appels_representatifs() {
+            // Contrat amendé (Must « Noms courts du jumeau », ./semver.sdd) : la libre `from` du
+            // jumeau ne se résout jamais nue ; seul l'appel qualifié est comparé à l'enregistreur.
             let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
             let rm = par_module.eval::<rhai::Dynamic>(&nu);
-            comparer_resultats(&nu, marqueur, rn, rm);
+            if nu.contains("semver_from(") {
+                assert!(
+                    rm.is_err_and(|e| e.to_string().contains("Function not found")),
+                    "libre nue inconnue du jumeau attendue : {nu}"
+                );
+            } else {
+                comparer_resultats(&nu, marqueur, rn, rm);
+            }
             if let Some(q) = &qualifie {
                 let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
                 let rq = par_module.eval::<rhai::Dynamic>(q);
@@ -1525,16 +1539,24 @@ mod tests {
             r#"type_of(semver_from("1.2.3"))"#,
         ] {
             let rn = enregistreur.eval::<rhai::Dynamic>(script);
-            let rm = par_module.eval::<rhai::Dynamic>(script);
+            // La libre du jumeau est `from`, qualifiée seulement (Must « Noms courts », ./semver.sdd).
+            let rm = par_module.eval::<rhai::Dynamic>(&script.replace("semver_from(", "m::from("));
             comparer_resultats(script, None, rn, rm);
         }
         let nu = enregistreur.eval::<rhai::Dynamic>(r#"to_string(semver_from("v1.2.3"))"#);
-        let qualifie = par_module.eval::<rhai::Dynamic>(r#"m::to_string(m::semver_from("v1.2.3"))"#);
-        comparer_resultats("m::to_string(m::semver_from)", None, nu, qualifie);
+        let qualifie = par_module.eval::<rhai::Dynamic>(r#"m::to_string(m::from("v1.2.3"))"#);
+        comparer_resultats("m::to_string(m::from)", None, nu, qualifie);
         assert_eq!(
-            names_added_by(semver_rhai_register),
             names_added_by_module(semver_module()),
-            "sans `metadata`, les deux ensembles de noms restent égaux"
+            names_added_by(semver_rhai_register)
+                .iter()
+                .map(|nom| if nom == "semver_from" {
+                    "from".to_string()
+                } else {
+                    nom.clone()
+                })
+                .collect(),
+            "sans `metadata`, le jumeau pose les mêmes noms, semver_from devenu from"
         );
     }
 }
@@ -1580,11 +1602,28 @@ mod signatures_documentees {
             .collect()
     }
 
+    /// Signatures du jumeau module : `from` (libre, nom court) ; les méthodes restent telles quelles.
+    const SIGNATURES_JUMEAU: &[(&str, &str)] = &[
+        ("from", "from(text: string) -> Semver"),
+        ("inc_major", "inc_major(v: &mut Semver)"),
+        ("inc_minor", "inc_minor(v: &mut Semver)"),
+        ("inc_patch", "inc_patch(v: &mut Semver)"),
+        ("inc_beta", "inc_beta(v: &mut Semver)"),
+        ("inc_alpha", "inc_alpha(v: &mut Semver)"),
+        ("==", "==(a: Semver, b: Semver) -> bool"),
+        ("!=", "!=(a: Semver, b: Semver) -> bool"),
+        ("<", "<(a: Semver, b: Semver) -> bool"),
+        (">", ">(a: Semver, b: Semver) -> bool"),
+        ("<=", "<=(a: Semver, b: Semver) -> bool"),
+        (">=", ">=(a: Semver, b: Semver) -> bool"),
+        ("to_string", "to_string(v: &mut Semver) -> string"),
+    ];
+
     /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
-    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, table: &[(&str, &str)], face: &str) {
         let mut obtenues = ajoutees;
         obtenues.sort();
-        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+        let mut attendues: Vec<String> = table
             .iter()
             .map(|(_, signature)| (*signature).to_string())
             .collect();
@@ -1594,12 +1633,12 @@ mod signatures_documentees {
 
     #[test]
     fn scenario_signatures_documentees_enregistreur_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), SIGNATURES_ATTENDUES, "enregistreur");
     }
 
     #[test]
     fn scenario_signatures_documentees_jumeau_module_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+        assert_egale_a_la_table(ajoutees_par_module(), SIGNATURES_JUMEAU, "jumeau module");
     }
 
     #[test]
@@ -1626,5 +1665,63 @@ mod signatures_documentees {
                 "signature hors vocabulaire rhai : {signature}"
             );
         }
+    }
+}
+
+// Table « Noms courts du jumeau » (décision du 2026-11-06, ./semver.sdd) : `semver_from`
+// (libre) devient `from` dans le jumeau, qualifié seulement ; les méthodes restent globales.
+#[cfg(all(test, feature = "rhai"))]
+mod table_noms_courts {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn noms_de(engine: &rhai::Engine) -> BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    /// Noms des fonctions de l'engine dont l'espace est `Internal` : les libres du jumeau,
+    /// appelables seulement qualifiées (`FuncMetadata::namespace`, pas le nom affiché).
+    fn noms_internes(engine: &rhai::Engine) -> std::collections::BTreeSet<String> {
+        engine
+            .collect_fn_metadata(
+                None,
+                |f| {
+                    (f.metadata.namespace == rhai::FnNamespace::Internal).then(|| f.metadata.name.to_string())
+                },
+                false,
+            )
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn table_enregistreur_garde_semver_from() {
+        let mut engine = rhai::Engine::new();
+        semver_rhai_register(&mut engine);
+        let ajoutes: BTreeSet<String> = noms_de(&engine)
+            .difference(&noms_de(&rhai::Engine::new()))
+            .cloned()
+            .collect();
+        assert!(ajoutes.contains("semver_from"), "enregistreur : {ajoutes:?}");
+        assert!(!ajoutes.contains("from"));
+    }
+
+    #[test]
+    fn table_jumeau_pose_from_qualifie_seulement() {
+        let mut engine = rhai::Engine::new();
+        engine.register_static_module("semver", semver_module().into());
+        let internes = noms_internes(&engine);
+        assert!(internes.contains("from"), "from absent des fonctions qualifiées");
+        assert!(
+            !internes.contains("semver_from"),
+            "le jumeau ne pose plus semver_from"
+        );
+        let erreur = engine
+            .eval::<rhai::Dynamic>(r#"from("1.2.3")"#)
+            .expect_err("libre du jumeau jamais nue");
+        assert!(erreur.to_string().contains("not found"), "appel nu : {erreur}");
     }
 }

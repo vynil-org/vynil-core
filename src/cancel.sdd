@@ -34,10 +34,10 @@ References:
 
 Must:
   Exister sans aucune porte : le module est compilé dans tout graphe de features, y compris
-    `--no-default-features`, et ses tests s'y jouent. Les deux lectures `pub(crate)` ci-dessous,
-    qui n'ont de lecteur que sous `rhai` (`sleep`) ou `rt` (le pont), ne sont compilées que sous
-    `any(feature = "rhai", feature = "rt")` : aucun `#[allow(dead_code)]` pour faire taire le graphe
-    sans lecteur.
+    `--no-default-features`, et ses tests s'y jouent. Les lectures `pub(crate)` ci-dessous
+    n'ont chacune de lecteur que sous `rhai` (`sleep`) ou `rt` (le pont) : la lecture du jeton courant
+    sous `any(feature = "rhai", feature = "rt")`, le futur « annulation » sous `rt` seul, l'attente
+    bornée sous `rhai` seul. Aucun `#[allow(dead_code)]` pour faire taire un graphe sans lecteur.
   Fournir @crate::cancel::CancelToken : un drapeau partagé, @core::clone::Clone (les clones
     désignent le MÊME drapeau), @core::fmt::Debug, @core::default::Default (non annulé),
     @core::marker::Send et @core::marker::Sync affirmés par test. Une fois annulé il le reste :
@@ -50,8 +50,16 @@ Must:
     @tokio::task::spawn, un @tokio::task::spawn_blocking ne l'héritent pas. Le consommateur
     qui évalue sur un autre fil ouvre sa propre portée sur ce fil. À documenter en rustdoc.
   Fournir à ./rt.rs et ./engine.rs une lecture `pub(crate)` du jeton courant du fil (absent
-    quand aucune portée n'est ouverte) et la tranche d'attente commune de 25 ms : borne de la
-    latence d'annulation d'un appel natif, partagée par `sleep` et `block_on`.
+    quand aucune portée n'est ouverte) et DEUX attentes réveillées par `cancel()` (issue #26, qui
+    remplace la tranche de 25 ms et le sondage) : un futur « annulation » qui résout dès que le jeton
+    est annulé — il enregistre le @core::task::Waker de la tâche qui l'interroge, le retire à sa
+    destruction, et `cancel()` réveille TOUS les wakers enregistrés, donc aussi plusieurs attentes
+    sur des clones du même jeton — et une attente bloquante bornée par une durée
+    (@std::sync::Condvar) que `cancel()` interrompt aussitôt. Aucun sondage, aucune tranche : la
+    latence d'annulation est celle du réveil. Ordre qui fait foi : `cancel()` pose le drapeau AVANT de
+    prendre le verrou des wakers ; une attente relit le drapeau SOUS le verrou avant de s'endormir (aucun
+    réveil perdu) ; `cancel()` appelle les wakers HORS verrou. Un verrou empoisonné est récupéré,
+    jamais une panique.
   Ne jamais paniquer : aucun `unwrap`/`expect`, y compris sur l'accès au thread-local pendant
     la destruction du fil (l'absence de jeton est alors rendue).
 
@@ -61,18 +69,21 @@ Must not:
     consommateur (@rhai::Engine::on_progress).
   Utiliser un état global de processus pour le jeton : deux évaluations concurrentes sur deux
     fils ne se voient pas.
-  Dépendre de @tokio, de @rhai ou d'une dépendance nouvelle : @std::sync::Arc et
-    @std::sync::atomic::AtomicBool suffisent.
+  Dépendre de @tokio, de @rhai ou d'une dépendance nouvelle : @std::sync::Arc,
+    @std::sync::atomic::AtomicBool, @std::sync::Mutex, @std::sync::Condvar et @core::task::Waker
+    (`std`/`core` seuls) suffisent.
 
 Depends on:
-  std — @std::sync::Arc, @std::sync::atomic::AtomicBool, @std::cell::RefCell (thread-local),
-    @std::time::Duration.
+  std — @std::sync::Arc, @std::sync::atomic::AtomicBool, @std::sync::Mutex, @std::sync::Condvar,
+    @std::cell::RefCell (thread-local), @std::time::Duration ; core — @core::task::Waker,
+    @core::future::Future (le futur « annulation »).
 
 Exposes:
   @crate::cancel::CancelToken — `pub struct`, `new()` (`#[must_use]`), `cancel(&self)`,
     `is_cancelled(&self) -> bool` (`#[must_use]`) ; `Clone`, `Debug`, `Default`.
   @crate::cancel::scope — `pub fn scope<R>(token: &CancelToken, f: impl FnOnce() -> R) -> R`.
-  Les lectures `pub(crate)` décrites au `Must` (jeton courant, tranche de 25 ms).
+  Les lectures `pub(crate)` décrites au `Must` (jeton courant ; sous `rt` le futur « annulation » ; sous `rhai` l'attente bornée
+  par une durée, interrompue par `cancel()`).
 
 Accepts:
   N'importe quel jeton, annulé ou non ; une fermeture quelconque, y compris une qui panique.
@@ -84,7 +95,7 @@ Handles:
   Jeton annulé avant l'ouverture de la portée : la portée s'ouvre normalement, l'appelant
     natif voit un jeton déjà annulé et rend son erreur sans commencer son attente.
   Annulation depuis un autre fil pendant que le fil évaluateur attend : le drapeau est atomique,
-    l'appelant natif la voit au plus tard à sa tranche suivante.
+    l'appelant natif est réveillé par `cancel()` lui-même (issue #26), sans attendre de tranche.
 
 Tasks:
   [x] Retirer les deux `#[allow(dead_code)]` de `current()` et `WAIT_SLICE` quand les tâches
@@ -108,6 +119,15 @@ Tasks:
 
   [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : `rhai::Engine::on_progress` en texte brut dans la rustdoc. Jumelle de « Tendre les
     lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
+
+  [x] Réveiller les attentes par un waker du jeton (issue #26), selon le `Must` : `CancelToken` porte un
+    état partagé (drapeau atomique, liste de wakers sous `Mutex`, `Condvar`) ; ajouter les deux attentes
+    `pub(crate)` (futur « annulation », attente bornée) et supprimer `WAIT_SLICE`. L'API publique
+    (`CancelToken::{new, cancel, is_cancelled}`, `scope`, `Clone`/`Debug`/`Default`/`Send`/`Sync`) est
+    inchangée. Tests d'abord, depuis les Scenario ci-dessous. À la clôture : reprendre `Purpose`
+    (la tranche de 25 ms), `Depends on` et `Exposes` (lectures `pub(crate)`) à l'état produit. Tâche
+    à cocher AVEC les tâches jumelles de ./rt.sdd et ./engine.sdd (elles consomment l'attente ; la
+    suppression de `WAIT_SLICE` casse la compilation de l'une sans l'autre), dans le même commit.
 
 Scenario: sans portée, aucun jeton
   Given un fil sur lequel aucune portée n'est ouverte
@@ -149,3 +169,32 @@ Scenario: cancel existe sans aucune feature
   Then `vynil_core::cancel::{CancelToken, scope}` existe, les tests de `CancelToken` (Send, Sync,
     clones partageant le drapeau, Default non annulé) passent, et la compilation ne rend aucun
     avertissement `dead_code`
+
+Scenario: le futur d'annulation résout au réveil
+  Given un jeton T, un futur d'annulation interrogé une fois (en attente) avec un waker témoin
+  When `T.cancel()` est appelé depuis un autre fil
+  Then le waker témoin a été réveillé, et le futur résout à l'interrogation suivante
+  Given un jeton déjà annulé
+  Then le futur d'annulation résout dès la première interrogation
+
+Scenario: plusieurs attentes sur des clones
+  Given un jeton T et deux clones, chacun avec son futur d'annulation en attente
+  When `T.cancel()` est appelé
+  Then les deux wakers sont réveillés
+  And un futur d'annulation détruit avant l'annulation ne laisse aucun waker enregistré
+
+Scenario: l'attente bornée est interrompue par l'annulation
+  Given un jeton T et une attente bornée de 30 s sur ce fil
+  When un autre fil appelle `T.cancel()` 100 ms plus tard
+  Then l'attente rend « annulé » en moins de 500 ms au total
+  Given une attente bornée de 50 ms sans annulation
+  Then elle rend « terminé » après au moins 40 ms
+
+Scenario: aucun réveil perdu
+  Given un jeton annulé entre le contrôle du drapeau et l'endormissement (course rejouée mille fois)
+  Then l'attente rend « annulé » à chaque tour, sans jamais dormir sa durée entière
+
+Scenario: un verrou empoisonné ne panique pas
+  Given un jeton dont le verrou des wakers a été empoisonné par la panique d'un fil
+  When `cancel()` et `is_cancelled()` sont appelés
+  Then aucun des deux ne panique, et le drapeau est levé

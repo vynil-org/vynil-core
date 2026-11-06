@@ -3,6 +3,62 @@
 All notable changes to `vynil-core` are documented here. The crate is pre-1.0: minor versions
 may break the public API, and every breaking change is listed explicitly.
 
+## 0.9.1
+
+A consolidation of the 0.9.0 surface: the Rhai registrars are regrouped by domain into a
+catalogue, and a few functions are added. No consumer of 0.9.0 existed, so the regrouping is
+published as-is; the breaking changes are listed below.
+
+### Added
+
+- **`regex_is_match(pattern, text)`** in the `core` module: unanchored match with the syntax of
+  the `regex` crate, linear-time. An invalid pattern is a script error.
+- **Feature `quantity`** (off by default): `cpu_millis_of` (millicores) and `memory_bytes_of`
+  (bytes), for Kubernetes resource quantities — the whole quantity grammar (sign, decimal and
+  exponent forms, `n u m k M G T P E` and `Ki`…`Ei` suffixes). Rounding is away from zero; `()`
+  is returned outside the grammar or on overflow. In Rust: `quantity::cpu_millis_of` and
+  `quantity::memory_bytes_of`, returning `Option<i64>`.
+- **`ReadMethod::Post`**: `RestClient::obj_read` can read with a `POST` with an empty body, on the
+  same path and with the same headers as `Get`; the response is handled as for `Get`.
+- **`json_subset(observed, wanted)` and `json_equal(observed, wanted)`** in the `http` module,
+  for scripts and Rust. `json_subset` ignores extra keys in `observed`; `json_equal` is strict
+  equality. Both compare typed values strictly (`1`, `1.0` and `"1"` differ).
+- **Module catalogue**: nine public registrars `X_rhai_register(engine)` — `core`, `host`,
+  `crypto`, `password`, `semver`, `http`, `oci`, `s3`, `k8s` — each with a `X_module()` twin
+  for `Engine::register_static_module`. The twins share their registrar's list of functions.
+
+### Changed
+
+- The module catalogue replaces the 0.9.0 grouping. `Script::new_bare` calls the `core`, `host`,
+  `crypto`, `semver` registrars, plus `password` (feature `password`) and `oci` (feature `oci`);
+  the set of functions it registers under the global namespace is the same as in 0.9.0, plus
+  `regex_is_match` and, under `quantity`, `cpu_millis_of` and `memory_bytes_of`. The registrars
+  keep the 0.9.0 global names.
+- Cancellation no longer polls. `sleep` and `rt::block_on` are woken directly by
+  `CancelToken::cancel()`: the 25 ms slices are gone. A consumer's runtime does not need
+  `enable_all()` or `enable_time()` any more, and the "timers are disabled" panic is gone. The
+  error is still `Error::Cancelled` (`CANCEL-001 operation cancelled`).
+- Dependencies, with no change to the public API: `serde_yaml` 0.9 is replaced by `yaml_serde`
+  0.10 (imported under the old alias); the `sha256` crate is replaced by `sha2` 0.11 and `hex`,
+  with the same digest; `tar` and `flate2` are compiled only under `oci`; `regex` only under
+  `rhai`; the duplicated `cpufeatures` is gone. Rhai's default features are kept.
+
+### Breaking changes
+
+- **Removed registrars and twins** (0.9.0 names, no consumer known): `engine::core_pure_rhai_register`,
+  `core_host_rhai_register`, `core_sleep_rhai_register`, `fs_rhai_register`, `chrono_rhai_register`,
+  `glob_rhai_register`, `yaml_rhai_register`, `shell_rhai_register`, `hashes_rhai_register`,
+  `crypto_hashes_rhai_register`, `key_rhai_register`, `k8sgeneric_rhai_register`,
+  `k8sraw_rhai_register`, `k8sworkload_rhai_register`, and their `*_module()` twins. Their
+  functions are in `core`, `host`, `crypto` and `k8s`. `k8s` is registered by the single
+  `k8s::k8s_rhai_register` / `k8s::k8s_module`.
+- **Twin names**: the free functions of the twins are qualified only, and some are shortened
+  (`semver::from`, `password::gen`, `password::gen_alphanum`, `http::new_client`,
+  `http::get_yaml`, `s3::get_yaml`, `s3::list_keys`, `k8s::resource`, `k8s::new_raw`,
+  `k8s::update_crd_cache`). The registrars keep the 0.9.0 global names.
+- **`ReadMethod`** gains a variant, `Post`. It is not `#[non_exhaustive]`: a `match` on it without a
+  wildcard arm stops compiling until the arm is added.
+
 ## 0.9.0
 
 The composable-engine release (issues #18–#22): the always-registered core helpers are now

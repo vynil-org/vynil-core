@@ -215,8 +215,10 @@ Exposes:
     @rhai::Engine nu.
   @crate::semver::semver_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
     @crate::semver::semver_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
+    même comportement, enregistrable par @rhai::Engine::register_static_module sous le nom `semver` ;
+    décision du 2026-11-06 (règle des noms de ../vyvil-core.sdd) : la fonction libre prend un nom court, qualifié seulement (`semver::from` pour `semver_from`),
+    les méthodes (`inc_*`, comparateurs, `to_string`) restent globales. L'enregistreur garde les noms
+    historiques dans l'espace global, inchangé pour ses appelants.
   Rien de plus : aucune propriété d'objet, aucun accesseur de composant, aucun alias de
     constructeur, aucune fonction globale de comparaison ou de parsing sous un autre nom.
 
@@ -395,6 +397,9 @@ Tasks:
     pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
     d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
     un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
+  [x] Noms courts du jumeau (décision du 2026-11-06) : `semver_module` pose `from` (libre, qualifiée
+    seulement) pour `semver_from` ; les méthodes (`inc_*`, comparateurs, `to_string`) restent globales ;
+    `semver_rhai_register` garde `semver_from`. Jumelle de la tâche de ../vyvil-core.sdd.
 
 Scenario: le même type sous deux chemins dans tous les graphes
   Given la crate compilée par `cargo check --no-default-features`
@@ -553,9 +558,9 @@ Scenario: semver_module équivaut à semver_rhai_register
   Given un @rhai::Engine où semver_rhai_register est appelé et un second, vierge, où le résultat de
     @crate::semver::semver_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
-    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+    (nom nu sur le premier ; sur le second, méthodes nues et fonctions libres qualifiées `m::nom_court`, un nom court libre appelé nu étant une fonction inconnue)
   Then les résultats et les erreurs sont identiques
-  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+  And les deux ensembles de noms de fonctions correspondent à la table écrite à la main (nom global → nom de module) de la tâche « noms courts » (aucune fonction en plus ni en moins, hors alias réservés à l'enregistreur ;
     comparés sous `metadata`, par l'introspection de Rhai)
   And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
     fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global

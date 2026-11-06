@@ -248,8 +248,11 @@ Exposes:
     enregistrements, `get_auth_from_file` compris.
   @crate::oci::oci_module — `#[must_use] pub fn() -> @rhai::Module`, porte `oci`, jumeau de
     @crate::oci::oci_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
+    même comportement, enregistrable par @rhai::Engine::register_static_module sous le nom `oci` ;
+    décision du 2026-11-06 (règle des noms de ../vyvil-core.sdd) : les noms sont inchangés (`new_registry` ne répète pas `oci`) mais les fonctions libres
+    (`new_registry`, `get_auth_from_file`) ne s'appellent que qualifiées, les méthodes
+    (`push_image`, `sign_image`, `list_tags`, `get_manifest`) restant globales. L'enregistreur garde les noms
+    historiques dans l'espace global, inchangé pour ses appelants.
   Rien de plus dans les deux fichiers.
 
 Accepts:
@@ -405,6 +408,11 @@ Tasks:
 
   [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : `resolve_registry_auth` en texte brut dans la rustdoc. Jumelle de « Tendre les
     lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
+  [x] Jumeau inchangé en noms (décision du 2026-11-06) : `new_registry` n'est pas redondant avec `oci`.
+    Vérifier seulement, par la table de noms écrite à la main de la tâche de ../vyvil-core.sdd, que les
+    libres (`new_registry`, `get_auth_from_file`) sont qualifiées seulement dans le jumeau et que les
+    méthodes (`push_image`, `sign_image`, `list_tags`, `get_manifest`) restent globales. Jumelle de la
+    tâche de ../vyvil-core.sdd.
 
 Scenario: oci éteint, les deux modules n'existent pas
   Given la crate compilée `--no-default-features --features rhai` (`oci` off par défaut)
@@ -542,9 +550,9 @@ Scenario: oci_module équivaut à oci_rhai_register
   Given un @rhai::Engine où oci_rhai_register est appelé et un second, vierge, où le résultat de
     @crate::oci::oci_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
-    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+    (nom nu sur le premier ; sur le second, méthodes nues et fonctions libres qualifiées `m::nom_court`, un nom court libre appelé nu étant une fonction inconnue)
   Then les résultats et les erreurs sont identiques
-  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+  And les deux ensembles de noms de fonctions correspondent à la table écrite à la main (nom global → nom de module) de la tâche « noms courts » (aucune fonction en plus ni en moins, hors alias réservés à l'enregistreur ;
     comparés sous `metadata`, par l'introspection de Rhai)
   And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
     fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global

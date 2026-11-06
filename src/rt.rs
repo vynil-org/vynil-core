@@ -42,16 +42,16 @@ use crate::{Error, Result, cancel};
 ///
 /// - a token already cancelled at entry refuses `fut` unpolled, before a strategy is chosen;
 /// - a token cancelled while `fut` runs makes `block_on` abandon (drop) `fut`, not leave it
-///   running in the background, and return the error within one 25 ms slice.
+///   running in the background, and return the error as soon as the cancellation wakes the
+///   waiting thread (no polling).
 ///
-/// The check is a `tokio::select!` between `fut` and a periodic re-read of the flag, on the
-/// same runtime (no thread, no extra task). Without a token the path is exactly the
-/// token-less one, and no timer is touched.
+/// The race is a `tokio::select!` between `fut` and the token's cancellation future
+/// ([`CancelToken::cancelled`](crate::cancel::CancelToken)), on the same runtime: no thread,
+/// no extra task, no timer. Without a token the path is exactly the token-less one.
 ///
-/// **With a token installed, the calling runtime must have its time driver enabled**
-/// (`enable_all()` or `enable_time()`): the check ticks a `tokio::time::interval`, which
-/// panics on a runtime built without one. A consumer building its own runtime calls
-/// `enable_all()`. The temporary runtime of the fallback always has it.
+/// **The runtime needs no time driver**: a consumer runtime built without `enable_time` or
+/// `enable_all()` works under a token as well, the cancellation being a wake-up and not a
+/// timer. The temporary runtime of the fallback is built with `enable_all()` as before.
 ///
 /// # Errors
 ///
@@ -95,12 +95,11 @@ pub fn block_on<F: Future>(fut: F) -> Result<F::Output> {
     runtime.block_on(drive(fut, token))
 }
 
-/// Drive `fut`, racing it against the thread's cancellation token when there is
-/// one: a `tokio::select!` between `fut` and a periodic re-read of the flag every
-/// [`cancel::WAIT_SLICE`] (interval ticks on the *same* runtime — no thread, no
-/// task). Whichever arm loses, `fut` is dropped: on cancellation the future is
-/// abandoned, not left running. Without a token this is `fut.await`, the exact
-/// pre-cancellation path.
+/// Drive `fut`, racing it against the thread's cancellation token when there is one: a
+/// `tokio::select!` between `fut` and the token's cancellation future, woken by `cancel()`
+/// (no thread, no task, no timer). Whichever arm loses, `fut` is dropped: on cancellation
+/// the future is abandoned, not left running. Without a token this is `fut.await`, the
+/// exact pre-cancellation path.
 async fn drive<F: Future>(fut: F, token: Option<cancel::CancelToken>) -> Result<F::Output> {
     let Some(token) = token else {
         return Ok(fut.await);
@@ -108,19 +107,7 @@ async fn drive<F: Future>(fut: F, token: Option<cancel::CancelToken>) -> Result<
     tokio::select! {
         biased;
         out = fut => Ok(out),
-        () = wait_for_cancel(token) => Err(Error::Cancelled),
-    }
-}
-
-/// Completes once the thread's `token` reads cancelled, polled every
-/// [`cancel::WAIT_SLICE`] — the bound on the cancellation latency.
-async fn wait_for_cancel(token: cancel::CancelToken) {
-    let mut tick = tokio::time::interval(cancel::WAIT_SLICE);
-    loop {
-        tick.tick().await;
-        if token.is_cancelled() {
-            return;
-        }
+        () = token.cancelled() => Err(Error::Cancelled),
     }
 }
 
@@ -286,8 +273,8 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_secs(30)).await;
     }
 
-    /// Cœur des deux faces du Scenario « annulation pendant l'attente » : tranche de
-    /// 25 ms, marge CI → retour asserté sous 500 ms, jamais l'égalité à la tranche.
+    /// Cœur des deux faces du Scenario « annulation pendant l'attente » : réveil par
+    /// l'annulation, marge CI → retour asserté sous 500 ms, jamais une égalité de durée.
     fn assert_cancelled_during_wait(
         res: crate::Result<()>,
         dropped: &Rc<Cell<bool>>,
@@ -344,6 +331,42 @@ mod tests {
         let elapsed = start.elapsed();
         assert_cancelled_during_wait(res, &dropped, elapsed);
         canceller.join().expect("le fil annuleur rend sa main");
+    }
+
+    // ── Scenario « runtime sans pilote de temps sous jeton » (rt.sdd) ──
+    // Runtime multi-thread SANS `enable_time` ni `enable_all` : l'annulation passe par réveil
+    // (issue #26), jamais par un minuteur, donc aucune panique.
+    #[test]
+    fn runtime_without_time_driver_under_token() {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .build()
+            .expect("runtime multi-thread sans pilote de temps");
+
+        let token = CancelToken::new();
+        let task = rt.spawn(async move { cancel::scope(&token, || block_on(async { 7_i32 })) });
+        let ok = rt.block_on(task).expect("la tâche ne doit pas paniquer");
+        assert!(matches!(ok, Ok(7)), "Ok(7) attendu sans panique, obtenu {ok:?}");
+
+        let token = CancelToken::new();
+        let interrupter = token.clone();
+        let canceller = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            interrupter.cancel();
+        });
+        let started = std::time::Instant::now();
+        let task = rt.spawn(async move { cancel::scope(&token, || block_on(std::future::pending::<i32>())) });
+        let res = rt.block_on(task).expect("la tâche ne doit pas paniquer");
+        let elapsed = started.elapsed();
+        canceller.join().expect("le fil annuleur rend sa main");
+        assert!(
+            matches!(res, Err(Error::Cancelled)),
+            "Error::Cancelled attendu, obtenu {res:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "retour en moins de 500 ms attendu, obtenu {elapsed:?}"
+        );
     }
 
     // ── Scenario « annulation ignorée sans portée » ──

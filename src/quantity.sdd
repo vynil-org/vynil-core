@@ -1,0 +1,157 @@
+Spec: quantity
+
+Purpose:
+  Fournir un unique parseur des `Quantity` Kubernetes (« 500m », « 2Gi », « 1.5e3 »…) aux scripts de
+    package et aux consommateurs Rust de la crate, derrière la feature `quantity` (issue
+    vynil-org/vynil-core#42, remontée de vynil-org/vynil#312). Cas d'usage : déduire `CARGO_BUILD_JOBS` ou
+    `GOMAXPROCS` de `limits.cpu` et `limits.memory` d'un pod. Deux fonctions, `cpu_millis_of` et
+    `memory_bytes_of`, partagent la MÊME grammaire et le même arrondi, seule l'unité de sortie les
+    distingue ; l'agent vynil réutilise ce parseur à la place de sa version Rhai privée
+    (`agent/scripts/lib/render_lint_pod.rhai`). Le module ne dépend d'aucune crate Kubernetes : la grammaire
+    est écrite ici, pas déléguée à @k8s-openapi.
+
+Owns:
+  ./quantity.rs
+
+References:
+  ./lib.rs — déclarant : `#[cfg(feature = "quantity")]` + `cfg_attr(docsrs, doc(cfg(feature =
+    "quantity")))` + `pub mod quantity;`, sans ré-export racine (tâche de ./lib.sdd).
+  ./engine.rs — le groupe `core` (@crate::engine::core_rhai_register / @crate::engine::core_module)
+    appelle @crate::quantity::quantity_fns sous `all(feature = "rhai", feature = "quantity")` ;
+    @Script::new_bare appelle `core` (tâche de ./engine.sdd).
+  ./Cargo.toml — `quantity = []`, hors `default` ; la glue Rhai n'existe que sous `rhai`.
+  Cas limites : à reprendre de `agent/tests/render_lint.rs` du dépôt vynil, un par Scenario ; tout écart
+    entre ces cas et ce `Must` est à trancher avec le développeur principal avant de coder, jamais
+    absorbé en silence.
+  ./chrono.sdd, ./semver.sdd — modèles du motif « face Rust nue + enregistreur + jumeau module ».
+
+Must:
+  Exister sous la seule feature `quantity` pour la face Rust ; la glue Rhai sous
+    `all(feature = "rhai", feature = "quantity")`. Aucune dépendance nouvelle.
+  Parser la grammaire complète d'une `Quantity` Kubernetes : signe optionnel (`+`/`-`), nombre décimal
+    (`12`, `1.5`, `.5`, `5.`), puis exactement UN suffixe parmi — décimaux `n` (10⁻⁹), `u` (10⁻⁶), `m`
+    (10⁻³), vide, `k` (10³), `M`, `G`, `T`, `P`, `E` (10⁶ à 10¹⁸) ; binaires `Ki`, `Mi`, `Gi`, `Ti`, `Pi`,
+    `Ei` (2¹⁰ à 2⁶⁰) ; exposant décimal `e<entier signé>` ou `E<entier signé>`. La casse compte (`K`, `mi`,
+    `ki` sont hors grammaire). Aucun espace toléré, ni avant ni après.
+  Calculer EXACTEMENT, en arithmétique entière sur la mantisse décimale et l'exposant, jamais par
+    @core::primitive::f64 : `0.1` CPU rend `100` millicores, sans erreur d'arrondi flottant.
+  `cpu_millis_of` rend la valeur en millièmes d'unité (millicores), `memory_bytes_of` en unités (octets).
+    Un résultat non entier est arrondi AU PLUS PROCHE ENTIER EN S'ÉLOIGNANT DE ZÉRO (comme `MilliValue`
+    et `Value` de Kubernetes) : `memory_bytes_of("1500m")` rend `2`, `cpu_millis_of("100000n")` rend `1`.
+  Rendre `None` (Rust) ou `()` (script) — jamais une erreur ni une panique — pour toute entrée hors
+    grammaire (vide, espaces, suffixe inconnu, deux suffixes, exposant sans chiffres, mantisse sans
+    chiffre), pour un résultat qui déborde @core::primitive::i64, et pour un flottant non fini.
+  Côté script, accepter une chaîne, un entier ou un flottant : un entier `n` se lit comme la chaîne
+    `"n"` ; un flottant se lit par sa représentation décimale la plus courte (`0.5` → `"0.5"`, pas sa
+    valeur binaire). Tout autre type (booléen, tableau, map, unité) rend `()`.
+  Poser sous `all(feature = "rhai", feature = "quantity")`, par @crate::quantity::quantity_fns
+    (`pub(crate)`, liste d'entrées du motif double cible de ./engine.sdd, appelée par le groupe `core`),
+    EXACTEMENT `cpu_millis_of` et `memory_bytes_of` ; noms identiques dans l'enregistreur et le jumeau
+    module de `core` ; sous
+    `metadata`, chaque fonction porte son commentaire `///` et ses noms de paramètres
+    (`cpu_millis_of(quantity: Dynamic) -> Dynamic`, type de retour `Dynamic` puisque `()` est possible).
+    Idempotents à l'appel répété.
+
+Must not:
+  Dépendre de @k8s-openapi, de @kube, de @regex ou de toute crate nouvelle.
+  Paniquer, y compris sur débordement : `checked_*` partout (`arithmetic_side_effects` est `deny`).
+  Faire de l'E/S, lire l'environnement ou journaliser.
+  Normaliser en silence une entrée hors grammaire (pas de trim, pas de casse tolérée).
+
+Depends on:
+  core — @core::primitive::i64, @core::option::Option.
+  rhai (sous la glue seule) — @rhai::Dynamic, @rhai::Engine, @rhai::Module, @crate::engine::register_at.
+
+Exposes:
+  @crate::quantity::cpu_millis_of — `pub fn cpu_millis_of(q: &str) -> Option<i64>` (`#[must_use]`).
+  @crate::quantity::memory_bytes_of — `pub fn memory_bytes_of(q: &str) -> Option<i64>` (`#[must_use]`).
+  @crate::quantity::quantity_fns — `pub(crate)`, sous `all(feature = "rhai", feature = "quantity")`.
+
+Accepts:
+  N'importe quelle `&str` côté Rust ; côté script, n'importe quel @rhai::Dynamic.
+
+Returns:
+  `Some(valeur)` pour une entrée dans la grammaire dont le résultat tient dans un `i64` ; `None` sinon.
+
+Raises:
+  Rien : l'échec est un `None` / `()`.
+
+Handles:
+  Signe : `"-500m"` est dans la grammaire et rend `-500` ; `"+1"` rend `1000` millicores.
+  Fraction sans partie entière ou sans partie fractionnaire (`.5`, `5.`) : dans la grammaire.
+  Exposant : `"1e3"` vaut `1000`, `"1E-3"` vaut `0.001` ; `"1e"` est hors grammaire. Un `E` suivi de
+    chiffres est un exposant, un `E` seul est le suffixe exa (`"1E"` = 10¹⁸).
+  Limites d'exactitude actées (mesurées, décision du développeur principal) : une mantisse de plus de
+    38 chiffres significatifs, ou un suffixe binaire combiné à une fraction dont le numérateur déborde
+    `u128`, rend `None` même si la valeur tiendrait dans un `i64` — aucun `limits.cpu` ni `limits.memory`
+    réel n'en approche. `"-9223372036854775808"` rend `Some(i64::MIN)`.
+  Débordement : `memory_bytes_of("9Ei")` (> i64::MAX) et `cpu_millis_of("9223372036854775807")` (le
+    produit par 1000 déborde) rendent `None`.
+
+Tasks:
+  [x] Créer ./quantity.rs depuis les Scenario ci-dessous et le déclarer dans ./lib.rs : tests d'abord,
+    en reprenant les cas limites de `agent/tests/render_lint.rs` du dépôt vynil. Arithmétique exacte sur
+    une mantisse `u128` et un exposant de dix, `checked_*` partout. Rustdoc d'API publique complète
+    (`# Errors` sans objet : pas de `Result`). Feature `quantity` dans ./Cargo.toml (tâche jumelle de
+    ../vyvil-core.sdd). Prérequis : le motif double cible de ./engine.sdd coché (déjà le cas). Jumelle de
+    « Déclarer `quantity` » de ./lib.sdd, de la tâche `new_bare` de ./engine.sdd, de « Exposer la
+    feature `quantity` » de ../vyvil-core.sdd et de la porte de ../tooling.sdd, cochée dans le même
+    commit.
+  [x] Câbler `quantity_rhai_register` dans `new_bare` de ./engine.rs sous `all(feature = "rhai",
+    feature = "quantity")`, après `glob_rhai_register` et avant `oci` : cette part de ./engine.rs est
+    de ./engine.sdd, qui nomme sa jumelle ; les deux se cochent dans le même commit.
+  [x] Fusion dans `core` (décision du 2026-11-06) : `quantity_rhai_register` et `quantity_module`, posés par
+    la tâche de création ci-dessus, deviennent une liste d'entrées `pub(crate)` appelée par `core` sous
+    la feature `quantity` ; le `Must` « Enregistrer sous … » de cette spec est amendé en conséquence à la
+    clôture. Noms inchangés. Jumelle de « Fournir `core` et `host` » de ./engine.sdd, cochée dans le
+    même commit.
+
+Scenario: grammaire décimale et binaire
+  Given la feature `quantity`
+  Then `memory_bytes_of("1Ki")` rend `1024`, `("1Gi")` rend `1073741824`, `("1k")` rend `1000`,
+    `("1M")` rend `1000000`, `("128974848")` rend `128974848`, `("129e6")` rend `129000000`
+  And `cpu_millis_of("500m")` rend `500`, `("2")` rend `2000`, `("0.5")` rend `500`, `("0.1")` rend `100`,
+    `(".5")` rend `500`, `("1.5")` rend `1500`
+
+Scenario: sous-unités et arrondi
+  Then `cpu_millis_of("100000n")` rend `1`, `("1500u")` rend `2`, `("1u")` rend `1`
+  And `memory_bytes_of("1500m")` rend `2`, `("0.4")` rend `1`, `("-0.4")` rend `-1`
+
+Scenario: hors grammaire
+  Then `cpu_millis_of` et `memory_bytes_of` rendent `None` pour `""`, `" 1"`, `"1 "`, `"abc"`, `"1K"`,
+    `"1ki"`, `"1mi"`, `"1Mm"`, `"1e"`, `"e3"`, `"."`, `"-"`, `"1..5"`, `"0x10"`
+
+Scenario: débordement
+  Then `memory_bytes_of("9Ei")` rend `None` et `memory_bytes_of("8Ei")` rend `None`
+  And `cpu_millis_of("9223372036854775807")` rend `None`
+  And `memory_bytes_of("9223372036854775807")` rend `Some(9223372036854775807)`
+
+Scenario: depuis un script
+  Given un engine portant `core_rhai_register` sous `quantity`
+  When un script évalue `cpu_millis_of("500m")`, `cpu_millis_of(2)`, `cpu_millis_of(0.5)` et
+    `memory_bytes_of("1Gi")`
+  Then les résultats sont `500`, `2000`, `500` et `1073741824` (des entiers)
+  When un script évalue `cpu_millis_of("n'importe quoi")`, `cpu_millis_of(true)` et `cpu_millis_of([1])`
+  Then chacun rend `()` : `type_of` vaut `"()"`, sans erreur de script
+
+Scenario: new_bare câble quantity sous la feature
+  Given `new_bare(vec![])` compilé avec `--no-default-features --features rhai,quantity`
+  Then `cpu_millis_of("1")` et `memory_bytes_of("1")` répondent
+  Given `new_bare(vec![])` compilé avec `--no-default-features --features rhai`
+  Then les deux noms sont des fonctions inconnues
+
+Scenario: core_module équivaut à core_rhai_register pour quantity
+  Given un engine où `core_rhai_register` est appelé et un second, vierge, où `core_module` est enregistré
+    par `register_static_module` sous le nom `m`
+  When les appels des Scenario ci-dessus sont rejoués en nom nu ET qualifié `m::nom` sur le second
+  Then les résultats sont identiques et les ensembles de noms de fonctions sont égaux
+
+Scenario: fonctions documentées sous metadata (quantity)
+  Given la crate compilée avec la feature `metadata`
+  When `gen_fn_signatures` liste un engine portant `core_rhai_register` sous `quantity`
+  Then chaque fonction porte un commentaire non vide, le nom de son paramètre et son type de retour
+    (`cpu_millis_of(quantity: Dynamic) -> Dynamic`)
+
+Done when:
+  Chaque Scenario ci-dessus est un test vert, la batterie harnais passe pour `--features quantity`,
+    `--features rhai,quantity` et `--all-features`, et `cargo hack --each-feature` joue `quantity` seule.

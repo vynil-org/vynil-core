@@ -4,7 +4,7 @@
 
 use crate::{
     Error, Result, RhaiRes,
-    engine::{Target, register_at, register_type_at},
+    engine::{Target, register_at, register_free_at, register_type_at},
     rhai_err,
 };
 use base64::Engine as _;
@@ -15,6 +15,7 @@ use flate2::{Compression, read::GzDecoder, write::GzEncoder};
 pub use oci_client::secrets::RegistryAuth as OciRegistryAuth;
 use oci_client::{Client, Reference, client, config, manifest, secrets::RegistryAuth};
 use rhai::{Dynamic, Engine, ImmutableString, Map, Module};
+use sha2::Digest as _;
 use std::{collections::BTreeMap, path::PathBuf};
 use tar::{Archive, Builder};
 
@@ -94,7 +95,7 @@ impl Registry {
         let raw_tar = tar_uncompressed
             .into_inner()
             .map_err(|e| rhai_err(Error::Stdio(e)))?;
-        let diff_id = format!("sha256:{}", sha256::digest(raw_tar.as_slice()));
+        let diff_id = format!("sha256:{}", hex::encode(sha2::Sha256::digest(raw_tar.as_slice())));
         let mut gz = GzEncoder::new(Vec::new(), Compression::default());
         std::io::copy(&mut raw_tar.as_slice(), &mut gz).map_err(|e| rhai_err(Error::Stdio(e)))?;
         let data = gz.finish().map_err(|e| rhai_err(Error::Stdio(e)))?;
@@ -444,8 +445,9 @@ pub fn oci_module() -> Module {
 // sept items du `Must` de ./oci.sdd en une seule liste, forme du motif (#19/#20).
 fn oci_fns(target: &mut Target<'_>) {
     register_type_at::<Registry>(target, "Registry");
-    register_at(
+    register_free_at(
         target,
+        "new_registry",
         "new_registry",
         &["/// Builds a `Registry` for `registry`; anonymous when `username` or `password` is empty."],
         &[
@@ -508,8 +510,9 @@ fn oci_fns(target: &mut Target<'_>) {
         ],
         Registry::get_manifest,
     );
-    register_at(
+    register_free_at(
         target,
+        "get_auth_from_file",
         "get_auth_from_file",
         &[
             "/// Reads a docker-config `path` and returns `{user, pass}` decoded from the `auth` entry of `registry`; empty strings when absent.",
@@ -1886,7 +1889,17 @@ mod tests {
         for (nu, qualifie, marqueur) in appels_representatifs(&auth_file) {
             let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
             let rm = par_module.eval::<rhai::Dynamic>(&nu);
-            comparer_resultats(&nu, marqueur, rn, rm);
+            // Contrat amendé (Must « Noms courts du jumeau », ./oci.sdd) : les libres
+            // `new_registry` et `get_auth_from_file` ne se résolvent pas nues sur le jumeau ;
+            // les méthodes, elles, restent globales et se comparent nues.
+            if nu.contains("new_registry(") || nu.contains("get_auth_from_file(") {
+                assert!(
+                    rm.is_err_and(|e| e.to_string().contains("Function not found")),
+                    "libre nue inconnue du jumeau attendue : {nu}"
+                );
+            } else {
+                comparer_resultats(&nu, marqueur, rn, rm);
+            }
             if let Some(q) = &qualifie {
                 let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
                 let rq = par_module.eval::<rhai::Dynamic>(q);
@@ -1988,7 +2001,15 @@ mod tests {
         for (nu, _qualifie, marqueur) in appels_representatifs(&auth_file) {
             let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
             let rm = par_module.eval::<rhai::Dynamic>(&nu);
-            comparer_resultats(&nu, marqueur, rn, rm);
+            // Libres du jumeau (Must « Noms courts », ./oci.sdd) : jamais résolues nues.
+            if nu.contains("new_registry(") || nu.contains("get_auth_from_file(") {
+                assert!(
+                    rm.is_err_and(|e| e.to_string().contains("Function not found")),
+                    "libre nue inconnue du jumeau attendue : {nu}"
+                );
+            } else {
+                comparer_resultats(&nu, marqueur, rn, rm);
+            }
         }
         let nu = enregistreur.eval::<rhai::Dynamic>(r#"type_of(new_registry("reg", "u", "p"))"#);
         let qualifie = par_module.eval::<rhai::Dynamic>(r#"type_of(m::new_registry("reg", "u", "p"))"#);
@@ -2020,9 +2041,15 @@ mod tests {
         let layer_blob = gz.finish().unwrap();
         // Le faux registre doit servir des blobs dont le sha256 tombe pile :
         // `pull_blob` vérifie le digest du descripteur avant d'accepter l'octet.
-        let layer_digest = format!("sha256:{}", sha256::digest(layer_blob.as_slice()));
+        let layer_digest = format!(
+            "sha256:{}",
+            hex::encode(sha2::Sha256::digest(layer_blob.as_slice()))
+        );
         let config_blob = br#"{"architecture":"none","os":"linux"}"#.to_vec();
-        let config_digest = format!("sha256:{}", sha256::digest(config_blob.as_slice()));
+        let config_digest = format!(
+            "sha256:{}",
+            hex::encode(sha2::Sha256::digest(config_blob.as_slice()))
+        );
         server.mock(|when, then| {
             when.method(GET).path("/v2/repo/img/manifests/1.0");
             then.status(200).json_body(serde_json::json!({
@@ -2421,5 +2448,46 @@ mod signatures_documentees {
                 "signature hors vocabulaire rhai : {signature}"
             );
         }
+    }
+}
+
+// Table « Noms courts du jumeau » (décision du 2026-11-06, ./oci.sdd) : les libres
+// `new_registry` et `get_auth_from_file` sont qualifiées seulement dans le jumeau (noms
+// inchangés) ; les méthodes (`push_image`, `sign_image`, `list_tags`, `get_manifest`) restent
+// globales.
+#[cfg(all(test, feature = "oci"))]
+mod table_noms_courts {
+    use super::*;
+
+    #[test]
+    fn table_jumeau_libres_qualifiees_seulement() {
+        let mut engine = rhai::Engine::new();
+        engine.register_static_module("oci", oci_module().into());
+        let internes: std::collections::BTreeSet<String> = engine
+            .collect_fn_metadata(
+                None,
+                |f| {
+                    (f.metadata.namespace == rhai::FnNamespace::Internal).then(|| f.metadata.name.to_string())
+                },
+                false,
+            )
+            .into_iter()
+            .collect();
+        for libre in ["new_registry", "get_auth_from_file"] {
+            assert!(
+                internes.contains(libre),
+                "{libre} absent des fonctions qualifiées"
+            );
+            assert!(
+                engine
+                    .eval::<rhai::Dynamic>(&format!(r#"{libre}("a", "b", "c")"#))
+                    .is_err(),
+                "{libre} nu ne doit pas résoudre depuis le jumeau"
+            );
+        }
+        let registre: String = engine
+            .eval(r#"type_of(oci::new_registry("reg", "u", "p"))"#)
+            .expect("la forme qualifiée répond");
+        assert_eq!(registre, "Registry");
     }
 }

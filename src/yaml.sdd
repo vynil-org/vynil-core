@@ -4,7 +4,7 @@ Purpose:
   Fournir à la crate et aux scripts Rhai les conversions YAML ↔ JSON : trois helpers Rust
     toujours disponibles (@crate::yaml::yaml_str_to_json, @crate::yaml::yaml_serialize_to_string,
     @crate::yaml::yaml_all_serialize_to_string) et les trois noms de script `yaml_encode`,
-    `yaml_decode`, `yaml_decode_multi` posés par @crate::yaml::yaml_rhai_register — fine colle
+    `yaml_decode`, `yaml_decode_multi` posés par le groupe `core` de ./engine.sdd (@crate::yaml::yaml_fns) — fine colle
     au-dessus de @serde_yaml, sans modèle de type YAML propre, sans I/O et sans pendant
     Handlebars.
 
@@ -15,7 +15,7 @@ References:
   ./lib.rs — déclare `pub mod yaml;` sans aucune porte `cfg` et ne réexporte aucun item du
     module à la racine de la crate ; le module y puise @crate::Error, @crate::Result,
     @crate::RhaiRes et @crate::rhai_err.
-  ./engine.rs — @Script::new_bare est l'unique appelant de @crate::yaml::yaml_rhai_register ; des
+  ./engine.rs — le groupe `core` (@crate::engine::core_rhai_register / @crate::engine::core_module) est l'unique appelant de @crate::yaml::yaml_fns ; des
     onze tests `test_yaml_*` qui y vivent, dix font foi de comportements du présent module et
     restent verts sans modification ; le onzième,
     @test_yaml_decode_multi_short_string_returns_empty, verrouille le seuil `val.len() <= 5` et meurt
@@ -38,8 +38,7 @@ Must:
     `use crate::{@crate::RhaiRes, @crate::rhai_err}`, le
     `use rhai`, les deux
     conversions privées @dynamic_from_yaml_value et @yaml_key_to_string que la voie
-    @serde_yaml::Value a fait naître, la liste @crate::yaml::yaml_fns, @crate::yaml::yaml_rhai_register
-    et @crate::yaml::yaml_module — les trois helpers Rust
+    @serde_yaml::Value a fait naître, et la liste `pub(crate)` @crate::yaml::yaml_fns — les trois helpers Rust
     étant donc appelables sous `cargo test --no-default-features`. Le `#[cfg(test)]` du `mod tests`
     et ses portes internes ne comptent pas ici.
   Il n'existe qu'une seule conversion d'erreur dans le module, appliquée sur chaque appel
@@ -69,8 +68,8 @@ Must:
   @crate::yaml::yaml_all_serialize_to_string n'a aucun état ni repli partiel : la concaténation
     déjà produite au moment où une valeur échoue est abandonnée avec l'erreur, l'appelant ne
     voit jamais un préfixe tronqué.
-  @crate::yaml::yaml_rhai_register enregistre exactement quatre entrées @crate::engine::register_at sur
-    l'engine reçu et rien d'autre : deux surcharges du nom de script `yaml_encode` (paramètre
+  @crate::yaml::yaml_fns pose exactement quatre entrées @crate::engine::register_at sur
+    la cible reçue (engine ou module, une seule liste) et rien d'autre : deux surcharges du nom de script `yaml_encode` (paramètre
     @rhai::Dynamic puis paramètre @rhai::Map), `yaml_decode` (paramètre
     @rhai::ImmutableString) et `yaml_decode_multi` (paramètre @rhai::ImmutableString). Aucun
     type, aucune méthode, aucune propriété ne sont enregistrés.
@@ -104,8 +103,7 @@ Must:
     aucune lecture d'environnement ; ses quatre fonctions sont réentrantes et appelables de
     plusieurs threads (la feature @rhai `sync` est activée au niveau crate).
   ./yaml.rs ne porte aucun `#[allow(...)]`, aucun @std::option::Option::unwrap ni
-    @std::result::Result::unwrap ni @std::panic, son seul `#[must_use]` est celui du jumeau
-    @crate::yaml::yaml_module, et ses items `pub` portent chacun leur rustdoc avec une section
+    @std::result::Result::unwrap ni @std::panic, ses items `pub` portent chacun leur rustdoc avec une section
     `# Errors` pour les fallibles (règle de harnais de
     ../.specdd/bootstrap.project.md).
 
@@ -142,7 +140,7 @@ Exposes:
   @crate::yaml::yaml_str_to_json — signature `pub fn yaml_str_to_json(s: &str) -> @crate::Result<@serde_json::Value>`, sans feature, sans `#[must_use]`.
   @crate::yaml::yaml_serialize_to_string — signature `pub fn yaml_serialize_to_string<T: @serde::Serialize>(val: &T) -> @crate::Result<@std::string::String>`, sans feature.
   @crate::yaml::yaml_all_serialize_to_string — signature `pub fn yaml_all_serialize_to_string<T: @serde::Serialize>(vals: &[T]) -> @crate::Result<@std::string::String>`, sans feature.
-  @crate::yaml::yaml_rhai_register — signature `pub fn yaml_rhai_register(engine: &mut @rhai::Engine)`, sous la feature `rhai` seulement, enregistreuse des quatre enregistrements de script.
+  @crate::yaml::yaml_fns — signature `pub(crate) fn yaml_fns(target: &mut @crate::engine::Target)`, sous la feature `rhai` seulement, liste des quatre enregistrements de script ; le module n'a plus d'enregistreur ni de jumeau `pub` (décision du 2026-11-06).
   Fonction de script `yaml_encode(value)` — un seul argument, retour une
     @rhai::ImmutableString que `type_of` rend comme `string` ; deux enregistrements derrière
     ce nom, surcharge @rhai::Dynamic et surcharge @rhai::Map.
@@ -153,10 +151,7 @@ Exposes:
     plus.
   Rien de ce module n'est réexporté à la racine de la crate : les trois helpers Rust
     s'appellent par leur chemin @crate::yaml.
-  @crate::yaml::yaml_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
-    @crate::yaml::yaml_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
+  L'enregistreur et le jumeau module de ces noms de script sont ceux du groupe `core` de ./engine.sdd.
 
 Accepts:
   @crate::yaml::yaml_str_to_json — un `&str` de contenu libre, longueur quelconque, chaîne
@@ -166,8 +161,8 @@ Accepts:
     @serde::Serialize, inspectée uniquement par serde.
   @crate::yaml::yaml_all_serialize_to_string — un slice `&[T]` homogène, éventuellement vide ;
     les valeurs sont rendues une par une, dans l'ordre.
-  @crate::yaml::yaml_rhai_register — un `&mut` @rhai::Engine fourni par l'appelant, qu'elle ne
-    lit pas et sur lequel elle n'ajoute que les trois noms.
+  @crate::yaml::yaml_fns — un `&mut` @crate::engine::Target fourni par l'appelant, sur lequel
+    elle n'ajoute que les trois noms.
   `yaml_encode` — exactement une valeur de script ; la surcharge retenue dépend du type reçu,
     aucun scalaire n'est converti vers un autre.
   `yaml_decode` et `yaml_decode_multi` — exactement une chaîne @rhai::ImmutableString, par
@@ -183,7 +178,7 @@ Returns:
   @crate::yaml::yaml_all_serialize_to_string — un @std::string::String qui commence par
     `---\n` dès que le slice est non vide — par exemple deux maps `{"a": 1}` et `{"b": 2}`
     rendent `---\na: 1\n---\nb: 2\n` — et une chaîne vide pour un slice vide.
-  @crate::yaml::yaml_rhai_register — `()`.
+  @crate::yaml::yaml_fns — `()`.
   `yaml_encode` — la chaîne YAML, même forme qu'en Rust : carte triée, tableau en lignes
     `- `, newline final, visible du script comme un `string` ; `42` rend `42\n`, la chaîne
     `"42"` rend `'42'\n` citée pour rester chaîne, `#{}` rend `{}\n` et `[]` rend `[]\n`.
@@ -203,7 +198,7 @@ Raises:
     ou erreur remontée par un @serde::Serialize qui en produit une, portée telle quelle.
   @crate::yaml::yaml_all_serialize_to_string — les mêmes erreurs, portées dès la première
     valeur qui refuse d'être rendue, avec la sortie déjà construite perdue.
-  @crate::yaml::yaml_rhai_register — rien : les quatre enregistrements ne peuvent échouer.
+  @crate::yaml::yaml_fns — rien : les quatre enregistrements ne peuvent échouer.
   `yaml_decode` — une erreur @crate::RhaiRes `YamlError: ...` pour une syntaxe @serde_yaml
     refusée, pour un document contenant plus d'un document, et pour les trois refus de valeur nés
     de la voie @serde_yaml::Value : clé dupliquée, clé de mapping non scalaire, entier hors de la
@@ -274,13 +269,13 @@ Handles:
     par @serde_yaml (`42` chaîne devient l'item `'42'`), le module ne verrouille aucun style de
     citation.
   Combinaisons de features — sans `rhai`, ./yaml.rs reste compilé et ses trois helpers Rust
-    utilisables ; avec `rhai` mais sans @crate::yaml::yaml_rhai_register appelé, aucun des
+    utilisables ; avec `rhai` mais sans @crate::engine::core_rhai_register appelé, aucun des
     trois noms n'existe sur l'engine.
 
 Tasks:
   [x] Convertir chaque Scenario de cette spec en test Rust passant, dans un `mod tests` sous
     `#[cfg(test)]` de ./yaml.rs — appels Rust directs pour les helpers Rust, engine construit
-    par @crate::yaml::yaml_rhai_register pour les noms de script, un engine @Script::new_bare
+    par @crate::engine::core_rhai_register pour les noms de script, un engine @Script::new_bare
     seulement pour le Scenario d'intégration. Le terrain n'est plus vierge : les deux tâches de
     contrat déjà closes y ont laissé quatorze tests (dont cinq nommés d'après leur Scenario), et
     DIX `test_yaml_*` vivent encore dans le `mod tests` de ./engine.rs et font foi d'une partie des
@@ -341,6 +336,10 @@ Tasks:
     du groupe égal à la taille de la table) ; aucune signature ne contient `String` ni `ImmutableString`.
     Tâche jumelle de « Documenter les fonctions enregistrées » de ../vyvil-core.sdd, cochée dans le même
     commit.
+  [x] Fusion dans `core` (décision du 2026-11-06) : retirer `yaml_rhai_register` et `yaml_module` publics
+    de ./yaml.rs, liste d'entrées `pub(crate)` appelée par `core`. Noms inchangés (`yaml_encode`,
+    `yaml_decode`, `yaml_decode_multi`). Jumelle de « Fournir `core` et `host` » de ./engine.sdd, cochée
+    dans le même commit.
 
 Scenario: document mapping converti en JSON
   Given la chaîne `image: nginx\nreplicas: 3\n`
@@ -444,89 +443,89 @@ Scenario: octets refusés par la face Rust sans la feature `rhai`
     comportement Rhai
 
 Scenario: map de script encodée en chaîne triée
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_encode(#{ key: "v", n: 2 })`
   Then le résultat est une chaîne, `type_of` rendant `string`
   And la chaîne contient `key: v\nn: 2\n`, clé `key` avant clé `n`
 
 Scenario: scalaires et collections vides encodées
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_encode(42)`, `yaml_encode(true)`, `yaml_encode(#{})` et `yaml_encode([])`
   Then les quatre appels réussissent et rendent respectivement `42\n`, `true\n`, `{}\n` et `[]\n`
   But aucun des quatre n'est rendu comme une erreur @crate::RhaiRes
 
 Scenario: chaîne ressemblant à un nombre citée au rendu
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_encode("42")`
   Then la chaîne `'42'\n` est retournée, citée pour ne pas redevenir un nombre au retour
 
 Scenario: aller-retour sur une map de script
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `let m = #{"name": "test", "count": 3}; yaml_decode(yaml_encode(m))["name"]`
   Then `test` est retourné, la map étant revenue de même forme
 
 Scenario: valeur décodée typée côté script
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `let m = yaml_decode("count: 42\nenabled: true\nitems:\n  - first\n  - second\n"); [m["count"], m["enabled"], m["items"][1], type_of(m)]`
   Then les quatre valeurs sont `42` en nombre, `true` en booléen, la chaîne `second` et le type `map`
   And `yaml_decode("- 1\n- deux")` rend un `array` dont le second élément est la chaîne `deux`
 
 Scenario: scalaire null décodé en unité
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `type_of(yaml_decode("~"))`
   Then `type_of` rend `()`, le type unité
   And `yaml_decode("nothing: \n")["nothing"]` rend l'unité de même
 
 Scenario: chaîne vide, `null` côté Rust comme côté script
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_decode("")`
   Then l'unité est retournée, sans erreur
   And @crate::yaml::yaml_str_to_json sur `""` rend @serde_json::Value::Null côté Rust : les deux faces concordent
 
 Scenario: commentaire seul, unité sans erreur
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_decode("# rien sous le radar\n")`
   Then l'unité est retournée, sans erreur
   And `yaml_decode_multi("# rien sous le radar\n")` ne lève aucune erreur
 
 Scenario: documents courts jamais ignorés
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_decode_multi("a: 1")`, `yaml_decode_multi("42")` et `yaml_decode_multi("ok: 1")`
   Then chacun rend un `array` d'un seul élément : la map `#{a: 1}`, l'entier `42` et la map `#{ok: 1}`
   And `yaml_decode_multi("---\n")` ne rend pas d'erreur et son contenu (zéro ou un élément unité) est celui qu'énumère @serde_yaml, figé par ce test
 
 Scenario: deux documents rendus par `yaml_decode_multi`
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `let docs = yaml_decode_multi("key: first\n---\nkey: second\n"); [docs.len(), docs[1]["key"]]`
   Then les deux valeurs sont `2` et la chaîne `second`
   And `yaml_decode_multi("key: val\n")` rend un `array` d'un seul élément
 
 Scenario: multi-document refusé par `yaml_decode`
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_decode("a: 1\n---\nb: 2\n")`
   Then l'évaluation échoue en une erreur @crate::RhaiRes
   And le texte porte `deserializing from YAML containing more than one document is not supported`
 
 Scenario: document fautif au milieu du multi
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_decode_multi("a: 1\n---\nbroken: [\n")`
   Then l'évaluation échoue en une erreur @crate::RhaiRes de message `YamlError: ` suivi du refus @serde_yaml
   And le document valide déjà parcouru n'est restitué sous aucune forme
 
 Scenario: noms absents d'un engine nu, présents après enregistrement
-  Given un @rhai::Engine fraîchement créé, sans appel de @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine fraîchement créé, sans appel de @crate::engine::core_rhai_register
   When un script évalue `yaml_decode("a: 1")` sur cet engine
   Then l'évaluation échoue en erreur de fonction inconnue
-  And après @crate::yaml::yaml_rhai_register(&mut engine), le même script réussit
+  And après @crate::engine::core_rhai_register(&mut engine), le même script réussit
   But aucun nom `yaml_to_json`, `yaml_to_string` ou `yaml_all_serialize_to_string` n'apparaît sur cet engine
 
 Scenario: engine de @Script::new_bare livré avec les trois noms
   Given un @rhai::Engine construit par @Script::new_bare avec un chemin de résolution vide
   When un script évalue `yaml_decode(yaml_encode(yaml_decode_multi("a: 1\n---\na: 2\n")[0]))["a"]`
-  Then `1` est retourné, les trois noms ayant été enregistrés par @crate::yaml::yaml_rhai_register
+  Then `1` est retourné, les trois noms ayant été enregistrés par @crate::engine::core_rhai_register
 
 Scenario: argument non chaîne jamais converti
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_decode(42)`
   Then l'évaluation échoue en erreur de fonction inconnue, aucune coercition scalaire vers @std::string::String n'existant pour ce paramètre
 
@@ -534,10 +533,10 @@ Scenario: API Rust vivante sans la feature `rhai`
   Given la crate compilée avec `cargo test --no-default-features`
   When la surface publique de @crate::yaml est inspectée
   Then @crate::yaml::yaml_str_to_json, @crate::yaml::yaml_serialize_to_string et @crate::yaml::yaml_all_serialize_to_string compilent et s'appellent depuis leur module
-  But @crate::yaml::yaml_rhai_register n'existe pas et ./engine.rs n'est pas compilé
+  But @crate::yaml::yaml_fns n'existe pas et ./engine.rs n'est pas compilé
 
 Scenario: un flux vide énumère un document unité
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_decode_multi("").len()`, `yaml_decode_multi("---\n").len()` et
     `yaml_decode_multi("# commentaires seuls\n").len()`
   Then les trois longueurs sont `1` et non `0` : @serde_yaml::Deserializer::from_str émet un item
@@ -546,7 +545,7 @@ Scenario: un flux vide énumère un document unité
   And `yaml_decode_multi("---\n---\n")` énumère `2` éléments, tous deux unité
 
 Scenario: clés dupliquées refusées côté script, dernières gagnantes côté Rust
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_decode("a: 1\na: 2\n")`
   Then l'évaluation échoue en erreur @crate::RhaiRes dont le texte porte `duplicate entry with key
     "a"`, le module ne rattrapant rien
@@ -559,7 +558,7 @@ Scenario: clés dupliquées refusées côté script, dernières gagnantes côté
     l'écrasement de @serde_json
 
 Scenario: tag inconnu abandonné, contenu rendu
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_decode("!Custom\nfoo\n")`
   Then le rendu est la chaîne `foo`, le tag étant abandonné sans erreur
   When un script évalue `yaml_decode("a: !Custom\nb: 1\n")`
@@ -568,7 +567,7 @@ Scenario: tag inconnu abandonné, contenu rendu
     jamais traverser @dynamic_from_yaml_value en mode tag abandonné
 
 Scenario: clé de mapping non scalaire refusée sans forme Debug
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_decode("? [1, 2]\n: v\n")`
   Then l'évaluation échoue en erreur @crate::RhaiRes nommément, aucune clé n'étant fabriquée
   And le message du refus ne contient AUCUNE chaîne de type `Sequence [Number` : la représentation
@@ -579,16 +578,16 @@ Scenario: clé de mapping non scalaire refusée sans forme Debug
     chaîne `1` et `true` : seuls les scalaires sont stringifiés
 
 Scenario: entier sous i64 refusé plutôt qu'inventé
-  Given un @rhai::Engine enregistré par @crate::yaml::yaml_rhai_register
+  Given un @rhai::Engine enregistré par @crate::engine::core_rhai_register
   When un script évalue `yaml_decode("-9223372036854775809\n")`
   Then l'évaluation échoue, @serde_yaml ne trouvant pas de `f64` de secours sous @i64::MIN, et ne
     rend surtout pas `9223372036854775807`
   But `yaml_decode("9223372036854775809\n")` rend un FLOTTANT : @serde_yaml bascule au-dessus de
     @i64::MAX, asymétrie venue de @serde_yaml et non du module
 
-Scenario: yaml_module équivaut à yaml_rhai_register
-  Given un @rhai::Engine où yaml_rhai_register est appelé et un second, vierge, où le résultat de
-    @crate::yaml::yaml_module est enregistré par register_static_module sous le nom `m`
+Scenario: core_module équivaut à core_rhai_register pour yaml
+  Given un @rhai::Engine où @crate::engine::core_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::engine::core_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
     (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
   Then les résultats et les erreurs sont identiques
@@ -599,7 +598,7 @@ Scenario: yaml_module équivaut à yaml_rhai_register
 
 Scenario: fonctions documentées sous metadata (yaml)
   Given la crate compilée avec la feature `metadata` (porte `--all-features`)
-  When l'introspection de l'engine (yaml_rhai_register) liste ses fonctions
+  When l'introspection de l'engine (core_rhai_register) liste les fonctions de yaml
     (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
   Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
     pas seulement leurs types

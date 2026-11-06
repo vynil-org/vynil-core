@@ -1,52 +1,22 @@
-//! Glob matching helper for Rhai (`glob` function wrapping `wildmatch`).
+//! Glob matching helper for Rhai (`glob` function wrapping `wildmatch`), granted through the
+//! `core` group of `crate::engine::core_rhai_register`.
 
 use crate::engine::{Target, register_at};
-use rhai::{Engine, ImmutableString, Module};
+use rhai::ImmutableString;
 use wildmatch::WildMatch;
 
-// ── Motif double cible (glob.sdd, issues #19 et #20) ─────────────────────────
-// Reproduit le motif posé par le pilote de ./engine.sdd : la fonction du module est
-// définie UNE seule fois, dans `glob_fns`, comme une liste d'enregistrements (nom,
-// fonction, noms des paramètres et commentaire `///` sous `metadata`) appliquée soit
-// directement à l'Engine (l'enregistreur — les fonctions restent en namespace global de
-// l'engine, visibles de gen_fn_signatures comme avant), soit à un Module dans ce même
-// namespace global (le jumeau module, enregistrable par Engine::register_static_module).
-// Les aides Target/register_at du pilote sont centralisées dans ./engine.rs
-// (`pub(crate)`), glob.rs les importe.
-
+// ── Entrée du groupe `core` (glob.sdd, engine.sdd) ─────────────────────────────
+// La fonction n'a plus d'enregistreur public : `glob_fns` est appelée par `core_fns`
+// de ./engine.rs, qui la pose sur un Engine ou sur le module `core`.
 // signature et passage par valeur imposés par l'API d'enregistrement rhai (glob.sdd)
 #[allow(clippy::needless_pass_by_value)]
 fn glob_fn(text: ImmutableString, pattern: ImmutableString) -> bool {
     WildMatch::new(pattern.as_ref()).matches(text.as_ref())
 }
 
-/// Register the `glob(text, pattern) -> bool` Rhai helper on `engine`: the anchored
-/// wildcard match of `wildmatch` (`*` and `?` only, `/` not special, case-sensitive),
-/// returning a `bool` and never raising.
-///
-/// Additive and idempotent: callable alone on a fresh [`Engine`], registering nothing
-/// outside the script name `glob`. The functions stay directly on the engine — no
-/// intermediate global module.
-///
-/// Module twin: [`glob_module`] — same single `glob_fns` list, same semantics.
-pub fn glob_rhai_register(engine: &mut Engine) {
-    glob_fns(&mut Target::Engine(engine));
-}
-
-/// Module twin of [`glob_rhai_register`] (issue #19): the same function, under the
-/// global namespace of a fresh [`Module`], registrable by [`Engine::register_static_module`]
-/// under the name the consumer picks. A twin that drifts from its registrar is a defect:
-/// both share the single `glob_fns` list.
-#[must_use]
-pub fn glob_module() -> Module {
-    let mut module = Module::new();
-    glob_fns(&mut Target::Module(&mut module));
-    module
-}
-
-/// The `glob` helper defined once (motif double cible): its name, its function, its
-/// parameter names and its `///` comment (both under `metadata` only).
-fn glob_fns(target: &mut Target<'_>) {
+/// The `glob` entry: its name, its function, its parameter names and its `///` comment
+/// (both under `metadata` only), applied to its target by the `core` group.
+pub(crate) fn glob_fns(target: &mut Target<'_>) {
     register_at(
         target,
         "glob",
@@ -60,14 +30,13 @@ fn glob_fns(target: &mut Target<'_>) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rhai::EvalAltResult;
+    use rhai::{Engine, EvalAltResult};
 
     /// Engine préparé par la fonction d'enregistrement — le contrat du module
-    /// (`glob.sdd`) est `glob_rhai_register`, jamais l'appel direct à `glob_fn`.
+    /// (`glob.sdd`) est `core_rhai_register`, jamais l'appel direct à `glob_fn`.
     fn engine_with_glob() -> Engine {
         let mut engine = Engine::new();
-        glob_rhai_register(&mut engine);
+        crate::engine::core_rhai_register(&mut engine);
         engine
     }
 
@@ -211,7 +180,7 @@ mod tests {
     fn test_glob_register_on_fresh_engine() {
         // Scenario: enregistrement sur un engine nu
         let mut engine = Engine::new();
-        glob_rhai_register(&mut engine);
+        crate::engine::core_rhai_register(&mut engine);
         assert!(engine.eval::<bool>(r#"glob("a", "a")"#).unwrap());
     }
 
@@ -229,14 +198,14 @@ mod tests {
         );
         // And: l'absence vient du non-enregistrement, pas de glob_fn qui ne lève
         // jamais — sur le même engine, après enregistrement, l'évaluation réussit
-        glob_rhai_register(&mut engine);
+        crate::engine::core_rhai_register(&mut engine);
         assert!(engine.eval::<bool>(r#"glob("a", "a")"#).unwrap());
     }
 
     #[test]
     fn test_glob_new_bare_injects_helper() {
         // Scenario: new_bare injecte le helper — l'unique point d'appel de
-        // glob_rhai_register (engine.rs:198). Verrouillé ici plutôt que dans
+        // le groupe `core` (engine.rs, `core_fns`). Verrouillé ici plutôt que dans
         // engine.rs pour garder le test au plus près de glob.sdd ; l'import
         // crate::engine::Script est propre sous la porte rhai, seule requise.
         let script = crate::engine::Script::new_bare(vec![]);
@@ -244,7 +213,7 @@ mod tests {
     }
 
     // ── jumeau module et documentation (glob.sdd, tâches #19 et #20) ──────────
-    // Scenario « glob_module équivaut à glob_rhai_register » et
+    // Scenario « jumeau `core` équivaut à l'enregistreur » et
     // « fonctions documentées sous metadata (glob) », sur le motif double cible
     // posé par le pilote de ./engine.sdd.
 
@@ -256,64 +225,19 @@ mod tests {
         engine
     }
 
-    /// Noms de fonctions de l'engine, hors packages standard de `@rhai`
-    /// (introspection par `collect_fn_metadata`, porte `internals` toujours activée).
-    fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
-        engine
-            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
-            .into_iter()
-            .collect()
-    }
-
-    /// Noms qu'un enregistreur ajoute à la baseline `Engine::new`.
-    fn names_added_by(register: impl Fn(&mut Engine)) -> std::collections::BTreeSet<String> {
-        let mut engine = Engine::new();
-        register(&mut engine);
-        let apres = registered_names(&engine);
-        let avant = registered_names(&Engine::new());
-        apres.difference(&avant).cloned().collect()
-    }
-
-    /// Noms qu'un jumeau module ajoute à la baseline par `register_static_module`
-    /// sous `m` (préfixe `m::` retiré s'il est porté par le nom).
-    fn names_added_by_module(module: rhai::Module) -> std::collections::BTreeSet<String> {
-        let apres = registered_names(&engine_with_module(module));
-        let avant = registered_names(&Engine::new());
-        apres
-            .difference(&avant)
-            .map(|nom| {
-                let s = nom.as_str();
-                s.strip_prefix("m::").unwrap_or(s).to_string()
-            })
-            .collect()
-    }
-
-    /// Scenario « `glob_module` équivaut à `glob_rhai_register` » : les appels représentatifs
+    /// Scenario « jumeau `core` équivaut à l'enregistreur » (glob) : les appels représentatifs
     /// des Scenario existants sont rejoués en nom nu sur l'engine de l'enregistreur, et en
     /// nom nu ET qualifié `m::glob` sur l'engine du jumeau module — mêmes valeurs, mêmes
     /// erreurs ; les deux ensembles de noms de fonctions sont égaux, aucune en plus ni en
     /// moins.
     #[test]
-    fn test_glob_module_equaut_a_glob_rhai_register() {
-        // Then: les deux ensembles de noms sont égaux, et exactement { glob }.
-        let noms_registrateur = names_added_by(glob_rhai_register);
-        let noms_module = names_added_by_module(glob_module());
-        assert_eq!(
-            noms_module, noms_registrateur,
-            "le jumeau module et l'enregistreur accordent les mêmes noms"
-        );
-        let attendu: std::collections::BTreeSet<String> = ["glob".to_string()].into_iter().collect();
-        assert_eq!(
-            noms_registrateur, attendu,
-            "glob_rhai_register n'accorde que glob (diff de baseline)"
-        );
-
+    fn test_glob_jumeau_core_equivaut_a_l_enregistreur() {
         // When: les appels représentatifs des Scenario existants sont rejoués sur chacun.
         // Un seul échec rejouable : la surcharge absente (glob ne lève jamais, `Must`),
         // verrouillé par le marqueur « glob » porté par l'erreur des deux voies.
         let mut nu = Engine::new();
-        glob_rhai_register(&mut nu);
-        let module = engine_with_module(glob_module());
+        crate::engine::core_rhai_register(&mut nu);
+        let module = engine_with_module(crate::engine::core_module());
         let calls: &[(&str, &str)] = &[
             (r#"glob("cat", "cat")"#, r#"m::glob("cat", "cat")"#),
             (r#"glob("dog", "cat")"#, r#"m::glob("dog", "cat")"#),
@@ -371,33 +295,6 @@ mod tests {
         }
     }
 
-    /// Scenario « `glob_module` équivaut à `glob_rhai_register` », dernier `And` : sur
-    /// l'engine de l'enregistreur, `rhai::Engine::gen_fn_signatures` sans les paquets
-    /// liste les mêmes fonctions qu'avant plus `glob` en fonction directe — l'enregistreur
-    /// n'a pas déplacé ses fonctions dans un module global. Porte `metadata` de `@rhai`.
-    #[cfg(feature = "metadata")]
-    #[test]
-    fn test_glob_enregistreur_fonctions_directement_sur_l_engine() {
-        let mut engine = Engine::new();
-        glob_rhai_register(&mut engine);
-        let signatures = engine.gen_fn_signatures(false);
-        let baseline = Engine::new().gen_fn_signatures(false);
-        let ajoutees: Vec<&String> = signatures
-            .iter()
-            .filter(|s| !baseline.iter().any(|b| b == *s))
-            .collect();
-        assert_eq!(
-            ajoutees.len(),
-            1,
-            "glob est la seule signature ajoutee a la baseline : {ajoutees:?}"
-        );
-        assert!(
-            ajoutees[0].starts_with("glob("),
-            "glob doit etre une fonction directe de l'engine, pas un nom qualifie : {}",
-            ajoutees[0]
-        );
-    }
-
     /// Scenario « fonctions documentées sous metadata (glob) », faces introspection et
     /// JSON : sous la feature `metadata`, `glob` porte un commentaire non vide et les
     /// NOMS de ses deux paramètres (`text`, `pattern`), pas seulement leurs types.
@@ -405,7 +302,7 @@ mod tests {
     #[test]
     fn test_glob_fonctions_documentees_sous_metadata() {
         let mut engine = Engine::new();
-        glob_rhai_register(&mut engine);
+        crate::engine::core_rhai_register(&mut engine);
         let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
             None,
             |f| {
@@ -484,7 +381,7 @@ mod tests {
     #[test]
     fn test_glob_sans_metadata_sans_difference() {
         let mut engine = Engine::new();
-        glob_rhai_register(&mut engine);
+        crate::engine::core_rhai_register(&mut engine);
         assert!(
             engine.eval::<bool>(r#"glob("a.txt", "*.txt")"#).unwrap(),
             "sans `metadata`, glob rend la même valeur qu'avec"
@@ -493,84 +390,11 @@ mod tests {
             !engine.eval::<bool>(r#"glob("Cat", "cat")"#).unwrap(),
             "sans `metadata`, glob reste sensible à la casse"
         );
-        let noms = names_added_by(glob_rhai_register);
-        let attendu: std::collections::BTreeSet<String> = ["glob".to_string()].into_iter().collect();
-        assert_eq!(noms, attendu, "sans `metadata`, glob n'accorde rien de plus");
-    }
-}
-
-#[cfg(all(test, feature = "metadata"))]
-mod signatures_documentees {
-    use super::*;
-
-    /// Signatures attendues du groupe `glob`, écrites à la main depuis les closures
-    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
-    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[("glob", "glob(text: string, pattern: string) -> bool")];
-
-    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
-    fn ajoutees_par_enregistreur() -> Vec<String> {
-        let mut engine = rhai::Engine::new_raw();
-        glob_rhai_register(&mut engine);
-        engine.gen_fn_signatures(false).into_iter().collect()
-    }
-
-    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
-    /// retiré : seuls les noms et types comptent).
-    fn ajoutees_par_module() -> Vec<String> {
-        let mut engine = rhai::Engine::new_raw();
-        engine.register_static_module("m", glob_module().into());
-        engine
-            .gen_fn_signatures(false)
-            .into_iter()
-            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
-            .collect()
-    }
-
-    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
-    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
-        let mut obtenues = ajoutees;
-        obtenues.sort();
-        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
-            .iter()
-            .map(|(_, signature)| (*signature).to_string())
-            .collect();
-        attendues.sort();
-        assert_eq!(obtenues, attendues, "signatures de la face {face}");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_enregistreur_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_jumeau_module_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_completude() {
-        assert_eq!(
-            ajoutees_par_enregistreur().len(),
-            SIGNATURES_ATTENDUES.len(),
-            "une fonction du groupe sans entrée de table fait échouer ce test"
+        let noms: Vec<String> =
+            engine.collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false);
+        assert!(
+            noms.iter().any(|n| n == "glob"),
+            "sans `metadata`, glob reste accordée"
         );
-        assert_eq!(
-            ajoutees_par_module().len(),
-            SIGNATURES_ATTENDUES.len(),
-            "jumeau module : une fonction sans entrée de table fait échouer ce test"
-        );
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
-        let mut engine = rhai::Engine::new();
-        glob_rhai_register(&mut engine);
-        for signature in engine.gen_fn_signatures(false) {
-            assert!(
-                !signature.contains("String") && !signature.contains("ImmutableString"),
-                "signature hors vocabulaire rhai : {signature}"
-            );
-        }
     }
 }
