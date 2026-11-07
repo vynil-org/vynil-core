@@ -89,7 +89,7 @@ Must:
   Désigner par `../CODEOWNERS` (`* @sebt3 @reivaxm`) les deux propriétaires de l'organisation
     comme relecteurs de tout le dépôt : le ruleset `main` (réglage GitHub, hors dépôt) exige une PR,
     une approbation d'un code owner autre que l'auteur de la PR et que l'auteur du dernier push,
-    et les 16 checks de `./test.yml` au vert (13 `Tests (…)`, `Format`, `Clippy`,
+    et les 17 checks de `./test.yml` au vert (14 `Tests (…)`, `Format`, `Clippy`,
     `Feature matrix (cargo hack)`), sans bypass. Décision des développeurs : le dépôt est
     codétenu, aucun merge sans l'autre.
 
@@ -170,6 +170,13 @@ Tasks:
     `feature-matrix` gagne l'étape `cargo hack doc --each-feature --no-dev-deps --no-deps` sous le même
     `RUSTDOCFLAGS`. Jumelle de « Tendre les lints rustdoc à tous les graphes de features » de
     ../../tooling.sdd, cochée dans le même commit.
+
+  [x] Porte jumelle de « Ajouter la porte `--no-default-features --features rhai,quantity` à la
+    batterie » de ../../tooling.sdd, cochée avec elle : ajouter l'entrée `rhai-quantity`
+    (`args: "--no-default-features --features rhai,quantity"`) au matrix du job `test` et
+    `rhai,quantity` à la boucle explicite du job `clippy` de ./test.yml, commentaires à l'état (la
+    branche gated `quantity` de `new_bare`, que la matrice `--each-feature` ne compile pas). Le
+    décompte des checks du ruleset `main` (Must, « les 16 checks ») passe à 17 avec elle.
 
 Scenario: PR sans approbation d'un autre owner
   Given une PR ouverte par l'un des deux owners, checks verts

@@ -13,9 +13,9 @@ Purpose:
     erreurs définitives (objet supprimé, refus d'accès), et une résolution
     de ressources par le CACHE de discovery (jamais d'erreur de résolution : un handle non
     résolu rend @variant-Error::UnsupportedMethod à l'usage). Le module N'EST PAS auto-wired
-    en script : trois enregistreurs distincts (@crate::k8s::k8sgeneric_rhai_register,
-    @crate::k8s::k8sraw_rhai_register, @crate::k8s::k8sworkload_rhai_register) à rappeler par
-    l'hôte. @crate::k8s_mock est le mock le plus fidèle de la crate en SURFACE (aucun nom
+    en script : UN enregistreur (@crate::k8s::k8s_rhai_register) et son jumeau module
+    (@crate::k8s::k8s_module) à appeler par l'hôte (décision du 2026-11-06, qui fusionne les trois
+    paires `k8sgeneric_*`, `k8sraw_*`, `k8sworkload_*` de 0.9.0). @crate::k8s_mock est le mock le plus fidèle de la crate en SURFACE (aucun nom
     manquant, contrairement à ./http_mock) ; les différences sont SÉMANTIQUES et documentées (./docs/mocking.md,
     décision actée : le mock ne change pas) : kind sensible à la casse là où le vrai est
     insensible et pluriel, `list` figé au snapshot de construction, `get_meta` renvoyant l'objet
@@ -229,7 +229,7 @@ Must:
     mapping documenté, décision actée) ; les wrappers `rhai_*` convertissent en @rhai::Dynamic
     directement (@rhai::serde::to_dynamic), sans le double @serde_json round trip identité
     actuel (nettoyage, décision actée).
-  Enregistrer en Rhai exactement : `k8sgeneric_rhai_register` = type @kube::api::DynamicObject
+  Enregistrer en Rhai exactement, en une seule liste `k8s_fns` composée de trois sous-listes : « generic » = type @kube::api::DynamicObject
     (getter `data` CLONANT le map data) + surface des macros publiées rejouée par les entrées
     du motif (@crate::engine::register_at/@crate::engine::register_get_at/@crate::engine::register_type_at
     importé de ./engine.rs) sur @crate::k8s::K8sObject ("K8sObject" : 3
@@ -237,8 +237,8 @@ Must:
     `wait_status_prop`/`wait_status_string`/`wait_for`/`wait_deleted`) et @crate::k8s::K8sGeneric
     ("K8sGeneric" : 23 méthodes `k8s_resource`×3-rités, `list`×2, `update_k8s_crd_cache`,
     `list_meta`, `get`, `get_meta`, `get_obj` (→ K8sObject), `delete`, `create`, `replace`,
-    `patch`, `apply`, `exist` + getter `scope`) ; `k8sraw_rhai_register` = "K8sRaw" + 4 noms
-    `new_k8s_raw`/`get_url`/`get_cluster_version`/`get_api_resources` ; `k8sworkload_rhai_register`
+    `patch`, `apply`, `exist` + getter `scope`) ; « raw » = "K8sRaw" + 4 noms
+    `new_k8s_raw`/`get_url`/`get_cluster_version`/`get_api_resources` ; « workload »
     = 4 types `K8sDeploy`/`K8sDaemonSet`/`K8sStatefulSet`/`K8sJob`, chacun 1 constructeur
     (`get_deployment`/`get_deamonset` TYPO verrouillée/`get_statefulset`/`get_job`, ns+name
     obligatoires, AUCUN namespace `default` par défaut) + 3 getters `metadata`/`spec`/`status`
@@ -334,8 +334,8 @@ Depends on:
 
 Exposes:
   @crate::k8s::set_get_client/set_get_labels/set_get_owner/set_get_owner_ns, @crate::k8s::context_is_wired,
-    @crate::k8s::update_cache (ré-export @crate::update_cache), @crate::k8s::k8sgeneric_rhai_register,
-    @crate::k8s::k8sraw_rhai_register, @crate::k8s::k8sworkload_rhai_register,
+    @crate::k8s::update_cache (ré-export @crate::update_cache), @crate::k8s::k8s_rhai_register,
+    @crate::k8s::k8s_module,
     @crate::register_k8s_object/@crate::register_k8s_generic/@crate::register_k8s_raw (`#[macro_export]`).
   @crate::k8s::GET_CLIENT/@crate::k8s::GET_LABELS/@crate::k8s::GET_OWNER/@crate::k8s::GET_OWNER_NS
     (pub static @core::cell::OnceLock), @crate::k8s::CLIENT/@crate::k8s::RAW_CLIENT (pub
@@ -365,18 +365,14 @@ Exposes:
   Aucun type privé contracté (excluded_apiservice_groups, async_populate_cache, populate_cache,
     prepare_handle, job_is_completed, find_workload_mock, upsert_in_list, merge_with_existing sont
     internes — seuls leurs EFFETS sont contractés).
-  @crate::k8s::k8sgeneric_module — `#[must_use] pub fn() -> @rhai::Module`, porte `k8s`, jumeau de
-    @crate::k8s::k8sgeneric_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
-  @crate::k8s::k8sraw_module — `#[must_use] pub fn() -> @rhai::Module`, porte `k8s`, jumeau de
-    @crate::k8s::k8sraw_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
-  @crate::k8s::k8sworkload_module — `#[must_use] pub fn() -> @rhai::Module`, porte `k8s`, jumeau de
-    @crate::k8s::k8sworkload_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
+  @crate::k8s::k8s_module — `#[must_use] pub fn() -> @rhai::Module`, porte `k8s`, jumeau de
+    @crate::k8s::k8s_rhai_register (règle des jumeaux et des noms courts de ../vyvil-core.sdd, issue
+    vynil-org/vynil-core#19) : les MÉTHODES et accesseurs gardent leurs noms et restent globaux ; les
+    fonctions LIBRES prennent un nom court et ne s'appellent que qualifiées (`k8s::resource` pour
+    `k8s_resource`, `k8s::update_crd_cache` pour `update_k8s_crd_cache`, `k8s::new_raw` pour
+    `new_k8s_raw` ; `get_deployment`, `get_deamonset`, `get_statefulset`, `get_job` inchangés) ;
+    enregistrable par @rhai::Engine::register_static_module sous le nom `k8s`. L'enregistreur garde
+    les noms historiques dans l'espace global.
 
 Accepts:
   Des noms de ressources en kind OU plural, casse indifférente (vrai) — en kind EXACT casse
@@ -567,6 +563,12 @@ Tasks:
     pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
     d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
     un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
+  [x] Fusion en `k8s` (décision du 2026-11-06) : @crate::k8s::k8s_rhai_register et @crate::k8s::k8s_module
+    remplacent les trois paires `k8sgeneric_*`, `k8sraw_*`, `k8sworkload_*`. Noms de module courts pour
+    les fonctions libres (`k8s::new_raw`) ; les méthodes (`get`, `list`, `delete`…) restent globales.
+    Collision à traiter : `get`, `delete` et `patch` existent aussi dans `http` — vérifier par test
+    qu'enregistrer `k8s` et `http` sur le même moteur garde le dispatch par type du premier argument.
+    Jumelle de la tâche de ../vyvil-core.sdd, cochée dans le même commit.
 
 Scenario: k8s en feature off, tout s'éteint en bloc
   Given le crate compilé `--no-default-features` (k8s n'est PAS dans default, ./README l.34)
@@ -705,7 +707,7 @@ Scenario: K8sRaw passe l'URL verbatim et ne rend que le corps JSON
   Then cassure @serde_json en erreur, jamais une chaîne de body
 
 Scenario: workloads — ns/name obligatoires, typo get_deamonset, spec/ status absents UNIT
-  Given `k8sworkload_rhai_register` sur un engine
+  Given `k8s_rhai_register` sur un engine
   Then `get_deamonset("ns","d")` EXISTE typo verrouillée (docs l'assument) et `get_deployment`
     avec ns "" → traité comme absent (all-namespaces), aucun `default`
   Given un objet sans status du tout
@@ -716,13 +718,16 @@ Scenario: workloads — ns/name obligatoires, typo get_deamonset, spec/ status a
   When `wait_available(0)` → la condition compare replicas unwrap_or(1) == available 0 : FAUX
     ici (replicas absent = 1, défaut Kubernetes), la wait échoue en @variant-Error::Elapsed
 
-Scenario: les trois registres, surface verrouillée par macro
-  Given @crate::k8s::k8sgeneric_rhai_register seul sur un engine
-  Then 3 types (DynamicObject data-getter, K8sObject 3 getters + 7 méthodes, K8sGeneric 23 méthodes
-    y compris `update_k8s_crd_cache` et `get_obj`) ; `new_k8s_raw`/`get_deployment` ABSENTS
-  Given @crate::k8s::k8sraw_rhai_register
-  Then les 4 noms dont le RENOMMÉ `get_cluster_version` ; Given workload register → 4 types, chaque
-    1 constructeur + 3 getters + wait ; les trois cumulables, `is_condition` JAMAIS en script
+Scenario: le registre unique, surface verrouillée par table
+  Given @crate::k8s::k8s_rhai_register sur un engine
+  Then 3 types « generic » (DynamicObject data-getter, K8sObject 3 getters + 7 méthodes, K8sGeneric 23
+    méthodes y compris `update_k8s_crd_cache` et `get_obj`), les 4 noms « raw » dont le RENOMMÉ
+    `get_cluster_version`, et les 4 types « workload » (chacun 1 constructeur + 3 getters + wait)
+    existent ensemble ; `is_condition` JAMAIS en script
+  And une table écrite à la main (nom global → nom de module → méthode/libre) est comparée à
+    l'introspection de l'enregistreur ET du jumeau
+  And enregistrer `k8s_rhai_register` et `http_rhai_register` sur un même engine garde `get`, `delete`
+    et `patch` des deux côtés : le dispatch se fait par le type du premier argument
 
 Scenario: mock 1:1 en surface, traître sémantiquement
   Given @crate::k8s_mock::k8s_mock_rhai_register(engine, mocksArc, createdArc) sur un moteur
@@ -746,9 +751,9 @@ Scenario: mock waits exist et no-op updates
     enregistré explicitement par le mock, sans dépendre de l'ordre de réenregistrement ; Given @crate::k8s_mock::K8sRawMock
   Then les trois rendent une map VIDE figée
 
-Scenario: k8sgeneric_module équivaut à k8sgeneric_rhai_register
-  Given un @rhai::Engine où k8sgeneric_rhai_register est appelé et un second, vierge, où le résultat de
-    @crate::k8s::k8sgeneric_module est enregistré par register_static_module sous le nom `m`
+Scenario: k8s_module équivaut à k8s_rhai_register (generic)
+  Given un @rhai::Engine où k8s_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::k8s::k8s_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
     (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
   Then les résultats et les erreurs sont identiques
@@ -757,9 +762,9 @@ Scenario: k8sgeneric_module équivaut à k8sgeneric_rhai_register
   And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
     fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
 
-Scenario: k8sraw_module équivaut à k8sraw_rhai_register
-  Given un @rhai::Engine où k8sraw_rhai_register est appelé et un second, vierge, où le résultat de
-    @crate::k8s::k8sraw_module est enregistré par register_static_module sous le nom `m`
+Scenario: k8s_module équivaut à k8s_rhai_register (raw)
+  Given un @rhai::Engine où k8s_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::k8s::k8s_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
     (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
   Then les résultats et les erreurs sont identiques
@@ -768,9 +773,9 @@ Scenario: k8sraw_module équivaut à k8sraw_rhai_register
   And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
     fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
 
-Scenario: k8sworkload_module équivaut à k8sworkload_rhai_register
-  Given un @rhai::Engine où k8sworkload_rhai_register est appelé et un second, vierge, où le résultat de
-    @crate::k8s::k8sworkload_module est enregistré par register_static_module sous le nom `m`
+Scenario: k8s_module équivaut à k8s_rhai_register (workload)
+  Given un @rhai::Engine où k8s_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::k8s::k8s_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
     (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
   Then les résultats et les erreurs sont identiques
@@ -781,7 +786,7 @@ Scenario: k8sworkload_module équivaut à k8sworkload_rhai_register
 
 Scenario: fonctions documentées sous metadata (k8s)
   Given la crate compilée avec la feature `metadata` (porte `--all-features`)
-  When l'introspection de l'engine (k8sgeneric_rhai_register; k8sraw_rhai_register; k8sworkload_rhai_register) liste ses fonctions
+  When l'introspection de l'engine (k8s_rhai_register) liste ses fonctions
     (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
   Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
     pas seulement leurs types

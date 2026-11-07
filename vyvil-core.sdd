@@ -80,12 +80,44 @@ Must:
     la dépendance n'en sort pas : les tests observent le harnais de logs, la face publiée ne
     l'exporte pas.
   Offrir pour chaque enregistreur Rhai public `X_rhai_register(engine)` un jumeau
-    `X_module() -> @rhai::Module` (issue vynil-org/vynil-core#19) : mêmes noms, mêmes
-    sémantiques, enregistrable par @rhai::Engine::register_static_module sous le nom que choisit
+    `X_module() -> @rhai::Module` (issue vynil-org/vynil-core#19) : mêmes sémantiques,
+    enregistrable par @rhai::Engine::register_static_module sous le nom que choisit
     le consommateur (`http::get(...)`), pour que l'introspection et le filtrage par agent
     attribuent les fonctions à leur groupe sans comparer des signatures avant/après. L'enregistreur
-    ne disparaît pas et garde ses fonctions directement sur l'engine. Une seule définition des
+    garde ses fonctions directement sur l'engine. Une seule définition des
     fonctions sert les deux voies : un jumeau qui diverge de son enregistreur est un défaut.
+    Amendé le 2026-11-06 (décision du développeur principal, aucun consommateur des 0.9.0 à ce jour) :
+    le catalogue ci-dessous remplace la découpe par fichier de 0.9.0.
+  Découper les enregistreurs ET leurs jumeaux module par DOMAINE et par AUTORITÉ, non par fichier
+    source : un module = un domaine = une autorité, et l'autorité se lit dans le nom. Catalogue
+    FERMÉ (neuf enregistreurs publics, neuf jumeaux) :
+    `core` (@crate::engine::core_rhai_register / @crate::engine::core_module) — aucune autorité sur
+    l'hôte : encodage (`base64_*`, `url_encode`, `json_*`, `yaml_*`, `to_decimal`), texte
+    (`regex_is_match`, `basename`, `dirname`), `glob`, temps (`sleep`, `date_now`, `format`, type
+    `DateTimeHandler`), et sous la feature `quantity` `cpu_millis_of`/`memory_bytes_of` ;
+    `host` (@crate::engine::host_rhai_register / @crate::engine::host_module) — touche l'hôte :
+    `get_env`, `log_debug`/`log_info`/`log_warn`/`log_error`, sous `fs` les `file_*`,
+    `create_dir`, `read_dir`, `is_file`, `is_dir`, sous `shell` `shell_run`/`shell_output` ;
+    `crypto` (@crate::hashes::crypto_rhai_register / @crate::hashes::crypto_module) — `sha256` et
+    `crc32_hash` (sans feature `crypto`), `bcrypt_hash`, type `Argon` avec `new_argon`/`hash` et
+    `gen_private_key` (sous `crypto`) ; `password`, `semver`, `http`, `oci`, `s3` inchangés ; `k8s`
+    (@crate::k8s::k8s_rhai_register / @crate::k8s::k8s_module) — fusion des trois enregistreurs
+    `k8sgeneric`, `k8sraw`, `k8sworkload`. Les enregistreurs de test double restent hors périmètre.
+    Disparaissent : `core_pure_*`, `core_host_*`, `core_sleep_*`, `fs_*`, `chrono_*`, `glob_*`,
+    `yaml_*`, `shell_*`, `hashes_*`, `crypto_hashes_*`, `key_*`, `quantity_*`, `k8sgeneric_*`,
+    `k8sraw_*`, `k8sworkload_*`. Le contenu d'un module varie avec les features, pas son nom.
+  Dire les noms du MODULE sans répéter le nom du module : l'enregistreur (espace global) garde le nom
+    historique (`new_http_client`, `http_get`, `s3_get_yaml`), le jumeau pose le nom court
+    (`http::new_client`, `http::get`, `s3::get_yaml`, `s3::list_keys`, `k8s::new_raw`,
+    `semver::from`, `password::gen`, `password::gen_alphanum`). Les modules `core` et `host` gardent
+    leurs noms (`host::shell_run` : `shell_` y désigne un sous-domaine, non le module). Les alias
+    redondants (`http_get`, `http_post`… doublons de `get`, `post`) ne sont PAS posés dans le jumeau.
+    Une seule liste par module porte donc, par entrée, le nom global, le nom de module, et si la
+    fonction est une MÉTHODE (appelable `c.get(…)`, espace global) ou LIBRE (qualifiée seulement :
+    `FnNamespace::Internal` dans le jumeau, sans quoi le nom court polluerait l'espace global du
+    moteur — une fonction d'un module statique posée en espace global répond sans qualifier). Un
+    test par module compare les deux jeux de noms à une TABLE écrite à la main (nom global → nom de
+    module), au lieu de l'égalité d'ensembles de 0.9.0.
     Hors périmètre, par décision de cette spec : les trois enregistreurs de test double
     (`httpmock_rhai_register`, `oci_mock_rhai_register`, `k8s_mock_rhai_register`), qui
     reçoivent des fixtures en paramètre pour `http` et `k8s`, sont un double constant sans
@@ -282,7 +314,7 @@ Tasks:
     `rt` et `rt::block_on` publics ; `Changed` : `cancel` compilé sans feature ; ./AGENTS.md et
     ./.opencode/agents/validator.md — la porte `--no-default-features --features rt` (test et
     clippy). Jumelle de « Ajouter la porte `rt` » de ./tooling.sdd, cochée dans le même commit.
-  [ ] Reprendre le CHANGELOG pour `Error::Cancelled` (revue de la PR #24) : ./CHANGELOG.md, section
+  [x] Reprendre le CHANGELOG pour `Error::Cancelled` (revue de la PR #24) : ./CHANGELOG.md, section
     0.9.0 — `Added` : la variante `Error::Cancelled` (`CANCEL-001 operation cancelled`) ; `Changed` :
     l'annulation de `sleep` et de `rt::block_on` la rend, et non plus `Error::Other("cancelled")`.
     Jumelle de « Ajouter @variant-Error::Cancelled » de ./src/lib.sdd, cochée dans le même commit.
@@ -292,6 +324,66 @@ Tasks:
     `--all-features` et `cargo hack doc --each-feature --no-dev-deps --no-deps` (sous
     `RUSTDOCFLAGS="-D warnings"`). Jumelle de « Tendre les lints rustdoc à tous les graphes de
     features » de ./tooling.sdd, cochée dans le même commit.
+
+  [x] Migrer @serde_yaml vers son successeur @yaml_serde : ./Cargo.toml — `serde_yaml = "0.9"` devient
+    `serde_yaml = { package = "yaml_serde", version = "0.10" }` (renommage officiel du fork maintenu
+    par l'organisation YAML, imports `serde_yaml::` conservés — décision du développeur, alias minimal).
+    @serde_yaml 0.9 étant marqué `deprecated` (RUSTSEC pour @unsafe-libyaml transitive), `yaml_serde`
+    est le continuation fork annoncé « full compatibility ». Aucune face publique ne change : les
+    chemins `serde_yaml::` vus par ./src/ restent résolus. Reprise descriptive dans ./src/yaml.sdd
+    (`Depends on` : version et verrou de lock), ./src/hbs_json.sdd (mention « @serde_yaml 0.9 ») ;
+    ./src/http.sdd et ./src/s3.sdd nomment le symbole, pas la version — aucune reprise attendue.
+    Toute divergence de comportement observable remontée par la batterie (messages d'erreur verbatim,
+    document vide de `Deserializer::from_str`, bascule `i64` → `f64`) est un écart de contrat à
+    trancher avec le développeur avant de cocher.
+
+  [x] Exposer la feature `quantity` et la dépendance `regex` dans ./Cargo.toml (issues #41 et #42) :
+    `quantity = []` (hors `default`, commentée comme ses voisines : ce qu'elle active — le parseur
+    autonome des `Quantity` Kubernetes (./src/quantity.rs) et, avec `rhai`, `cpu_millis_of`/`memory_bytes_of`) ;
+    `regex = { version = "1", optional = true }` ajoutée à la feature `rhai`
+    (`rhai = ["dep:rhai", "dep:smartstring", "dep:regex"]`, `regex_is_match` du groupe PUR l'exigeant).
+    Vérifier `cargo hack check --each-feature --no-dev-deps` et son pendant clippy, plus
+    `cargo test --all-features`. Jumelle de ./src/quantity.sdd, de la tâche `regex_is_match` de
+    ./src/engine.sdd et de « Déclarer `quantity` » de ./src/lib.sdd, cochée dans le même commit.
+  [x] Débarrasser le graphe des doublons propres à `vynil-core` (issue #36) : ./Cargo.toml. Mesurer
+    d'abord, APRÈS la migration yaml ci-dessus (elle change l'arbre), avec un crate sonde
+    `vynil-core = { path = …, default-features = false, features = ["rhai", "rt"] }` et `cargo tree -d`.
+    Puis, dans cet ordre et en remesurant à chaque pas : (1) ABANDONNÉ (décision du développeur principal,
+    mesurée) : `rhai` garde ses features par défaut — les retirer enlève `ahash/runtime-rng` (seed de
+    hachage fixé à la compilation) pour ne supprimer que `getrandom` 0.3, alors que 0.2 (imposé par
+    `ahash/compile-time-rng` de rhai, y compris 1.27.0) et 0.4 (`rand` 0.10, gardé) subsistent ; (2) `sha256` 1.6 (qui tire `sha2` 0.10 et
+    `tokio`) remplacé par `sha2` 0.11 directement (même `cpufeatures` que `rand` 0.10), `sha256` de
+    ./src/engine.rs gardant son contrat (digest hexadécimal minuscule, vérifié par les tests existants) ;
+    (3) `tar`, `rand` et tout crate lu par une seule feature : vérifier par `cargo tree -e normal` qu'ils
+    ne sont pas compilés sous `rhai` + `rt` seuls, et les passer derrière leur feature sinon. Critère de
+    clôture AMENDÉ : `cpufeatures` ne double plus, `tar`/`flate2`/`sha256` ne sont plus compilés sous
+    `rhai` + `rt`, et les doublons `getrandom` (0.2 de rhai, 0.3 de son `runtime-rng`, 0.4 de `rand`) et
+    `syn` restants sont d'origine amont : #36 se ferme en PARTIEL avec un commentaire qui le dit. Dérives
+    à reprendre à la clôture : ./src/oci.sdd (`tar`/`flate2` optionnels derrière `oci`, `sha2` au lieu de
+    `sha256::digest`), ./src/engine.sdd (`@sha256::digest`), ./src/hashes.sdd, tableau des dépendances de ce
+    fichier. Toute divergence de comportement (digest, fonctions `rhai`
+    perdues) est un écart de contrat à remonter avant de cocher. `multiple_crate_versions` reste `allow`
+    dans cette crate : la tâche vise le graphe du consommateur, pas le harnais d'ici.
+  [x] Livrer `0.9.1` une fois les tâches ci-dessus et celles des specs de ./src/ closes : bascule de
+    `version` de ./Cargo.toml (0.9.0 → 0.9.1), ./CHANGELOG.md — `Added` : `ReadMethod::Post`,
+    `json_subset`/`json_equal`, `regex_is_match`, la feature `quantity` avec `cpu_millis_of` et
+    `memory_bytes_of` ; `Changed` : `ReadMethod` gagne une variante (cassant pour un `match`
+    exhaustif, `ReadMethod` n'étant pas `#[non_exhaustive]`), annulation de `sleep` et `rt::block_on`
+    par réveil (plus de tranche de 25 ms, plus de panique sous un runtime sans pilote de temps),
+    migration `serde_yaml` → `yaml_serde` (sans effet sur l'API), doublons de dépendances retirés ;
+    extraits `vynil-core = ...` inchangés (`0.9`). Le tag `v0.9.1` n'est posé qu'APRÈS le merge et la CI
+    verte. Issues closes par ce lot : #26, #36, #39, #40, #41, #42, #43.
+
+  [x] Recouper les enregistreurs et jumeaux par domaine (décision du 2026-11-06), selon le catalogue du
+    `Must` : la tâche est portée par les specs ./src/engine.sdd (`core` et `host`, `new_bare`, retrait
+    des groupes de 0.9.0), ./src/hashes.sdd (`crypto`, fusion de ./src/key.sdd), ./src/k8s.sdd (`k8s`),
+    ./src/http.sdd, ./src/s3.sdd, ./src/password.sdd, ./src/semver.sdd et ./src/oci.sdd (noms courts du
+    jumeau) et par les specs des fonctions déplacées (./src/chrono.sdd, ./src/glob.sdd, ./src/yaml.sdd,
+    ./src/quantity.sdd, ./src/shell.sdd, ./src/key.sdd : plus d'enregistreur public propre, une liste
+    `pub(crate)` de leurs entrées). Ordre : après les tâches `regex_is_match` et `quantity` du lot
+    0.9.1 (elles posent des fonctions que le catalogue déplace), avant « Livrer 0.9.1 ». Jumelle de la
+    tâche de ./src/lib.sdd (ré-exports, `Purpose`) et de la tâche de ./docs.sdd (catalogue de
+    ./docs/rhai_helpers.md). Aucune rupture pour un consommateur : aucun n'existe à ce jour.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec revue (`Owns` groupé admis pour les mocks),

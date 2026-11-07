@@ -1,8 +1,8 @@
 //! Hash helpers: `crc32_hash` (always), `bcrypt_hash` / `Argon` (feature `crypto`).
 //!
-//! Rhai bindings are registered by `hashes_rhai_register` / `crypto_hashes_rhai_register`.
+//! Rhai bindings are registered by `crypto_rhai_register`, whose module twin is `crypto_module`.
 
-#[cfg(feature = "rhai")] use crate::engine::{Target, register_at};
+#[cfg(feature = "rhai")] use crate::engine::{Target, register_at, sha256_fns};
 #[cfg(feature = "crypto")] use crate::{Error, Result};
 #[cfg(all(feature = "rhai", feature = "crypto"))]
 use crate::{RhaiRes, rhai_err};
@@ -92,45 +92,43 @@ pub fn crc32_hash(text: String) -> u32 {
     crc32fast::hash(&text.into_bytes())
 }
 
-// ── Motif double cible (hashes.sdd, issues #19 et #20) ─────────────────────────
-// Reproduit le motif posé par le pilote de ./engine.sdd : chaque groupe est défini UNE
-// seule fois, dans `hashes_fns` / `crypto_hashes_fns`, comme une liste d'enregistrements
-// (nom, fonction, noms des paramètres et commentaire `///` sous `metadata`) appliquée soit
-// directement à l'Engine (l'enregistreur — les fonctions restent en namespace global de
-// l'engine, visibles de gen_fn_signatures comme avant), soit à un Module dans ce même
-// namespace global (le jumeau module, enregistrable par Engine::register_static_module).
-// Les aides Target/register_at/register_type_at du pilote sont centralisées dans
-// ./engine.rs (`pub(crate)`), hashes.rs les importe. La
-// porte du fichier étant sans `rhai` (le module compile sous `--no-default-features`, leçon
-// yaml), tout le motif est gated `rhai`, la voie crypto sous `crypto` + `rhai` en plus.
+// ── Motif double cible (hashes.sdd, issues #19 et #20 ; tâche « Fournir `crypto` ») ──
+// Une seule liste d'entrées, `crypto_fns`, appliquée soit à l'Engine (l'enregistreur : les
+// fonctions restent en namespace global de l'engine), soit à un Module dans ce même namespace
+// (le jumeau, enregistrable par Engine::register_static_module). La liste regroupe `sha256`
+// (lue de ./engine.rs, `sha256_fns`), `crc32_hash`, et sous `crypto` le type `Argon`,
+// `bcrypt_hash`, `new_argon`, `hash` puis `gen_private_key` (lu de ./key.rs, `key_fns`).
+// Les aides Target/register_at/register_type_at sont centralisées dans ./engine.rs. Tout le
+// motif est gated `rhai` : sans `rhai`, seules les fonctions Rust nues restent compilées.
 
-/// Registers the always-available hash helpers (`crc32_hash`) on a Rhai `engine`:
-/// exactly that one registration, additive and idempotent. The function stays directly
-/// on the engine — no intermediate global module.
+/// Registers the hash helpers on a Rhai `engine`: `sha256` and `crc32_hash` always, and under
+/// the feature `crypto` the `Argon` type with its `new_argon` constructor and `hash` method,
+/// plus `bcrypt_hash` and `gen_private_key`. Additive and idempotent. The functions stay
+/// directly on the engine — no intermediate global module.
 ///
-/// Module twin: [`hashes_module`] — same single `hashes_fns` list, same semantics.
+/// Module twin: [`crypto_module`] — same single `crypto_fns` list, same semantics.
 #[cfg(feature = "rhai")]
-pub fn hashes_rhai_register(engine: &mut Engine) {
-    hashes_fns(&mut Target::Engine(engine));
+pub fn crypto_rhai_register(engine: &mut Engine) {
+    crypto_fns(&mut Target::Engine(engine));
 }
 
-/// Module twin of [`hashes_rhai_register`] (issue #19): the same function, under the
-/// global namespace of a fresh [`Module`], registrable by [`Engine::register_static_module`]
-/// under the name the consumer picks. A twin that drifts from its registrar is a defect:
-/// both share the single `hashes_fns` list.
+/// Module twin of [`crypto_rhai_register`] (issue #19): the same functions and the same type
+/// entry, under the global namespace of a fresh [`Module`], registrable by
+/// [`Engine::register_static_module`] under the name the consumer picks. A twin that drifts
+/// from its registrar is a defect: both share the single `crypto_fns` list.
 #[cfg(feature = "rhai")]
 #[must_use]
-pub fn hashes_module() -> Module {
+pub fn crypto_module() -> Module {
     let mut module = Module::new();
-    hashes_fns(&mut Target::Module(&mut module));
+    crypto_fns(&mut Target::Module(&mut module));
     module
 }
 
-/// The non-crypto half defined once (motif double cible): each entry is a name, its
-/// function, its parameter names and its `///` comment (both under `metadata` only).
-/// The body is verbatim the one `hashes_rhai_register` used before the motif.
+/// The whole `crypto` group defined once (motif double cible): `sha256` and `crc32_hash`
+/// always, then the `crypto`-feature entries of [`crypto_entries`].
 #[cfg(feature = "rhai")]
-fn hashes_fns(target: &mut Target<'_>) {
+fn crypto_fns(target: &mut Target<'_>) {
+    sha256_fns(target);
     register_at(
         target,
         "crc32_hash",
@@ -138,39 +136,15 @@ fn hashes_fns(target: &mut Target<'_>) {
         &["text: string", "u32"],
         |s: ImmutableString| crate::hashes::crc32_hash(s.to_string()),
     );
+    #[cfg(feature = "crypto")]
+    crypto_entries(target);
 }
 
-/// Registers the `crypto`-feature hash helpers (`bcrypt_hash`, `Argon`) on a Rhai
-/// `engine`: exactly the `bcrypt_hash` function, the `Argon` type name, the `new_argon`
-/// constructor and the `hash` method — nothing else, additive and idempotent. The
-/// functions stay directly on the engine — no intermediate global module.
-///
-/// Module twin: [`crypto_hashes_module`] — same single `crypto_hashes_fns` list, same
-/// semantics.
+/// The `crypto`-feature entries (motif double cible): the `Argon` type entry, `bcrypt_hash`,
+/// `new_argon`, `hash`, then the two `gen_private_key` overloads of ./key.rs. The bodies are
+/// verbatim the ones the former `crypto_hashes_fns` and `key_fns` used.
 #[cfg(all(feature = "rhai", feature = "crypto"))]
-pub fn crypto_hashes_rhai_register(engine: &mut Engine) {
-    crypto_hashes_fns(&mut Target::Engine(engine));
-}
-
-/// Module twin of [`crypto_hashes_rhai_register`] (issue #19): the same type entry and
-/// the same functions, under the global namespace of a fresh [`Module`], registrable by
-/// [`Engine::register_static_module`] under the name the consumer picks. A twin that
-/// drifts from its registrar is a defect: both share the single `crypto_hashes_fns` list.
-#[cfg(all(feature = "rhai", feature = "crypto"))]
-#[must_use]
-pub fn crypto_hashes_module() -> Module {
-    let mut module = Module::new();
-    crypto_hashes_fns(&mut Target::Module(&mut module));
-    module
-}
-
-/// The `crypto` + `rhai` half defined once (motif double cible): the `Argon` type entry
-/// (`register_type_with_name` / `set_custom_type` — portable, the chrono/semver precedent),
-/// then each registration as a name, its function, its parameter names and its `///`
-/// comment (both under `metadata` only). The bodies are verbatim the ones
-/// `crypto_hashes_rhai_register` used before the motif.
-#[cfg(all(feature = "rhai", feature = "crypto"))]
-fn crypto_hashes_fns(target: &mut Target<'_>) {
+fn crypto_entries(target: &mut Target<'_>) {
     register_type_at::<Argon>(target, "Argon");
     register_at(
         target,
@@ -202,6 +176,7 @@ fn crypto_hashes_fns(target: &mut Target<'_>) {
         &["argon: &mut Argon", "password: string", "string"],
         Argon::rhai_hash,
     );
+    crate::key::key_fns(target);
 }
 
 /// Verrous de `crate::hashes::crc32_hash`, la moitié non-crypto du module.
@@ -236,44 +211,62 @@ mod crc32_tests {
     }
 }
 
-/// Face script de `crate::hashes::hashes_rhai_register`. Le Scenario « rhai
-/// seul ne branche que crc32 » est joué dans tout graphe où `rhai` compile :
-/// ce qui est verrouillé ici est que ce registre seul n'apporte ni
-/// `bcrypt_hash` ni `new_argon`, clause vraie quel que soit le graphe. La
-/// table des portes (quels noms existent dans quel graphe) reste du ressort de
-/// la batterie de features.
+/// Face script de `crate::hashes::crypto_rhai_register` (hashes.sdd, Scenario « rhai seul
+/// branche sha256 et crc32 », « crypto seul… » et « crypto et rhai livrent tout via `new_bare` »).
+/// Joué dans tout graphe où `rhai` compile.
 #[cfg(all(test, feature = "rhai"))]
-mod glue_hashes_rhai_seule {
-    use super::{crc32_hash, hashes_rhai_register};
-    use rhai::Engine;
+mod glue_crypto_rhai {
+    use super::{crc32_hash, crypto_rhai_register};
+    use rhai::{Engine, ImmutableString};
 
-    /// Scenario « rhai seul ne branche que crc32 » : évaluation réussie,
-    /// valeur `907060870`, `type_of` verrouillé à `u32` (pas `int`), et
-    /// ignorance totale des noms crypto sur un engine enregistré par ce seul
-    /// registre.
+    /// Scenario « rhai seul branche sha256 et crc32 » : `crc32_hash("hello")` rend `907060870`
+    /// de `type_of` `u32` (pas `int`), `sha256` rend le digest hexadécimal minuscule, et sans
+    /// la feature `crypto` ni `bcrypt_hash` ni `new_argon` ne sont connus.
     #[test]
-    fn hashes_rhai_register_ne_branche_que_crc32() {
+    fn crypto_rhai_register_branche_sha256_et_crc32() {
         let mut engine = Engine::new();
-        hashes_rhai_register(&mut engine);
-        let t: rhai::ImmutableString = engine
+        crypto_rhai_register(&mut engine);
+        let t: ImmutableString = engine
             .eval("crc32_hash(\"hello\").type_of()")
             .expect("type_of d'un succès crc32_hash");
         assert_eq!(&*t, "u32", "le rendu est un `u32`, pas un `int`");
         let d = engine
             .eval::<rhai::Dynamic>("crc32_hash(\"hello\")")
-            .expect("crc32_hash doit être enregistré par hashes_rhai_register");
+            .expect("crc32_hash doit être enregistré par crypto_rhai_register");
         assert!(d.is::<u32>(), "le Dynamic rendu porte un `u32` : {d:?}");
         assert_eq!(d.cast::<u32>(), crc32_hash("hello".to_string()));
         assert_eq!(
             engine.eval::<u32>("crc32_hash(\"hello\")").expect("u32"),
             907_060_870
         );
+        assert_eq!(
+            engine
+                .eval::<String>("sha256(\"hello\")")
+                .expect("sha256 est enregistré sans la feature crypto"),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        #[cfg(not(feature = "crypto"))]
         for src in ["bcrypt_hash(\"x\")", "new_argon()"] {
             assert!(
                 engine.eval::<rhai::Dynamic>(src).is_err(),
-                "hashes_rhai_register seul n'enregistre aucun nom crypto : {src}"
+                "sans `crypto`, le registre n'enregistre aucun nom crypto : {src}"
             );
         }
+    }
+
+    /// Scenario « crypto seul » côté script : le registre `crypto` seul, sur un engine nu
+    /// (`Engine::new_raw`, sans `core`), connaît `sha256` — le digest n'appartient plus à
+    /// `core`, il est livré par `crypto`.
+    #[test]
+    fn crypto_rhai_register_seul_connait_sha256_sans_core() {
+        let mut engine = Engine::new_raw();
+        crypto_rhai_register(&mut engine);
+        assert_eq!(
+            engine
+                .eval::<String>(r#"sha256("a")"#)
+                .expect("sha256 doit être connu du registre crypto seul"),
+            "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+        );
     }
 }
 
@@ -494,17 +487,17 @@ mod tests {
 
 /// Scenarios du collage script `new_argon`, sous `crypto` + `rhai` : `Argon::new` rendu
 /// faillible, l'enregistreur doit porter l'erreur par `crate::rhai_err` (voie déjà prise par
-/// `bcrypt_hash` dans `crypto_hashes_rhai_register`) et le script doit recevoir un objet
+/// `bcrypt_hash` dans `crypto_rhai_register`) et le script doit recevoir un objet
 /// `Argon` utilisable.
 #[cfg(all(test, feature = "crypto", feature = "rhai"))]
 mod rhai_tests {
-    use crate::hashes::crypto_hashes_rhai_register;
+    use crate::hashes::crypto_rhai_register;
     use rhai::Engine;
 
     #[test]
     fn new_argon_script_constructor_returns_usable_argon() {
         let mut engine = Engine::new();
-        crypto_hashes_rhai_register(&mut engine);
+        crypto_rhai_register(&mut engine);
         let type_name: String = engine
             .eval("let a = new_argon(); a.type_of()")
             .expect("type_of of a new_argon() object must succeed");
@@ -521,9 +514,9 @@ mod rhai_tests {
     // ── Lot « Convertir chaque Scenario en test » — face script sous `crypto`
     // + `rhai`. La table des portes (quels noms existent dans quel graphe,
     // dont « crypto et rhai livrent tout via new_bare » côté compilation) est
-    // tenue par la batterie de features ; les deux modules non-gated ci-
-    // dessus (`crc32_tests`, `glue_hashes_rhai_seule`) verrouillent la valeur
-    // crc32 et l'ignorance des noms crypto par le registre non-crypto.
+    // tenue par la batterie de features ; les modules non-gated ci-dessus
+    // (`crc32_tests`, `glue_crypto_rhai`) verrouillent la valeur crc32 et le
+    // registre `crypto_rhai_register` sans la feature `crypto`.
 
     /// Scenario « crypto et rhai livrent tout via `new_bare` » : les trois
     /// évaluations réussissent, crc32 vaut `907060870` de type `u32`, bcrypt
@@ -535,7 +528,7 @@ mod rhai_tests {
         let mut script = Script::new_bare(vec![]);
         let d = script
             .eval("crc32_hash(\"hello\")")
-            .expect("hashes_rhai_register est appelé inconditionnellement par new_bare");
+            .expect("crypto_rhai_register est appelé inconditionnellement par new_bare");
         assert!(d.is::<u32>(), "crc32 rend un `u32`, pas un `int` : {d:?}");
         let crc_type = script
             .eval("crc32_hash(\"hello\").type_of()")
@@ -573,7 +566,7 @@ mod rhai_tests {
     #[test]
     fn une_instance_argon_rejoue_son_sel_en_script() {
         let mut engine = Engine::new();
-        crypto_hashes_rhai_register(&mut engine);
+        crypto_rhai_register(&mut engine);
         let same: bool = engine
             .eval("let a = new_argon(); a.hash(\"p\") == a.hash(\"p\")")
             .expect("deux .hash de la même instance doivent réussir");
@@ -588,7 +581,7 @@ mod rhai_tests {
     #[test]
     fn la_forme_globale_hash_reussit() {
         let mut engine = Engine::new();
-        crypto_hashes_rhai_register(&mut engine);
+        crypto_rhai_register(&mut engine);
         let hash: String = engine
             .eval("let a = new_argon(); hash(a, \"p\")")
             .expect("la forme globale hash(argon, mot_de_passe) doit réussir");
@@ -599,15 +592,14 @@ mod rhai_tests {
     }
 
     /// Scenario « le script ne coerce aucun scalaire vers les collages » :
-    /// les deux registres sont appelés ici pour que `crc32_hash` matche un nom
+    /// le registre `crypto` est appelé ici pour que `crc32_hash` matche un nom
     /// enregistré — l'échec vient alors de l'absence de signature pour un
     /// entier, non de l'absence du nom. Aucune fonction Rust du module ne
     /// s'exécute pour ces quatre appels : fonction inconnue avant exécution.
     #[test]
     fn le_script_ne_coerce_aucun_scalaire() {
         let mut engine = Engine::new();
-        crate::hashes::hashes_rhai_register(&mut engine);
-        crypto_hashes_rhai_register(&mut engine);
+        crypto_rhai_register(&mut engine);
         for (src, name) in [
             ("crc32_hash(1)", "crc32_hash"),
             ("bcrypt_hash(true)", "bcrypt_hash"),
@@ -631,7 +623,7 @@ mod rhai_tests {
     #[test]
     fn le_collage_bcrypt_propage_le_texte_exact_de_erreur() {
         let mut engine = Engine::new();
-        crypto_hashes_rhai_register(&mut engine);
+        crypto_rhai_register(&mut engine);
         let src = format!("bcrypt_hash(\"{}\")", "x".repeat(100));
         let err = engine
             .eval::<rhai::Dynamic>(&src)
@@ -646,16 +638,43 @@ mod rhai_tests {
         );
     }
 
-    /// Scenario « le réenregistrement reste sans effet visible » : les deux
-    /// registres rappelés rendent `()` et les trois formes gardent leurs
+    /// Scenario « bcrypt : la borne 71/72 par le script » : la porte Rhai de
+    /// `bcrypt_hash` tient la même borne que la voie Rust. `71` octets rend un
+    /// haché de 60 caractères en `$2b$12$` ; `72` octets échoue en script avec
+    /// le texte exact `Expected 72 bytes or fewer; found 73 bytes`.
+    #[test]
+    fn bcrypt_borne_71_72_par_le_script() {
+        let mut engine = Engine::new();
+        crypto_rhai_register(&mut engine);
+
+        let src_71 = format!("bcrypt_hash(\"{}\")", "x".repeat(71));
+        let hash: String = engine
+            .eval(&src_71)
+            .expect("71 octets doivent être acceptés en script");
+        assert_eq!(hash.len(), 60);
+        assert!(hash.starts_with("$2b$12$"), "expected $2b$12$, got {hash}");
+
+        let src_72 = format!("bcrypt_hash(\"{}\")", "x".repeat(72));
+        let err = engine
+            .eval::<rhai::Dynamic>(&src_72)
+            .expect_err("72 octets doivent être refusés en script");
+        let rhai::EvalAltResult::ErrorRuntime(msg, _) = err.as_ref() else {
+            panic!("attendu l'erreur runtime du collage, obtenu {err:?}");
+        };
+        assert_eq!(
+            msg.to_string(),
+            "Bcrypt hash error Expected 72 bytes or fewer; found 73 bytes",
+        );
+    }
+
+    /// Scenario « le réenregistrement reste sans effet visible » : le registre
+    /// rappelé rend `()` et les trois formes gardent leurs
     /// formes de sortie.
     #[test]
     fn reenregistrement_des_deux_registres_sans_effet_visible() {
         let mut engine = Engine::new();
-        crate::hashes::hashes_rhai_register(&mut engine);
-        crypto_hashes_rhai_register(&mut engine);
-        crate::hashes::hashes_rhai_register(&mut engine);
-        crypto_hashes_rhai_register(&mut engine);
+        crypto_rhai_register(&mut engine);
+        crypto_rhai_register(&mut engine);
         let d = engine
             .eval::<rhai::Dynamic>("crc32_hash(\"hello\")")
             .expect("crc32_hash doit réussir après double enregistrement");
@@ -674,38 +693,45 @@ mod rhai_tests {
     }
 }
 
-/// SCELLAGE « Jumeau module et documentation » (hashes.sdd, issues #19 et #20) —
-/// Scenario « `hashes_module` équivaut à `hashes_rhai_register` », « `crypto_hashes_module`
-/// équivaut à `crypto_hashes_rhai_register` » (clause `crypto`, jouée sous `crypto` +
-/// `rhai`) et « fonctions documentées sous metadata (hashes) ». Le motif est celui du
-/// pilote de ./engine.rs : une seule liste (`hashes_fns` / `crypto_hashes_fns`) appliquée
-/// soit directement à l'engine (l'enregistreur — fonctions en namespace global, visibles
-/// de `gen_fn_signatures` comme avant le motif), soit au jumeau module enregistré par
-/// `register_static_module` sous `m`. La porte du module étant `rhai` seul (le module
-/// compile sans `crypto`), tout ce lot est gated `rhai`, la clause crypto en plus.
+/// Jumeau module et documentation du groupe `crypto` (hashes.sdd ; tâche « Fournir `crypto` »,
+/// issues #19 et #20). Scenario « `crypto_module` équivaut à `crypto_rhai_register` »,
+/// « fonctions documentées sous metadata (hashes) » et « sans la feature, les mêmes tests de
+/// comportement passent sans différence ». La table des noms est écrite à la main, selon les
+/// features ; l'enregistreur et le jumeau doivent la rendre à l'identique.
 #[cfg(all(test, feature = "rhai"))]
-mod jumeaux_module_hashes {
+mod jumeaux_module_crypto {
+    use super::{crypto_module, crypto_rhai_register};
     use rhai::Engine;
 
-    /// Engine vierge portant le jumeau module enregistré par
-    /// `rhai::Engine::register_static_module` sous le nom `m` (face qualifiée du Scenario).
+    /// Noms de fonctions de `crypto` sans la feature `crypto` : `sha256` et `crc32_hash`.
+    const NOMS_RHAI: &[&str] = &["sha256", "crc32_hash"];
+    /// Noms ajoutés sous la feature `crypto` : `bcrypt_hash`, `new_argon`, la méthode `hash`
+    /// (et sa forme globale) et `gen_private_key` (deux surcharges, un seul nom). Le type
+    /// `Argon` n'est pas une fonction : il se lit par `type_of`.
+    #[cfg(feature = "crypto")]
+    const NOMS_CRYPTO: &[&str] = &["bcrypt_hash", "new_argon", "hash", "gen_private_key"];
+
+    /// Noms attendus de l'enregistreur `crypto`, selon les features de la crate.
+    fn noms_attendus() -> std::collections::BTreeSet<String> {
+        let noms = NOMS_RHAI.iter().copied();
+        #[cfg(feature = "crypto")]
+        let noms = noms.chain(NOMS_CRYPTO.iter().copied());
+        noms.map(str::to_string).collect()
+    }
+
+    /// Engine vierge portant le jumeau module enregistré par `register_static_module` sous `m`.
     fn engine_with_module(module: rhai::Module) -> Engine {
         let mut engine = Engine::new();
         engine.register_static_module("m", module.into());
         engine
     }
 
-    /// Noms de fonctions de l'engine, hors packages standard de `@rhai`
-    /// (introspection par `collect_fn_metadata`, porte `internals` toujours activée).
+    /// Noms de fonctions de l'engine, hors packages standard (introspection `collect_fn_metadata`).
     fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
         engine
             .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
             .into_iter()
             .collect()
-    }
-
-    fn set_of(noms: &[&str]) -> std::collections::BTreeSet<String> {
-        noms.iter().map(|nom| (*nom).to_string()).collect()
     }
 
     /// Noms que l'enregistreur ajoute à la baseline `Engine::new`.
@@ -717,8 +743,7 @@ mod jumeaux_module_hashes {
         apres.difference(&avant).cloned().collect()
     }
 
-    /// Noms qu'un jumeau module ajoute à la baseline par `register_static_module`
-    /// sous `m` (préfixe `m::` retiré s'il est porté par le nom).
+    /// Noms qu'un jumeau module ajoute à la baseline, préfixe `m::` retiré.
     fn names_added_by_module(module: rhai::Module) -> std::collections::BTreeSet<String> {
         let apres = registered_names(&engine_with_module(module));
         let avant = registered_names(&Engine::new());
@@ -731,9 +756,8 @@ mod jumeaux_module_hashes {
             .collect()
     }
 
-    /// Deux faces du même appel : mêmes valeurs rendues ; sur échec, même noyau de
-    /// message porté des deux côtés (l'enveloppe d'appel nu vs qualifié appartient à
-    /// `@rhai`, non contractée — voix du pilote de ./engine.rs).
+    /// Deux faces du même appel : mêmes valeurs rendues ; sur échec, même noyau de message
+    /// porté des deux côtés (l'enveloppe d'appel nu vs qualifié appartient à `rhai`).
     fn comparer_resultats(
         origine: &str,
         marqueur: Option<&str>,
@@ -761,52 +785,60 @@ mod jumeaux_module_hashes {
         }
     }
 
-    /// L'unique enregistrement de fonction du `Must` de ./hashes.sdd pour la voie
-    /// non-crypto (le nom de type `Argon` n'est pas une fonction).
-    const HASHES_FNS: [&str; 1] = ["crc32_hash"];
+    /// Appel représentatif : appel nu, appel qualifié `m::` optionnel, noyau d'erreur attendu.
+    type Appel = (String, Option<String>, Option<&'static str>);
 
-    /// Scenario « `hashes_module` équivaut à `hashes_rhai_register` » : les deux ensembles
-    /// de noms sont égaux (introspection, aucune fonction en plus ni en moins) ; les
-    /// appels représentatifs des Scenario existants sont rejoués en nom nu sur l'engine
-    /// de l'enregistreur, puis en nom nu ET qualifié `m::nom` sur l'engine du jumeau —
-    /// mêmes valeurs, mêmes noyaux d'erreur.
+    fn appel(nu: &str, qualifie: Option<&str>, marqueur: Option<&'static str>) -> Appel {
+        (nu.to_string(), qualifie.map(str::to_string), marqueur)
+    }
+
+    /// Scenario « `crypto_module` équivaut à `crypto_rhai_register` », premier `Then` : les deux
+    /// faces accordent exactement la table écrite à la main, aucune fonction en plus ni en moins.
     #[test]
-    fn hashes_module_equivalent_a_hashes_rhai_register() {
+    fn noms_de_l_enregistreur_et_du_jumeau_egaux_a_la_table() {
+        let attendus = noms_attendus();
         assert_eq!(
-            names_added_by(super::hashes_rhai_register),
-            set_of(&HASHES_FNS),
-            "l'enregistreur ajoute exactement crc32_hash, rien d'autre"
+            names_added_by(crypto_rhai_register),
+            attendus,
+            "l'enregistreur `crypto` accorde exactement la table"
         );
         assert_eq!(
-            names_added_by_module(super::hashes_module()),
-            set_of(&HASHES_FNS),
-            "le jumeau module rend exactement les noms de l'enregistreur, aucun en plus ni en moins"
+            names_added_by_module(crypto_module()),
+            attendus,
+            "le jumeau module `crypto` accorde exactement la table"
         );
+    }
+
+    /// Scenario « `crypto_module` équivaut à `crypto_rhai_register` » : les appels représentatifs
+    /// sont rejoués en nom nu sur l'enregistreur, puis en nom nu ET qualifié `m::nom` sur le
+    /// jumeau — mêmes valeurs, mêmes noyaux d'erreur.
+    #[test]
+    fn appels_representatifs_du_jumeau_egaux_a_l_enregistreur() {
+        let appels: Vec<Appel> = appels_rhai().into_iter().chain(appels_crypto()).collect();
         let mut enregistreur = Engine::new();
-        super::hashes_rhai_register(&mut enregistreur);
-        let par_module = engine_with_module(super::hashes_module());
-        let appels: [(&str, Option<&str>, Option<&str>); 3] = [
-            (r#"crc32_hash("hello")"#, Some(r#"m::crc32_hash("hello")"#), None),
-            (r#"crc32_hash("")"#, Some(r#"m::crc32_hash("")"#), None),
-            ("crc32_hash(1)", None, Some("crc32_hash")),
-        ];
-        for (nu, qualifie, marqueur) in appels {
+        crypto_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(crypto_module());
+        for (nu, qualifie, marqueur) in &appels {
             let rn = enregistreur.eval::<rhai::Dynamic>(nu);
             let rb = par_module.eval::<rhai::Dynamic>(nu);
-            comparer_resultats(nu, marqueur, rn, rb);
+            comparer_resultats(nu, *marqueur, rn, rb);
             if let Some(q) = qualifie {
                 let rn = enregistreur.eval::<rhai::Dynamic>(nu);
                 let rq = par_module.eval::<rhai::Dynamic>(q);
-                comparer_resultats(q, marqueur, rn, rq);
+                comparer_resultats(q, *marqueur, rn, rq);
             }
         }
-        // Valeur exacte verrouillée des trois voies (enregistreur nu, jumeau nu, jumeau qualifié).
+        // Valeurs exactes verrouillées des trois voies (enregistreur nu, jumeau nu, jumeau qualifié).
         assert_eq!(
-            enregistreur.eval::<u32>(r#"crc32_hash("hello")"#).unwrap(),
-            907_060_870
+            enregistreur.eval::<String>(r#"sha256("hello")"#).unwrap(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
         );
         assert_eq!(
-            par_module.eval::<u32>(r#"crc32_hash("hello")"#).unwrap(),
+            par_module.eval::<String>(r#"m::sha256("hello")"#).unwrap(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        assert_eq!(
+            enregistreur.eval::<u32>(r#"crc32_hash("hello")"#).unwrap(),
             907_060_870
         );
         assert_eq!(
@@ -815,205 +847,87 @@ mod jumeaux_module_hashes {
         );
     }
 
-    /// Scenario « `hashes_module` équivaut à `hashes_rhai_register` », dernier `And` :
-    /// sur l'engine de l'enregistreur, `gen_fn_signatures` sans les paquets liste les
-    /// mêmes fonctions qu'avant — `crc32_hash` en fonction directe, pas dans un module
-    /// global intermédiaire. Porte `metadata` de `@rhai`.
-    #[cfg(feature = "metadata")]
-    #[test]
-    fn hashes_enregistreur_fonctions_directement_sur_l_engine() {
-        let mut engine = Engine::new();
-        super::hashes_rhai_register(&mut engine);
-        let signatures = engine.gen_fn_signatures(false);
-        let baseline = Engine::new().gen_fn_signatures(false);
-        let ajoutees: Vec<&String> = signatures
-            .iter()
-            .filter(|s| !baseline.iter().any(|b| b == *s))
-            .collect();
-        assert_eq!(
-            ajoutees.len(),
-            1,
-            "crc32_hash est la seule signature ajoutée à la baseline : {ajoutees:?}"
-        );
-        assert!(
-            ajoutees[0].starts_with("crc32_hash("),
-            "crc32_hash doit être une fonction directe de l'engine : {ajoutees:?}"
-        );
+    /// Appels représentatifs du groupe sans la feature `crypto` : `sha256` et `crc32_hash`.
+    fn appels_rhai() -> Vec<Appel> {
+        vec![
+            appel(r#"sha256("hello")"#, Some(r#"m::sha256("hello")"#), None),
+            appel(r#"crc32_hash("hello")"#, Some(r#"m::crc32_hash("hello")"#), None),
+            appel(r#"crc32_hash("")"#, Some(r#"m::crc32_hash("")"#), None),
+            appel("sha256(1)", None, Some("sha256")),
+            appel("crc32_hash(1)", None, Some("crc32_hash")),
+        ]
     }
 
-    /// Scenario « fonctions documentées sous metadata (hashes) », voie crc32 : sous la
-    /// feature `metadata`, `crc32_hash` porte un commentaire non vide et le NOM de son
-    /// paramètre, pas seulement son type.
-    #[cfg(feature = "metadata")]
-    #[test]
-    fn fonctions_documentees_sous_metadata_crc32() {
-        let mut engine = Engine::new();
-        super::hashes_rhai_register(&mut engine);
-        let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
-            None,
-            |f| {
-                Some((
-                    f.metadata.name.to_string(),
-                    f.metadata.params_info.len(),
-                    f.metadata.comments.len(),
-                ))
-            },
-            false,
-        );
-        for nom in HASHES_FNS {
-            let entry = documentees
-                .iter()
-                .find(|(n, _, _)| n == nom)
-                .unwrap_or_else(|| panic!("{nom} absente des métadonnées de l'engine"));
-            assert!(
-                entry.2 > 0,
-                "{nom} doit porter un commentaire non vide sous `metadata`"
-            );
-        }
-        let signatures = engine.gen_fn_signatures(false);
-        let signature = signatures
-            .iter()
-            .find(|s| s.starts_with("crc32_hash("))
-            .unwrap_or_else(|| panic!("crc32_hash absente des signatures : {signatures:?}"));
-        assert!(
-            signature.contains("text"),
-            "la signature de crc32_hash doit nommer son paramètre « text », obtenu : {signature}"
-        );
-        assert!(!signature.contains("(_"), "got {signature}");
-    }
-
-    /// Scenario « fonctions documentées sous metadata (hashes) », `And` « sans la
-    /// feature, les mêmes tests de comportement passent sans différence » : mêmes
-    /// valeurs verrouillées et mêmes ensembles de noms des deux voies, la documentation
-    /// n'étant qu'une métadonnée.
-    #[cfg(not(feature = "metadata"))]
-    #[test]
-    fn hashes_sans_metadata_sans_difference() {
-        let mut enregistreur = Engine::new();
-        super::hashes_rhai_register(&mut enregistreur);
-        let par_module = engine_with_module(super::hashes_module());
-        assert_eq!(
-            enregistreur.eval::<u32>(r#"crc32_hash("hello")"#).unwrap(),
-            par_module.eval::<u32>(r#"m::crc32_hash("hello")"#).unwrap(),
-            "sans `metadata`, la valeur rendue est la même des deux voies"
-        );
-        assert_eq!(
-            names_added_by(super::hashes_rhai_register),
-            names_added_by_module(super::hashes_module()),
-            "sans `metadata`, les deux ensembles de noms restent égaux"
-        );
-    }
-
-    /// Les enregistrements de fonction de la voie crypto du `Must` (le nom de type
-    /// `Argon` posé par `register_type_with_name` / `set_custom_type` n'est pas une
-    /// fonction ; `hash` compte pour la méthode, exposée aussi en forme globale).
-    #[cfg(all(test, feature = "crypto"))]
-    const CRYPTO_HASHES_FNS: [&str; 3] = ["bcrypt_hash", "hash", "new_argon"];
-
-    /// Scenario « `crypto_hashes_module` équivaut à `crypto_hashes_rhai_register` » : les
-    /// deux ensembles de noms sont égaux (introspection) — y compris l'entrée de TYPE
-    /// `Argon`, portable par `rhai::Module::set_custom_type` (précédent chrono/semver) —
-    /// et les appels représentatifs (nom nu sur l'engine de l'enregistreur ; nom nu ET
-    /// qualifié `m::nom` sur l'engine du jumeau) rendent les mêmes valeurs et portent
-    /// les mêmes noyaux d'erreur.
-    #[cfg(feature = "crypto")]
-    #[test]
-    fn crypto_hashes_module_equivalent_a_crypto_hashes_rhai_register() {
-        assert_eq!(
-            names_added_by(super::crypto_hashes_rhai_register),
-            set_of(&CRYPTO_HASHES_FNS),
-            "l'enregistreur crypto ajoute exactement bcrypt_hash, new_argon et hash"
-        );
-        assert_eq!(
-            names_added_by_module(super::crypto_hashes_module()),
-            set_of(&CRYPTO_HASHES_FNS),
-            "le jumeau module crypto rend exactement les noms de l'enregistreur, aucun en plus ni en moins"
-        );
-        let mut enregistreur = Engine::new();
-        super::crypto_hashes_rhai_register(&mut enregistreur);
-        let par_module = engine_with_module(super::crypto_hashes_module());
-        let appels: Vec<(String, Option<String>, Option<&str>)> = vec![
-            // Scenario « crypto et rhai livrent tout via new_bare » — entrée de TYPE :
-            // type_of doit rendre `Argon` des deux voies (register_type_with_name vs
-            // set_custom_type, tous deux consultés par Engine::map_type_name).
-            (
-                r"type_of(new_argon())".into(),
-                Some(r"type_of(m::new_argon())".into()),
-                None,
-            ),
-            // Scenario « une instance rejoue son sel, Rust comme Rhai » : les deux
-            // `.hash` de la même instance sont égaux des deux voies.
-            (
-                r#"let a = new_argon(); a.hash("p") == a.hash("p")"#.into(),
-                Some(r#"let a = m::new_argon(); m::hash(a, "p") == m::hash(a, "p")"#.into()),
+    /// Appels représentatifs des entrées `crypto` (vide sans la feature `crypto`).
+    fn appels_crypto() -> Vec<Appel> {
+        #[cfg(feature = "crypto")]
+        let appels = vec![
+            // Scenario « crypto et rhai livrent tout via new_bare » — entrée de TYPE : `type_of`
+            // rend `Argon` des deux voies.
+            appel("type_of(new_argon())", Some("type_of(m::new_argon())"), None),
+            // Scenario « une instance rejoue son sel, Rust comme Rhai » : deux `.hash` égaux.
+            appel(
+                r#"let a = new_argon(); a.hash("p") == a.hash("p")"#,
+                Some(r#"let a = m::new_argon(); m::hash(a, "p") == m::hash(a, "p")"#),
                 None,
             ),
             // Scenario « la forme globale hash réussit aussi ».
-            (
-                r#"let a = new_argon(); hash(a, "p").starts_with("$argon2id$v=19$m=19456,t=2,p=1$")"#.into(),
+            appel(
+                r#"let a = new_argon(); hash(a, "p").starts_with("$argon2id$v=19$m=19456,t=2,p=1$")"#,
                 Some(
-                    r#"let a = m::new_argon(); m::hash(a, "p").starts_with("$argon2id$v=19$m=19456,t=2,p=1$")"#
-                        .into(),
+                    r#"let a = m::new_argon(); m::hash(a, "p").starts_with("$argon2id$v=19$m=19456,t=2,p=1$")"#,
                 ),
                 None,
             ),
-            // Scenario « bcrypt rend soixante caractères » : la longueur est jouée, pas
-            // la valeur (sel frais à chaque appel, jamais verrouillable en equality).
-            (
-                r#"bcrypt_hash("p").len() == 60"#.into(),
-                Some(r#"m::bcrypt_hash("p").len() == 60"#.into()),
+            // Scenario « bcrypt rend soixante caractères » : la longueur est jouée, pas la valeur.
+            appel(
+                r#"bcrypt_hash("p").len() == 60"#,
+                Some(r#"m::bcrypt_hash("p").len() == 60"#),
                 None,
             ),
-            // Scenario « bcrypt refuse cent octets » : le texte Display complet de
-            // crate::Error est porté à l'identique des deux voies.
-            (
-                format!("bcrypt_hash(\"{}\")", "x".repeat(100)),
-                Some(format!("m::bcrypt_hash(\"{}\")", "x".repeat(100))),
+            // Scenario « bcrypt refuse cent octets » : le Display complet de `crate::Error`.
+            appel(
+                &format!("bcrypt_hash(\"{}\")", "x".repeat(100)),
+                Some(format!("m::bcrypt_hash(\"{}\")", "x".repeat(100)).as_str()),
                 Some("Bcrypt hash error Expected 72 bytes or fewer; found 101 bytes"),
             ),
-            // Scenario « le script ne coerce aucun scalaire vers les collages » :
-            // fonction inconnue des deux côtés, aucune fonction Rust exécutée.
-            ("bcrypt_hash(true)".into(), None, Some("bcrypt_hash")),
-            ("new_argon(0)".into(), None, Some("new_argon")),
+            // Scenario « le script ne coerce aucun scalaire vers les collages ».
+            appel("bcrypt_hash(true)", None, Some("bcrypt_hash")),
+            appel("new_argon(0)", None, Some("new_argon")),
         ];
-        for (nu, qualifie, marqueur) in appels {
-            let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
-            let rb = par_module.eval::<rhai::Dynamic>(&nu);
-            comparer_resultats(&nu, marqueur, rn, rb);
-            if let Some(q) = &qualifie {
-                let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
-                let rq = par_module.eval::<rhai::Dynamic>(q);
-                comparer_resultats(q, marqueur, rn, rq);
-            }
-        }
+        #[cfg(not(feature = "crypto"))]
+        let appels: Vec<Appel> = Vec::new();
+        appels
     }
 
-    /// Scenario « `crypto_hashes_module` équivaut à `crypto_hashes_rhai_register` », dernier
-    /// `And` : `bcrypt_hash`, `new_argon` et `hash` restent des fonctions DIRECTEMENT sur
-    /// l'engine de l'enregistreur (`gen_fn_signatures` sans les paquets, porte `metadata`).
-    #[cfg(all(feature = "metadata", feature = "crypto"))]
+    /// Scenario « `crypto::sha256` » (hashes.sdd, tâche « Fournir `crypto` », `Then` 3) : après
+    /// `register_static_module("crypto", crypto_module())`, l'appel qualifié `crypto::sha256("a")`
+    /// rend le digest, et le nom nu reste disponible sur ce même engine.
     #[test]
-    fn crypto_hashes_enregistreur_fonctions_directement_sur_l_engine() {
+    fn appel_qualifie_crypto_sha256_apres_register_static_module() {
         let mut engine = Engine::new();
-        super::crypto_hashes_rhai_register(&mut engine);
-        let signatures = engine.gen_fn_signatures(false);
-        for nom in ["bcrypt_hash", "new_argon", "hash"] {
-            assert!(
-                signatures.iter().any(|s| s.starts_with(&format!("{nom}("))),
-                "{nom} doit être une fonction directe de l'engine, signatures : {signatures:?}"
-            );
-        }
+        engine.register_static_module("crypto", crypto_module().into());
+        let qualifie: String = engine
+            .eval(r#"crypto::sha256("a")"#)
+            .expect("crypto::sha256 doit résoudre après register_static_module");
+        assert_eq!(
+            qualifie,
+            "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+        );
+        let nu: String = engine
+            .eval(r#"sha256("a")"#)
+            .expect("le nom nu reste disponible sur le même engine");
+        assert_eq!(nu, qualifie);
     }
 
-    /// Scenario « fonctions documentées sous metadata (hashes) », voie crypto : chaque
-    /// fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres
-    /// (`new_argon`, d'arité zéro, tient la clause paramétrale vacuement — précédent
-    /// `date_now` de ./chrono.rs).
-    #[cfg(all(feature = "metadata", feature = "crypto"))]
+    /// Scenario « fonctions documentées sous metadata (hashes) » : chaque fonction de la table
+    /// porte un commentaire non vide et les NOMS de ses paramètres, par `collect_fn_metadata`,
+    /// `gen_fn_signatures` et `gen_fn_metadata_to_json` (`docComments`, `params`).
+    #[cfg(feature = "metadata")]
     #[test]
-    fn fonctions_documentees_sous_metadata_crypto_hashes() {
+    fn fonctions_documentees_sous_metadata_crypto() {
         let mut engine = Engine::new();
-        super::crypto_hashes_rhai_register(&mut engine);
+        crypto_rhai_register(&mut engine);
         let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
             None,
             |f| {
@@ -1025,18 +939,25 @@ mod jumeaux_module_hashes {
             },
             false,
         );
-        for nom in ["bcrypt_hash", "new_argon", "hash"] {
-            let entry = documentees
+        for nom in noms_attendus() {
+            let entree = documentees
                 .iter()
-                .find(|(n, _, _)| n == nom)
+                .find(|(n, _, _)| *n == nom)
                 .unwrap_or_else(|| panic!("{nom} absente des métadonnées de l'engine"));
             assert!(
-                entry.2 > 0,
+                entree.2 > 0,
                 "{nom} doit porter un commentaire non vide sous `metadata`"
             );
         }
         let signatures = engine.gen_fn_signatures(false);
-        for (nom, param) in [("bcrypt_hash", "text"), ("hash", "password")] {
+        let mut attendus: Vec<(&str, &str)> = vec![("sha256", "text"), ("crc32_hash", "text")];
+        #[cfg(feature = "crypto")]
+        attendus.extend([
+            ("bcrypt_hash", "text"),
+            ("hash", "password"),
+            ("gen_private_key", "algo"),
+        ]);
+        for (nom, param) in attendus {
             let signature = signatures
                 .iter()
                 .find(|s| s.starts_with(&format!("{nom}(")))
@@ -1047,58 +968,101 @@ mod jumeaux_module_hashes {
             );
             assert!(
                 !signature.contains("(_"),
-                "la signature de {nom} ne doit plus réduire le paramètre à un underscore, obtenu : {signature}"
+                "la signature de {nom} ne doit pas réduire le paramètre à un underscore : {signature}"
             );
+        }
+        let json = engine
+            .gen_fn_metadata_to_json(false)
+            .expect("le JSON des métadonnées de l'engine se sérialise");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("JSON valide");
+        let functions = value["functions"]
+            .as_array()
+            .expect("le JSON porte un tableau « functions »");
+        for nom in noms_attendus() {
+            let entrees: Vec<&serde_json::Value> =
+                functions.iter().filter(|f| f["name"] == nom.as_str()).collect();
+            assert!(!entrees.is_empty(), "{nom} absente du JSON des métadonnées");
+            for entree in entrees {
+                let commentaires = entree["docComments"]
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{nom} doit porter des docComments, obtenu {entree}"));
+                assert!(
+                    commentaires
+                        .iter()
+                        .any(|c| c.as_str().is_some_and(|c| c.starts_with("///") && c.len() > 3)),
+                    "le commentaire /// de {nom} doit être non vide, obtenu {entree}"
+                );
+                if let Some(params) = entree["params"].as_array() {
+                    assert!(
+                        params
+                            .iter()
+                            .all(|p| p["name"].as_str().is_some_and(|n| n != "_" && !n.is_empty())),
+                        "les paramètres de {nom} doivent être nommés, obtenu {entree}"
+                    );
+                }
+            }
         }
     }
 
-    /// Scenario « `crypto_hashes_module` équivaut à `crypto_hashes_rhai_register` » et
-    /// « fonctions documentées sous metadata (hashes) », clause crypto de l'`And` « sans
-    /// la feature, les mêmes tests de comportement passent sans différence ».
-    #[cfg(all(feature = "crypto", not(feature = "metadata")))]
+    /// Scenario « sans la feature, les mêmes tests de comportement passent sans différence » :
+    /// la documentation n'étant qu'une métadonnée, les valeurs et les noms des deux faces sont
+    /// identiques sans `metadata`.
+    #[cfg(not(feature = "metadata"))]
     #[test]
-    fn crypto_hashes_sans_metadata_sans_difference() {
+    fn crypto_sans_metadata_sans_difference() {
         let mut enregistreur = Engine::new();
-        super::crypto_hashes_rhai_register(&mut enregistreur);
-        let par_module = engine_with_module(super::crypto_hashes_module());
-        let nu = enregistreur.eval::<rhai::Dynamic>(r"type_of(new_argon())");
-        let q = par_module.eval::<rhai::Dynamic>(r"type_of(m::new_argon())");
+        crypto_rhai_register(&mut enregistreur);
+        let par_module = engine_with_module(crypto_module());
         assert_eq!(
-            nu.expect("type_of(new_argon()) réussit sans `metadata`")
-                .into_string()
-                .expect("type_of rend une chaîne"),
-            q.expect("la voie jumelle rend la même chaîne sans `metadata`")
-                .into_string()
-                .expect("type_of rend une chaîne"),
+            enregistreur.eval::<String>(r#"sha256("hello")"#).unwrap(),
+            par_module.eval::<String>(r#"m::sha256("hello")"#).unwrap(),
+            "sans `metadata`, sha256 rend la même valeur des deux voies"
         );
         assert_eq!(
-            names_added_by(super::crypto_hashes_rhai_register),
-            names_added_by_module(super::crypto_hashes_module()),
+            names_added_by(crypto_rhai_register),
+            names_added_by_module(crypto_module()),
             "sans `metadata`, les deux ensembles de noms restent égaux"
         );
+        assert_eq!(names_added_by(crypto_rhai_register), noms_attendus());
     }
 }
 
-#[cfg(all(test, feature = "metadata"))]
+/// Signatures attendues du groupe `crypto` (table écrite à la main depuis les fermetures :
+/// vocabulaire du script, retour fallible déballé, retour absent quand l'unité). Sans la
+/// feature `crypto`, la table se réduit à `sha256` et `crc32_hash`.
+#[cfg(all(test, feature = "metadata", feature = "rhai"))]
 mod signatures_documentees {
-    use super::*;
+    use super::{crypto_module, crypto_rhai_register};
+    use rhai::Engine;
 
-    /// Signatures attendues du groupe `hashes`, écrites à la main depuis les closures
-    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
-    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[("crc32_hash", "crc32_hash(text: string) -> u32")];
+    fn signatures_attendues() -> Vec<&'static str> {
+        let mut attendues = vec![
+            "sha256(text: string) -> string",
+            "crc32_hash(text: string) -> u32",
+        ];
+        #[cfg(feature = "crypto")]
+        attendues.extend([
+            "bcrypt_hash(text: string) -> string",
+            "new_argon() -> Argon",
+            "hash(argon: &mut Argon, password: string) -> string",
+            "gen_private_key(algo: string) -> string",
+            "gen_private_key(algo: string, bits: i64) -> string",
+        ]);
+        attendues
+    }
 
     /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
     fn ajoutees_par_enregistreur() -> Vec<String> {
-        let mut engine = rhai::Engine::new_raw();
-        hashes_rhai_register(&mut engine);
+        let mut engine = Engine::new_raw();
+        crypto_rhai_register(&mut engine);
         engine.gen_fn_signatures(false).into_iter().collect()
     }
 
     /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
     /// retiré : seuls les noms et types comptent).
     fn ajoutees_par_module() -> Vec<String> {
-        let mut engine = rhai::Engine::new_raw();
-        engine.register_static_module("m", hashes_module().into());
+        let mut engine = Engine::new_raw();
+        engine.register_static_module("m", crypto_module().into());
         engine
             .gen_fn_signatures(false)
             .into_iter()
@@ -1110,10 +1074,7 @@ mod signatures_documentees {
     fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
         let mut obtenues = ajoutees;
         obtenues.sort();
-        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
-            .iter()
-            .map(|(_, signature)| (*signature).to_string())
-            .collect();
+        let mut attendues: Vec<String> = signatures_attendues().into_iter().map(str::to_string).collect();
         attendues.sort();
         assert_eq!(obtenues, attendues, "signatures de la face {face}");
     }
@@ -1130,102 +1091,23 @@ mod signatures_documentees {
 
     #[test]
     fn scenario_signatures_documentees_completude() {
+        let attendues = signatures_attendues().len();
         assert_eq!(
             ajoutees_par_enregistreur().len(),
-            SIGNATURES_ATTENDUES.len(),
+            attendues,
             "une fonction du groupe sans entrée de table fait échouer ce test"
         );
         assert_eq!(
             ajoutees_par_module().len(),
-            SIGNATURES_ATTENDUES.len(),
+            attendues,
             "jumeau module : une fonction sans entrée de table fait échouer ce test"
         );
     }
 
     #[test]
     fn scenario_signatures_documentees_sans_vocabulaire_rust() {
-        let mut engine = rhai::Engine::new();
-        hashes_rhai_register(&mut engine);
-        for signature in engine.gen_fn_signatures(false) {
-            assert!(
-                !signature.contains("String") && !signature.contains("ImmutableString"),
-                "signature hors vocabulaire rhai : {signature}"
-            );
-        }
-    }
-}
-
-#[cfg(all(test, feature = "metadata", feature = "crypto"))]
-mod signatures_documentees_crypto {
-    use super::*;
-
-    /// Signatures attendues du groupe `crypto_hashes`, écrites à la main depuis les closures
-    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
-    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
-        ("bcrypt_hash", "bcrypt_hash(text: string) -> string"),
-        ("new_argon", "new_argon() -> Argon"),
-        ("hash", "hash(argon: &mut Argon, password: string) -> string"),
-    ];
-
-    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
-    fn ajoutees_par_enregistreur() -> Vec<String> {
-        let mut engine = rhai::Engine::new_raw();
-        crypto_hashes_rhai_register(&mut engine);
-        engine.gen_fn_signatures(false).into_iter().collect()
-    }
-
-    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
-    /// retiré : seuls les noms et types comptent).
-    fn ajoutees_par_module() -> Vec<String> {
-        let mut engine = rhai::Engine::new_raw();
-        engine.register_static_module("m", crypto_hashes_module().into());
-        engine
-            .gen_fn_signatures(false)
-            .into_iter()
-            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
-            .collect()
-    }
-
-    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
-    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
-        let mut obtenues = ajoutees;
-        obtenues.sort();
-        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
-            .iter()
-            .map(|(_, signature)| (*signature).to_string())
-            .collect();
-        attendues.sort();
-        assert_eq!(obtenues, attendues, "signatures de la face {face}");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_enregistreur_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_jumeau_module_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_completude() {
-        assert_eq!(
-            ajoutees_par_enregistreur().len(),
-            SIGNATURES_ATTENDUES.len(),
-            "une fonction du groupe sans entrée de table fait échouer ce test"
-        );
-        assert_eq!(
-            ajoutees_par_module().len(),
-            SIGNATURES_ATTENDUES.len(),
-            "jumeau module : une fonction sans entrée de table fait échouer ce test"
-        );
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
-        let mut engine = rhai::Engine::new();
-        crypto_hashes_rhai_register(&mut engine);
+        let mut engine = Engine::new();
+        crypto_rhai_register(&mut engine);
         for signature in engine.gen_fn_signatures(false) {
             assert!(
                 !signature.contains("String") && !signature.contains("ImmutableString"),

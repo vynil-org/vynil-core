@@ -1,14 +1,13 @@
 //! YAML ↔ JSON / Rhai helpers.
 //!
 //! The Rust helpers (`yaml_str_to_json`, `yaml_serialize_to_string`) are always available;
-//! the Rhai helpers (`yaml_encode`, `yaml_decode`, `yaml_decode_multi`) are registered by
-//! `yaml_rhai_register` when the `rhai` feature is enabled.
+//! the Rhai helpers (`yaml_encode`, `yaml_decode`, `yaml_decode_multi`) are granted through the
+//! `core` group of `crate::engine::core_rhai_register` when the `rhai` feature is enabled.
 
 #[cfg(feature = "rhai")] use crate::engine::{Target, register_at};
 use crate::{Error, Result};
 #[cfg(feature = "rhai")] use crate::{RhaiRes, rhai_err};
-#[cfg(feature = "rhai")]
-use rhai::{Dynamic, Engine, ImmutableString, Map, Module};
+#[cfg(feature = "rhai")] use rhai::{Dynamic, ImmutableString, Map};
 
 /// Parses a YAML string to a `serde_json::Value`.
 ///
@@ -97,49 +96,13 @@ fn yaml_key_to_string(key: serde_yaml::Value, position: usize) -> RhaiRes<String
     }
 }
 
-/// Registers the `yaml_encode` / `yaml_decode` / `yaml_decode_multi` helpers on a Rhai `engine`.
-///
-/// Module twin: [`yaml_module`] — same list of registrations, same semantics.
-///
-/// # Errors
-///
-/// This function itself never fails: the four registrations cannot error. Errors belong to the
-/// helpers it registers, which report `serde_yaml` rejections to the script as a catchable
-/// `YamlError: <message>` Rhai error — the same text [`yaml_str_to_json`] raises as
-/// [`Error::YamlError`].
+// ── Entrées du groupe `core` (yaml.sdd, engine.sdd) ────────────────────────────
+// Les enregistrements n'ont plus d'enregistreur public : `yaml_fns` est appelée par
+// `core_fns` de ./engine.rs.
+/// The `yaml` entries: each one a name, its function, its parameter names and its `///`
+/// comment (both under `metadata` only), applied to its target by the `core` group.
 #[cfg(feature = "rhai")]
-pub fn yaml_rhai_register(engine: &mut Engine) {
-    yaml_fns(&mut Target::Engine(engine));
-}
-
-/// Module twin of [`yaml_rhai_register`] (issue #19): the same functions, under the global
-/// namespace of a fresh [`Module`], registrable by [`Engine::register_static_module`] under
-/// the name the consumer picks. A twin that drifts from its registrar is a defect: both share
-/// the single `yaml_fns` list.
-#[cfg(feature = "rhai")]
-#[must_use]
-pub fn yaml_module() -> Module {
-    let mut module = Module::new();
-    yaml_fns(&mut Target::Module(&mut module));
-    module
-}
-
-// ── Motif double cible (yaml.sdd, issues #19 et #20) ──────────────────────────────
-// Les quatre enregistrements sont définis UNE seule fois, dans `yaml_fns`, comme une
-// liste (nom, fonction, noms des paramètres et commentaire `///` sous `metadata`). La
-// même liste s'applique soit directement à un Engine — les fonctions tombent dans
-// l'espace de noms global de l'engine et `rhai::Engine::gen_fn_signatures` les voit
-// comme avant l'introduction du motif, sans module global intermédiaire —, soit à un
-// Module dans ce même espace de noms global — le jumeau module, enregistrable par
-// `rhai::Engine::register_static_module` sous le nom que choisit le consommateur.
-// Le trio `Target` / `register_at` est celui du pilote de ./engine.rs, centralisé là
-// (`pub(crate)`) et importé ici.
-
-/// The four `yaml` registrations defined once (motif double cible): each entry is a name,
-/// its function, its parameter names and its `///` comment (both under `metadata` only).
-/// The bodies are verbatim the ones `yaml_rhai_register` used before the motif.
-#[cfg(feature = "rhai")]
-fn yaml_fns(target: &mut Target<'_>) {
+pub(crate) fn yaml_fns(target: &mut Target<'_>) {
     register_at(
         target,
         "yaml_encode",
@@ -197,6 +160,7 @@ fn yaml_fns(target: &mut Target<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "rhai")] use rhai::Engine;
 
     // Scenario « document mapping converti en JSON » : `image: nginx\nreplicas: 3\n` rend un
     // `Value::Object` dont `image` vaut la chaîne `nginx` et `replicas` le nombre `3`.
@@ -476,11 +440,11 @@ mod tests {
 
     // Scenario « API Rust vivante sans la feature `rhai` » — verrou de COMPILATION, pas un
     // test décoratif : `./lib.rs` déclare `pub mod yaml;` sans aucun `#[cfg]` et les trois
-    // helpers ne portent pas de porte (seuls `yaml_rhai_register`, les deux conversions
+    // helpers ne portent pas de porte (seuls `core_rhai_register`, les deux conversions
     // privées et leurs `use` sont sous `#[cfg(feature = "rhai")]`). Ce test, placé hors de
     // toute porte interne, EST joué sous `cargo test --no-default-features` : appeler les
     // trois helpers sous cette porte prouve qu'ils compilent et s'appellent sans `rhai`.
-    // L'absence de `yaml_rhai_register` sous cette porte est verrouillée à la compilation
+    // L'absence de `core_rhai_register` sous cette porte est verrouillée à la compilation
     // par son `#[cfg]` (tout appel hors porte échouerait à compiler), et `./engine.rs` n'est
     // pas compilé sans `rhai`. Le reste du verrou est outillage : `cargo hack --each-feature`.
     #[test]
@@ -518,11 +482,11 @@ mod tests {
         use super::*;
 
 
-        // Engine fraîchement enregistré par `yaml_rhai_register` (spec : c'est l'enregistreuse
+        // Engine fraîchement enregistré par `core_rhai_register` (spec : c'est l'enregistreuse
         // qui est contractuelle, pas `Script::new_bare` — réservé au Scenario d'intégration).
         fn engine() -> Engine {
             let mut e = Engine::new();
-            crate::yaml::yaml_rhai_register(&mut e);
+            crate::engine::core_rhai_register(&mut e);
             e
         }
 
@@ -1157,7 +1121,7 @@ mod tests {
                 "l'échec devait être une erreur de fonction inconnue, obtenu : {err}"
             );
             // Après enregistrement sur le MÊME engine : le même script réussit.
-            crate::yaml::yaml_rhai_register(&mut e);
+            crate::engine::core_rhai_register(&mut e);
             let v = e
                 .eval::<Dynamic>(r#"yaml_decode("a: 1")["a"]"#)
                 .expect("après enregistrement, `yaml_decode` doit réussir");
@@ -1182,7 +1146,7 @@ mod tests {
 
         // Scenario « engine de `Script::new_bare` livré avec les trois noms » — seul Scenario
         // d'intégration : engine construit par `Script::new_bare` (chemin de résolution vide),
-        // les trois noms ayant été posés par `yaml_rhai_register`.
+        // les trois noms ayant été posés par `core_rhai_register`.
         #[test]
         fn scenario_engine_new_bare_livre_avec_les_trois_noms() {
             let mut s = crate::engine::Script::new_bare(vec![]);
@@ -1216,7 +1180,7 @@ mod tests {
 
         // ════════════════════════════════════════════════════════════════════
         // Tâche « Jumeau module et documentation » (issues #19 et #20) —
-        // Scenario « yaml_module équivaut à yaml_rhai_register » et Scenario
+        // Scenario « jumeau `core` équivaut à l'enregistreur » et Scenario
         // « fonctions documentées sous metadata (yaml) ». Le motif est celui du
         // pilote de ./engine.rs : une seule liste d'enregistrements appliquée
         // soit à l'Engine (fonctions directes, namespace global), soit au
@@ -1226,6 +1190,7 @@ mod tests {
         // ════════════════════════════════════════════════════════════════════
 
         /// Les quatre enregistrements du module, vus par leurs trois noms de script.
+        #[cfg(feature = "metadata")]
         const NOMS_YAML: [&str; 3] = ["yaml_encode", "yaml_decode", "yaml_decode_multi"];
 
         /// Engine vierge portant le jumeau module enregistré par
@@ -1236,43 +1201,6 @@ mod tests {
             engine
         }
 
-        /// Noms de fonctions d'un engine, hors packages standard de `rhai`
-        /// (introspection `collect_fn_metadata`, disponible sous toutes les portes).
-        fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
-            engine
-                .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
-                .into_iter()
-                .collect()
-        }
-
-        fn set_of(noms: &[&str]) -> std::collections::BTreeSet<String> {
-            noms.iter().map(|nom| (*nom).to_string()).collect()
-        }
-
-        /// Noms qu'un jumeau module ajoute à un `Engine::new` par
-        /// `register_static_module` sous `m` (diff sur la baseline, préfixe `m::`
-        /// retiré s'il est porté par le nom).
-        fn names_added_by_module(module: rhai::Module) -> std::collections::BTreeSet<String> {
-            let apres = registered_names(&engine_with_module(module));
-            let avant = registered_names(&Engine::new());
-            apres
-                .difference(&avant)
-                .map(|nom| {
-                    let s = nom.as_str();
-                    s.strip_prefix("m::").unwrap_or(s).to_string()
-                })
-                .collect()
-        }
-
-        /// Noms qu'un enregistreur ajoute à un `Engine::new` vierge (diff sur la baseline).
-        fn names_added_by(register: impl Fn(&mut Engine)) -> std::collections::BTreeSet<String> {
-            let mut engine = Engine::new();
-            register(&mut engine);
-            let apres = registered_names(&engine);
-            let avant = registered_names(&Engine::new());
-            apres.difference(&avant).cloned().collect()
-        }
-
         /// Rejoue les appels représentatifs : nom nu sur l'engine de l'enregistreur,
         /// nom nu ET qualifié `m::nom` sur l'engine du jumeau module — mêmes valeurs
         /// rendues, et sur échec trois échecs portant le même noyau de message quand
@@ -1280,8 +1208,8 @@ mod tests {
         /// `rhai`, non contractée).
         fn assert_module_equivalent(calls: &[(&str, &str, Option<&str>)]) {
             let mut nu = Engine::new();
-            crate::yaml::yaml_rhai_register(&mut nu);
-            let jumeau = engine_with_module(crate::yaml::yaml_module());
+            crate::engine::core_rhai_register(&mut nu);
+            let jumeau = engine_with_module(crate::engine::core_module());
             for (bare, qualified, marqueur) in calls {
                 let rn = nu.eval::<Dynamic>(bare);
                 let rb = jumeau.eval::<Dynamic>(bare);
@@ -1321,23 +1249,13 @@ mod tests {
             }
         }
 
-        /// Scenario « `yaml_module` équivaut à `yaml_rhai_register` », premières faces :
+        /// Scenario « `core_module` équivaut à `core_rhai_register` », premières faces :
         /// les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus
         /// ni en moins) et les appels représentatifs — valeurs comme erreurs — sont
         /// identiques entre nom nu sur l'engine de l'enregistreur, nom nu et nom
         /// qualifié `m::nom` sur l'engine du jumeau module.
         #[test]
-        fn scenario_yaml_module_equaut_a_yaml_rhai_register() {
-            assert_eq!(
-                names_added_by_module(crate::yaml::yaml_module()),
-                names_added_by(crate::yaml::yaml_rhai_register),
-                "le jumeau module et l'enregistreur ajoutent exactement les mêmes noms"
-            );
-            assert_eq!(
-                names_added_by_module(crate::yaml::yaml_module()),
-                set_of(&NOMS_YAML),
-                "le jumeau module rend exactement les trois noms du module, rien d'autre"
-            );
+        fn scenario_yaml_jumeau_core_equivaut_a_l_enregistreur() {
             assert_module_equivalent(&[
                 // Les deux surcharges de `yaml_encode` : voie `Map`, voie `Dynamic`.
                 (
@@ -1392,7 +1310,7 @@ mod tests {
             ]);
         }
 
-        /// Scenario « `yaml_module` équivaut à `yaml_rhai_register` », dernier `And`
+        /// Scenario « `core_module` équivaut à `core_rhai_register` », dernier `And`
         /// (face introspection, sous `metadata`) : l'enregistreur garde ses fonctions
         /// DIRECTEMENT sur l'engine — `gen_fn_signatures` les liste comme avant la
         /// tâche, sans module global intermédiaire — et les signatures du jumeau,
@@ -1401,7 +1319,7 @@ mod tests {
         #[test]
         fn scenario_yaml_module_signatures_identiques_sous_metadata() {
             let mut nu = Engine::new();
-            crate::yaml::yaml_rhai_register(&mut nu);
+            crate::engine::core_rhai_register(&mut nu);
             let signatures_nues: std::collections::BTreeSet<String> = nu
                 .gen_fn_signatures(false)
                 .into_iter()
@@ -1414,7 +1332,7 @@ mod tests {
                      global intermédiaire : {signatures_nues:?}"
                 );
             }
-            let jumeau = engine_with_module(crate::yaml::yaml_module());
+            let jumeau = engine_with_module(crate::engine::core_module());
             let signatures_jumelles: std::collections::BTreeSet<String> = jumeau
                 .gen_fn_signatures(false)
                 .into_iter()
@@ -1431,7 +1349,7 @@ mod tests {
         }
 
         /// Scenario « fonctions documentées sous metadata (yaml) » : sous la feature
-        /// `metadata`, chaque fonction enregistrée par `yaml_rhai_register` porte un
+        /// `metadata`, chaque fonction enregistrée par `core_rhai_register` porte un
         /// commentaire non vide et les NOMS de ses paramètres, par les deux faces
         /// d'introspection nommées par le Scenario (`gen_fn_signatures`,
         /// `gen_fn_metadata_to_json`).
@@ -1439,7 +1357,7 @@ mod tests {
         #[test]
         fn scenario_fonctions_documentees_sous_metadata_yaml() {
             let mut engine = Engine::new();
-            crate::yaml::yaml_rhai_register(&mut engine);
+            crate::engine::core_rhai_register(&mut engine);
             // Face 1 — `collect_fn_metadata` : commentaire non vide, paramètres nommés.
             let documentees: Vec<(String, usize, usize)> = engine.collect_fn_metadata(
                 None,
@@ -1535,103 +1453,17 @@ mod tests {
         #[test]
         fn scenario_fonctions_documentees_sous_metadata_yaml_sans_la_feature() {
             let mut nu = Engine::new();
-            crate::yaml::yaml_rhai_register(&mut nu);
+            crate::engine::core_rhai_register(&mut nu);
             assert_eq!(
                 nu.eval::<String>(r"yaml_encode(42)").expect("42 s'encode"),
                 "42\n",
                 "sans `metadata`, `yaml_encode` rend la même valeur qu'avec"
             );
-            let jumeau = engine_with_module(crate::yaml::yaml_module());
+            let jumeau = engine_with_module(crate::engine::core_module());
             let v = jumeau
                 .eval::<Dynamic>(r#"m::yaml_decode("a: 1")["a"]"#)
                 .expect("sans `metadata`, le jumeau module rend les mêmes valeurs");
             assert_eq!(v.as_int().expect("`a` est un entier"), 1);
-            assert_eq!(
-                names_added_by_module(crate::yaml::yaml_module()),
-                set_of(&NOMS_YAML),
-                "sans `metadata`, le jumeau ajoute exactement les mêmes noms"
-            );
-        }
-    }
-}
-
-#[cfg(all(test, feature = "metadata"))]
-mod signatures_documentees {
-    use super::*;
-
-    /// Signatures attendues du groupe `yaml`, écrites à la main depuis les closures
-    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
-    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
-        ("yaml_encode", "yaml_encode(value: Dynamic) -> string"),
-        ("yaml_encode", "yaml_encode(value: map) -> string"),
-        ("yaml_decode", "yaml_decode(text: string) -> Dynamic"),
-        ("yaml_decode_multi", "yaml_decode_multi(text: string) -> array"),
-    ];
-
-    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
-    fn ajoutees_par_enregistreur() -> Vec<String> {
-        let mut engine = rhai::Engine::new_raw();
-        yaml_rhai_register(&mut engine);
-        engine.gen_fn_signatures(false).into_iter().collect()
-    }
-
-    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
-    /// retiré : seuls les noms et types comptent).
-    fn ajoutees_par_module() -> Vec<String> {
-        let mut engine = rhai::Engine::new_raw();
-        engine.register_static_module("m", yaml_module().into());
-        engine
-            .gen_fn_signatures(false)
-            .into_iter()
-            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
-            .collect()
-    }
-
-    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
-    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
-        let mut obtenues = ajoutees;
-        obtenues.sort();
-        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
-            .iter()
-            .map(|(_, signature)| (*signature).to_string())
-            .collect();
-        attendues.sort();
-        assert_eq!(obtenues, attendues, "signatures de la face {face}");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_enregistreur_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_jumeau_module_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_completude() {
-        assert_eq!(
-            ajoutees_par_enregistreur().len(),
-            SIGNATURES_ATTENDUES.len(),
-            "une fonction du groupe sans entrée de table fait échouer ce test"
-        );
-        assert_eq!(
-            ajoutees_par_module().len(),
-            SIGNATURES_ATTENDUES.len(),
-            "jumeau module : une fonction sans entrée de table fait échouer ce test"
-        );
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
-        let mut engine = rhai::Engine::new();
-        yaml_rhai_register(&mut engine);
-        for signature in engine.gen_fn_signatures(false) {
-            assert!(
-                !signature.contains("String") && !signature.contains("ImmutableString"),
-                "signature hors vocabulaire rhai : {signature}"
-            );
         }
     }
 }

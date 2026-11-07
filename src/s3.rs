@@ -4,7 +4,7 @@
 
 use crate::{
     Error, RhaiRes,
-    engine::{Target, register_at},
+    engine::{Target, register_free_at},
     rhai_err,
 };
 use futures::StreamExt;
@@ -154,9 +154,10 @@ pub fn s3_list_keys(
 /// [`s3_get_yaml`] et [`s3_list_keys`], mêmes signatures toutes-chaînes, même corps
 /// par `crate::rt::block_on`.
 fn s3_fns(target: &mut Target<'_>) {
-    register_at(
+    register_free_at(
         target,
         "s3_get_yaml",
+        "get_yaml",
         &[
             "/// Fetches object `prefix` + `key` (joined with one `/`) from `bucket`/`region`/`endpoint`",
             "/// and parses it YAML → Rhai value. Empty `access_key` and `secret_key` use the default",
@@ -175,9 +176,10 @@ fn s3_fns(target: &mut Target<'_>) {
         ],
         s3_get_yaml,
     );
-    register_at(
+    register_free_at(
         target,
         "s3_list_keys",
+        "list_keys",
         &[
             "/// Lists keys under `prefix` in `bucket`/`region`/`endpoint` — full locations (prefix",
             "/// included, never trimmed), sorted in lexicographic byte order; contents are never read.",
@@ -750,7 +752,19 @@ mod tests {
     // ════════════════════════════════════════════════════════════════════════
 
     /// Les enregistrements du module, vus par leurs noms de script.
+    #[cfg(feature = "metadata")]
     const NOMS_S3: [&str; 2] = ["s3_get_yaml", "s3_list_keys"];
+
+    /// Les mêmes deux entrées vues par le jumeau module : libres, noms courts (table de ../s3.sdd).
+    const NOMS_S3_JUMEAU: [&str; 2] = ["get_yaml", "list_keys"];
+
+    /// Renomme une signature de l'enregistreur vers le nom court du jumeau.
+    #[cfg(feature = "metadata")]
+    fn renomme_pour_jumeau(signature: &str) -> String {
+        signature
+            .replacen("s3_get_yaml(", "get_yaml(", 1)
+            .replacen("s3_list_keys(", "list_keys(", 1)
+    }
 
     /// Engine vierge portant le jumeau module enregistré par
     /// `rhai::Engine::register_static_module` sous le nom `m` (face qualifiée du Scenario).
@@ -813,26 +827,24 @@ mod tests {
             let rn = nu.eval::<Dynamic>(bare);
             let rb = jumeau.eval::<Dynamic>(bare);
             let rq = jumeau.eval::<Dynamic>(qualified);
-            match (&rn, &rb, &rq) {
-                (Ok(vn), Ok(vb), Ok(vq)) => {
-                    assert_eq!(
-                        vn.to_string(),
-                        vb.to_string(),
-                        "divergence en nom nu entre enregistreur et jumeau : {bare}"
-                    );
+            // Contrat amendé (Must « Noms courts du jumeau », ./s3.sdd) : une libre du jumeau
+            // ne se résout jamais nue, seulement qualifiée `m::nom`.
+            assert!(
+                rb.as_ref()
+                    .is_err_and(|e| e.to_string().contains("Function not found")),
+                "libre nue inconnue du jumeau attendue : {bare} -> {rb:?}"
+            );
+            match (&rn, &rq) {
+                (Ok(vn), Ok(vq)) => {
                     assert_eq!(
                         vn.to_string(),
                         vq.to_string(),
                         "divergence entre nom nu ({bare}) et qualifié ({qualified})"
                     );
                 }
-                (Err(en), Err(eb), Err(eq)) => {
+                (Err(en), Err(eq)) => {
                     if let Some(marqueur) = marqueur {
-                        for (label, err) in [
-                            ("enregistreur", &**en),
-                            ("jumeau nu", &**eb),
-                            ("jumeau qualifié", &**eq),
-                        ] {
+                        for (label, err) in [("enregistreur", &**en), ("jumeau qualifié", &**eq)] {
                             assert!(
                                 err.to_string().contains(marqueur),
                                 "l'erreur {label} doit porter « {marqueur} », obtenu : {err}"
@@ -842,7 +854,7 @@ mod tests {
                 }
                 _ => panic!(
                     "divergence entre {bare} (enregistreur : {rn:?}) et {qualified} \
-                     (jumeau nu : {rb:?} / jumeau qualifié : {rq:?})"
+                     (jumeau qualifié : {rq:?})"
                 ),
             }
         }
@@ -859,12 +871,19 @@ mod tests {
     fn scenario_s3_module_equaut_a_s3_rhai_register() {
         assert_eq!(
             names_added_by_module(crate::s3::s3_module()),
-            names_added_by(crate::s3::s3_rhai_register),
+            names_added_by(crate::s3::s3_rhai_register)
+                .iter()
+                .map(|nom| match nom.as_str() {
+                    "s3_get_yaml" => "get_yaml".to_string(),
+                    "s3_list_keys" => "list_keys".to_string(),
+                    autre => autre.to_string(),
+                })
+                .collect::<std::collections::BTreeSet<String>>(),
             "le jumeau module et l'enregistreur ajoutent exactement les mêmes noms"
         );
         assert_eq!(
             names_added_by_module(crate::s3::s3_module()),
-            set_of(&NOMS_S3),
+            set_of(&NOMS_S3_JUMEAU),
             "le jumeau module rend exactement les deux noms du module, rien d'autre"
         );
         assert_module_equivalent(&[
@@ -872,35 +891,35 @@ mod tests {
             // credentials (un seul des deux) parle avant toute requête.
             (
                 r#"s3_list_keys("b", "r", "", "", "ak", "")"#,
-                r#"m::s3_list_keys("b", "r", "", "", "ak", "")"#,
+                r#"m::list_keys("b", "r", "", "", "ak", "")"#,
                 Some("must be provided together"),
             ),
             (
                 r#"s3_get_yaml("b", "r", "", "", "ak", "", "k")"#,
-                r#"m::s3_get_yaml("b", "r", "", "", "ak", "", "k")"#,
+                r#"m::get_yaml("b", "r", "", "", "ak", "", "k")"#,
                 Some("must be provided together"),
             ),
             (
                 r#"s3_list_keys("b", "r", "", "", "", "sk")"#,
-                r#"m::s3_list_keys("b", "r", "", "", "", "sk")"#,
+                r#"m::list_keys("b", "r", "", "", "", "sk")"#,
                 Some("must be provided together"),
             ),
             // Arités fausses : trois échecs de fonction inconnue (le texte
             // qualifié appartient à `rhai`, seul le fait d'échouer est rejoué).
             (
                 r#"s3_list_keys("b", "r", "", "", "ak")"#,
-                r#"m::s3_list_keys("b", "r", "", "", "ak")"#,
+                r#"m::list_keys("b", "r", "", "", "ak")"#,
                 None,
             ),
             (
                 r#"s3_get_yaml("b", "r", "", "", "ak", "", "k", "extra")"#,
-                r#"m::s3_get_yaml("b", "r", "", "", "ak", "", "k", "extra")"#,
+                r#"m::get_yaml("b", "r", "", "", "ak", "", "k", "extra")"#,
                 None,
             ),
             // Paramètre non chaîne : la face ne voit que des toutes-chaînes.
             (
                 r#"s3_get_yaml(1, "r", "", "", "ak", "", "k")"#,
-                r#"m::s3_get_yaml(1, "r", "", "", "ak", "", "k")"#,
+                r#"m::get_yaml(1, "r", "", "", "ak", "", "k")"#,
                 None,
             ),
         ]);
@@ -921,8 +940,9 @@ mod tests {
             .gen_fn_signatures(false)
             .into_iter()
             .filter(|s| s.starts_with("s3_"))
+            .map(|s| renomme_pour_jumeau(&s))
             .collect();
-        for nom in NOMS_S3 {
+        for nom in NOMS_S3_JUMEAU {
             assert!(
                 signatures_nues.iter().any(|s| s.starts_with(&format!("{nom}("))),
                 "`{nom}` doit rester une fonction directe de l'engine, sans module \
@@ -935,7 +955,7 @@ mod tests {
             .into_iter()
             .filter_map(|s| {
                 let s = s.strip_prefix("m::").unwrap_or(&s);
-                s.starts_with("s3_").then(|| s.to_string())
+                (s.starts_with("get_yaml(") || s.starts_with("list_keys(")).then(|| s.to_string())
             })
             .collect();
         assert_eq!(
@@ -1090,7 +1110,7 @@ mod tests {
         );
         let jumeau = engine_with_module(crate::s3::s3_module());
         let err = jumeau
-            .eval::<Dynamic>(r#"m::s3_get_yaml("b", "r", "", "", "ak", "", "k")"#)
+            .eval::<Dynamic>(r#"m::get_yaml("b", "r", "", "", "ak", "", "k")"#)
             .expect_err("sans `metadata`, le jumeau qualifié atteint le corps pareil");
         assert!(
             err.to_string().contains("must be provided together"),
@@ -1098,7 +1118,7 @@ mod tests {
         );
         assert_eq!(
             names_added_by_module(crate::s3::s3_module()),
-            set_of(&NOMS_S3),
+            set_of(&NOMS_S3_JUMEAU),
             "sans `metadata`, le jumeau ajoute exactement les mêmes noms"
         );
     }
@@ -1118,6 +1138,18 @@ mod signatures_documentees {
         (
             "s3_list_keys",
             "s3_list_keys(bucket: string, region: string, prefix: string, endpoint: string, access_key: string, secret_key: string) -> array",
+        ),
+    ];
+
+    /// Signatures du jumeau module (noms courts, libres qualifiées) : même vocabulaire, noms renommés.
+    const SIGNATURES_JUMEAU: &[(&str, &str)] = &[
+        (
+            "get_yaml",
+            "get_yaml(bucket: string, region: string, prefix: string, endpoint: string, access_key: string, secret_key: string, key: string) -> Dynamic",
+        ),
+        (
+            "list_keys",
+            "list_keys(bucket: string, region: string, prefix: string, endpoint: string, access_key: string, secret_key: string) -> array",
         ),
     ];
 
@@ -1141,10 +1173,10 @@ mod signatures_documentees {
     }
 
     /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
-    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, table: &[(&str, &str)], face: &str) {
         let mut obtenues = ajoutees;
         obtenues.sort();
-        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+        let mut attendues: Vec<String> = table
             .iter()
             .map(|(_, signature)| (*signature).to_string())
             .collect();
@@ -1154,12 +1186,12 @@ mod signatures_documentees {
 
     #[test]
     fn scenario_signatures_documentees_enregistreur_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), SIGNATURES_ATTENDUES, "enregistreur");
     }
 
     #[test]
     fn scenario_signatures_documentees_jumeau_module_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+        assert_egale_a_la_table(ajoutees_par_module(), SIGNATURES_JUMEAU, "jumeau module");
     }
 
     #[test]
@@ -1184,6 +1216,86 @@ mod signatures_documentees {
             assert!(
                 !signature.contains("String") && !signature.contains("ImmutableString"),
                 "signature hors vocabulaire rhai : {signature}"
+            );
+        }
+    }
+}
+
+// Table « Noms courts du jumeau » (décision du 2026-11-06, ./s3.sdd) : écrite à la main,
+// nom de l'enregistreur → nom du jumeau module. Les deux entrées sont LIBRES : qualifiées
+// seulement dans le jumeau (`s3::get_yaml`), jamais nues.
+#[cfg(all(test, feature = "s3"))]
+mod table_noms_courts {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    const TABLE: [(&str, &str); 2] = [("s3_get_yaml", "get_yaml"), ("s3_list_keys", "list_keys")];
+
+    fn noms_de(engine: &Engine) -> BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    fn ajoutes_par_enregistreur() -> BTreeSet<String> {
+        let mut engine = Engine::new();
+        s3_rhai_register(&mut engine);
+        noms_de(&engine)
+            .difference(&noms_de(&Engine::new()))
+            .cloned()
+            .collect()
+    }
+
+    fn ajoutes_par_module() -> BTreeSet<String> {
+        let mut engine = Engine::new();
+        engine.register_static_module("m", s3_module().into());
+        noms_de(&engine)
+            .difference(&noms_de(&Engine::new()))
+            .map(|nom| nom.strip_prefix("m::").unwrap_or(nom).to_string())
+            .collect()
+    }
+
+    /// Noms des fonctions de l'engine dont l'espace est `Internal` : les libres du jumeau,
+    /// appelables seulement qualifiées (`FuncMetadata::namespace`, pas le nom affiché).
+    fn noms_internes(engine: &rhai::Engine) -> std::collections::BTreeSet<String> {
+        engine
+            .collect_fn_metadata(
+                None,
+                |f| {
+                    (f.metadata.namespace == rhai::FnNamespace::Internal).then(|| f.metadata.name.to_string())
+                },
+                false,
+            )
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn table_enregistreur_garde_les_noms_historiques() {
+        let attendus: BTreeSet<String> = TABLE.iter().map(|(global, _)| (*global).to_string()).collect();
+        assert_eq!(ajoutes_par_enregistreur(), attendus);
+    }
+
+    #[test]
+    fn table_jumeau_pose_les_noms_courts() {
+        let attendus: BTreeSet<String> = TABLE.iter().map(|(_, court)| (*court).to_string()).collect();
+        assert_eq!(ajoutes_par_module(), attendus);
+    }
+
+    #[test]
+    fn table_libre_courte_inconnue_nue_et_qualifiee_disponible() {
+        let mut engine = Engine::new();
+        engine.register_static_module("s3", s3_module().into());
+        let erreur = engine
+            .eval::<rhai::Dynamic>(r#"get_yaml("a")"#)
+            .expect_err("une libre du jumeau ne se résout jamais nue");
+        assert!(erreur.to_string().contains("not found"), "appel nu : {erreur}");
+        let internes = noms_internes(&engine);
+        for (_, court) in TABLE {
+            assert!(
+                internes.contains(court),
+                "`{court}` absent des fonctions qualifiées du jumeau"
             );
         }
     }

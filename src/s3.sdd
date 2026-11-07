@@ -153,8 +153,10 @@ Exposes:
     dans un engine.
   @crate::s3::s3_module — `#[must_use] pub fn() -> @rhai::Module`, porte `s3`, jumeau de
     @crate::s3::s3_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
+    même comportement, enregistrable par @rhai::Engine::register_static_module sous le nom `s3` ;
+    décision du 2026-11-06 (règle des noms de ../vyvil-core.sdd) : les deux fonctions libres prennent des noms courts, qualifiés seulement (`s3::get_yaml`
+    pour `s3_get_yaml`, `s3::list_keys` pour `s3_list_keys`). L'enregistreur garde les noms
+    historiques dans l'espace global, inchangé pour ses appelants.
   Rien de plus : `build_store` reste privée, aucun type, aucune constante, aucun variant
     @Error propre ; aucun nom Rhai homophone (`s3_get`, `list_keys`) n'existe.
 
@@ -244,6 +246,9 @@ Tasks:
 
   [x] Lien intra-doc vers un item gated rédigé en texte brut (issue #25) : `Engine::gen_fn_signatures` en texte brut dans la rustdoc. Jumelle de « Tendre les
     lints rustdoc à tous les graphes de features » de ../tooling.sdd, cochée dans le même commit.
+  [x] Noms courts du jumeau (décision du 2026-11-06) : `s3_module` pose `get_yaml` et `list_keys` (libres,
+    qualifiées seulement) ; `s3_rhai_register` garde `s3_get_yaml` et `s3_list_keys`. Jumelle de la
+    tâche de ../vyvil-core.sdd.
 
 Scenario: s3 reste hors de new_bare même feature activée
   Given la crate compilée avec `s3` (donc `rhai` avec)
@@ -362,9 +367,9 @@ Scenario: s3_module équivaut à s3_rhai_register
   Given un @rhai::Engine où s3_rhai_register est appelé et un second, vierge, où le résultat de
     @crate::s3::s3_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
-    (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
+    (nom nu sur le premier ; sur le second, méthodes nues et fonctions libres qualifiées `m::nom_court`, un nom court libre appelé nu étant une fonction inconnue)
   Then les résultats et les erreurs sont identiques
-  And les deux ensembles de noms de fonctions sont égaux (aucune fonction en plus ni en moins ;
+  And les deux ensembles de noms de fonctions correspondent à la table écrite à la main (nom global → nom de module) de la tâche « noms courts » (aucune fonction en plus ni en moins, hors alias réservés à l'enregistreur ;
     comparés sous `metadata`, par l'introspection de Rhai)
   And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
     fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global

@@ -5,8 +5,8 @@ Purpose:
     Handlebars : @crate::hashes::crc32_hash (CRC-32 déterministe, toujours disponible, hors
     `crypto`), @crate::hashes::bcrypt_hash (bcrypt à coût fixe, feature `crypto`) et
     @crate::hashes::Argon (argon2id à sel tiré à la construction, feature `crypto`) ;
-    @crate::hashes::hashes_rhai_register et @crate::hashes::crypto_hashes_rhai_register les
-    branchent sur les scripts — fine colle sans I/O ni persistance, l'algorithmique appartenant
+    @crate::hashes::crypto_rhai_register (module `crypto` du catalogue de ../vyvil-core.sdd, avec `sha256` de
+    ./engine.rs et `gen_private_key` de ./key.rs) les branche sur les scripts — fine colle sans I/O ni persistance, l'algorithmique appartenant
     aux crates `argon2`, `bcrypt` et `crc32fast`.
 
 Owns:
@@ -23,10 +23,11 @@ References:
     `#[from]`). La table de features de la rustdoc racine est vraie depuis la tâche close de
     ./src/lib.sdd : `argon_hash` y figure Handlebars seul et la face script crypto est nommée
     par le trio `Argon` (`new_argon` + `.hash`) / `bcrypt_hash` / `gen_private_key`.
-  ./engine.rs — @Script::new_bare est l'unique appelant des deux registres :
-    @crate::hashes::hashes_rhai_register inconditionnellement (./engine.rs vit déjà sous `rhai`
-    seul, après @crate::chrono::chrono_rhai_register), @crate::hashes::crypto_hashes_rhai_register
-    dans un bloc `#[cfg(feature = "crypto")]`, avant @crate::key::key_rhai_register — la condition
+  ./engine.rs — @Script::new_bare est l'unique appelant de @crate::hashes::crypto_rhai_register,
+    inconditionnellement (./engine.rs vit déjà sous `rhai` seul), juste après
+    @crate::engine::host_rhai_register ; ce registre pose `sha256` (liste `pub(crate)`
+    @crate::engine::sha256_fns) et `crc32_hash` sous `rhai` seul, et, dans des blocs
+    `#[cfg(feature = "crypto")]`, `bcrypt_hash`, `Argon` et @crate::key::key_fns — la condition
     effective du câblage script complet est donc `rhai` + `crypto`. Aucun test `crc32_hash`,
     `bcrypt_hash`, `new_argon` ou `.hash` n'existe dans le repo.
   ./hbs.rs — sous `hbs`, le helper `crc32_hash` est enregistré hors `crypto` ; sous `hbs` +
@@ -42,10 +43,11 @@ References:
 
 Must:
   La table des portes est exactement : @crate::hashes::crc32_hash sans aucune feature ;
-    @crate::hashes::hashes_rhai_register sous `rhai` seule ; @crate::hashes::Argon avec son
+    @crate::hashes::crypto_rhai_register (avec `sha256` et `crc32_hash`) et son jumeau
+    @crate::hashes::crypto_module sous `rhai` seule ; @crate::hashes::Argon avec son
     @crate::hashes::Argon::new, @crate::hashes::Argon::hash et @crate::hashes::bcrypt_hash sous `crypto` ;
-    @crate::hashes::Argon::rhai_hash et @crate::hashes::crypto_hashes_rhai_register sous
-    `crypto` + `rhai`. ./lib.rs ne gant pas le module : sans `crypto`, ./hashes.rs compile et ne
+    @crate::hashes::Argon::rhai_hash et les entrées `bcrypt_hash`, `Argon`, `new_argon`, `hash`,
+    `gen_private_key` de @crate::hashes::crypto_rhai_register sous `crypto` + `rhai`. ./lib.rs ne gant pas le module : sans `crypto`, ./hashes.rs compile et ne
     livre que la face crc32.
   @crate::hashes::Argon est un @core::fmt::Debug et @std::clone::Clone dérivés à deux champs
     privés, sel et hacheur : @crate::hashes::Argon::new — seul chemin de création, aucune
@@ -84,9 +86,10 @@ Must:
     (CRC-32/ISO-HDLC, variante IEEE à init 0 et XOR final 0, vérification faite contre
     `zlib.crc32`) : déterministe, sans sel, rendu dans `0` à `4294967295` ; la chaîne vide rend
     la valeur exacte `0`, la chaîne `hello` rend la valeur exacte `907060870`.
-  @crate::hashes::hashes_rhai_register n'enregistre qu'une fonction, `crc32_hash` unaire sur
-    @rhai::ImmutableString, et rien d'autre. @crate::hashes::crypto_hashes_rhai_register
-    n'enregistre exactement que : la fonction unaire `bcrypt_hash` sur @rhai::ImmutableString
+  @crate::hashes::crypto_rhai_register (et son jumeau @crate::hashes::crypto_module, une seule liste
+    `crypto_fns`) n'enregistre, sous `rhai` seule, que `sha256` (entrée @crate::engine::sha256_fns) et
+    `crc32_hash` unaire sur @rhai::ImmutableString, et rien d'autre ; sous `crypto` en plus,
+    exactement : la fonction unaire `bcrypt_hash` sur @rhai::ImmutableString
     en @crate::RhaiRes ; le type d'objet nommé `Argon` par @crate::engine::register_type_at ;
     @crate::hashes::Argon::new sous le nom de script `new_argon`, arité zéro ; et
     @crate::hashes::Argon::rhai_hash sous le nom de méthode `hash` — c'est bien la porte Rhai
@@ -98,8 +101,8 @@ Must:
     de @crate::Error (`Argon2 password_hash error ...` ou `Bcrypt hash error ...`), sans chaîne
     vide de déguisement — motif réservé aux helpers ./hbs.rs.
   Seuils de harnais : @crate::hashes::crc32_hash porte l'attribut `#[must_use]`, les autres
-    fonctions non (leur @crate::Result l'est déjà), hormis les jumeaux @crate::hashes::hashes_module
-    et @crate::hashes::crypto_hashes_module qui le portent ; chaque item `pub` porte sa
+    fonctions non (leur @crate::Result l'est déjà), hormis le jumeau @crate::hashes::crypto_module
+    qui le porte ; chaque item `pub` porte sa
     rustdoc avec sa section `# Errors` pour les deux fallibles ; le code de production est sans
     @std::result::Result::unwrap ni @std::option::Option::expect hors cas prouvé, la propagation
     se faisant par `?`, @std::result::Result::map_err et le `#[from]` des variantes d'@Error.
@@ -108,7 +111,7 @@ Must not:
   Enregistrer côté Rhai une fonction nommée `argon_hash` ou `argon` : les noms côté script sont
     `crc32_hash`, `bcrypt_hash`, `new_argon` et la méthode `hash` ; `argon_hash` n'existe que
     comme nom Handlebars dans ./hbs.rs ; la rustdoc de ./lib.rs doit le dire correctement.
-  Gater @crate::hashes::crc32_hash ou @crate::hashes::hashes_rhai_register derrière `crypto` :
+  Gater @crate::hashes::crc32_hash ou les entrées `sha256`/`crc32_hash` de @crate::hashes::crypto_rhai_register derrière `crypto` :
     crc32 est la moitié non-crypto du module, disponible sous `--no-default-features` côté Rust
     et sous `rhai` seul côté script.
   Exposer une vérification de hachage (@argon2::Argon2::verify_password, @bcrypt::verify) depuis
@@ -144,29 +147,26 @@ Exposes:
     sous `crypto` + `rhai`, porte de script de @crate::hashes::Argon::hash.
   @crate::hashes::bcrypt_hash — signature `pub fn bcrypt_hash(password: String) -> @crate::Result<@std::string::String>`,
     sous `crypto`, sans `#[must_use]`.
-  @crate::hashes::hashes_rhai_register — signature `pub fn hashes_rhai_register(engine: &mut @rhai::Engine)`,
-    sous `rhai` seule.
-  @crate::hashes::crypto_hashes_rhai_register — signature `pub fn crypto_hashes_rhai_register(engine: &mut @rhai::Engine)`,
-    porte combinée `crypto` + `rhai`.
+  @crate::hashes::crypto_rhai_register — signature `pub fn crypto_rhai_register(engine: &mut @rhai::Engine)`,
+    sous `rhai` ; ses entrées `bcrypt_hash`, `Argon`, `new_argon`, `hash` et `gen_private_key` sous
+    la porte combinée `crypto` + `rhai`. Remplace les quatre enregistreurs et jumeaux de 0.9.0
+    (`hashes_*`, `crypto_hashes_*`, `key_*`).
   Fonction de script `crc32_hash(text)` — unaire, paramètre @rhai::ImmutableString, rend un
     `u32` (`type_of` = `u32`, pas `int`) dans `0` à `4294967295`.
   Fonction de script `bcrypt_hash(text)` — unaire, paramètre @rhai::ImmutableString, rend un
-    `string` ou échoue en @crate::RhaiRes ; inconnue sous @crate::hashes::hashes_rhai_register
-    seule.
+    `string` ou échoue en @crate::RhaiRes ; inconnue sous @crate::hashes::crypto_rhai_register
+    sans la feature `crypto`.
   Constructeur de script `new_argon()` — arité zéro, rend un objet de `type_of` = `Argon` à sel
     frais.
   Méthode de script `<Argon>.hash(password)` — unaire sur l'objet, mot de passe en `string`,
     rend la chaîne PHC ou échoue en @crate::RhaiRes ; existe aussi en forme globale
     `hash(argon, password)`.
   Rien n'est réexporté à la racine : le module s'atteint par son chemin @crate::hashes.
-  @crate::hashes::hashes_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
-    @crate::hashes::hashes_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
-  @crate::hashes::crypto_hashes_module — `#[must_use] pub fn() -> @rhai::Module`, porte `crypto` et `rhai`, jumeau de
-    @crate::hashes::crypto_hashes_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
+  @crate::hashes::crypto_module — `#[must_use] pub fn() -> @rhai::Module`, porte `rhai`, jumeau de
+    @crate::hashes::crypto_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
+    mêmes noms (aucun nom court, `sha256` et `bcrypt_hash` ne répètent pas `crypto`), même
+    comportement, enregistrable par @rhai::Engine::register_static_module sous le nom `crypto` ;
+    l'enregistreur reste. Contenu variable selon les features, pas son nom.
 
 Accepts:
   @crate::hashes::crc32_hash — tout @std::string::String, vide et non-ASCII compris, haché sur
@@ -181,9 +181,8 @@ Accepts:
   Les collages de script — exactement un argument de type chaîne (les deux unaires) ou zéro
     pour `new_argon` ; entiers, booléens, flottants, tableaux et objets ne coercent pas et
     échouent côté @rhai avant toute exécution.
-  @crate::hashes::hashes_rhai_register et @crate::hashes::crypto_hashes_rhai_register — un
-    `&mut` @rhai::Engine fourni par l'appelant, qu'elles ne lisent pas et sur lequel elles
-    n'ajoutent que les noms listés en `Exposes`.
+  @crate::hashes::crypto_rhai_register — un `&mut` @rhai::Engine fourni par l'appelant, qu'elle ne
+    lit pas et sur lequel elle n'ajoute que les noms listés en `Exposes`.
 
 Returns:
   @crate::hashes::crc32_hash — un @std::primitive::u32 : `0` pour l'entrée vide, `907060870`
@@ -195,7 +194,7 @@ Returns:
     deux appels rendent deux chaînes différentes, sel frais à chaque appel.
   Les rendus de script — crc32 comme `u32`, bcrypt et `.hash` comme `string`, `new_argon` comme
     objet `Argon`.
-  @crate::hashes::hashes_rhai_register et @crate::hashes::crypto_hashes_rhai_register — `()`.
+  @crate::hashes::crypto_rhai_register — `()`.
 
 Raises:
   @crate::hashes::Argon::hash — @crate::Error::Argon2hash quand
@@ -229,7 +228,7 @@ Raises:
     via @crate::rhai_err : `Argon2 password_hash error ...` pour `.hash`, `Bcrypt hash error ...`
     pour `bcrypt_hash` ; @crc32fast::Hasher de crc32 ne pouvant échouer, aucune erreur ne sort
     du collage.
-  @crate::hashes::hashes_rhai_register et @crate::hashes::crypto_hashes_rhai_register — rien :
+  @crate::hashes::crypto_rhai_register — rien :
     les enregistrements @rhai::Engine sont infaillibles.
 
 Handles:
@@ -281,7 +280,7 @@ Tasks:
     consigner tenue par la structure plutôt que d'écrire un test décoratif.
   [x] Convertir chaque Scenario de cette spec en test Rust passant dans un `mod tests` sous
     `#[cfg(test)]` de ./hashes.rs — Rust direct, @rhai::Engine local enregistré par
-    @crate::hashes::hashes_rhai_register, @crate::hashes::crypto_hashes_rhai_register ou
+    @crate::hashes::crypto_rhai_register ou
     @Script::new_bare ; les Scenario de gating appartiennent à la batterie de features de la
     crate ; le contrôle croisé @argon2::Argon2::verify_password n'est réaliste qu'en test
     inline sous `crypto`, argon2 n'étant pas dev-dependency. ./hashes.rs ne contient aujourd'hui
@@ -327,6 +326,21 @@ Tasks:
     d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
     un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
 
+  [x] Verrouiller la borne bcrypt `71`/`72` par la porte script (issue #43) : le contrat est acquis
+    (`Must`, Scenario « bcrypt refuse cent octets », CHANGELOG 0.8.0 et docs disent déjà la rupture) et la
+    borne est verrouillée en Rust (`bcrypt_boundary_accepts_71_rejects_72`) et par le helper Handlebars
+    (./hbs.sdd), mais la porte Rhai ne l'est qu'à `100` octets. Tests d'abord, depuis le Scenario
+    « bcrypt : la borne 71/72 par le script » ci-dessous. Aucun changement de code attendu : si le test
+    rougit, c'est un écart de contrat à remonter, pas à corriger en silence. Seule tâche restante de
+    l'issue #43, qui se ferme avec elle.
+  [x] Fournir `crypto` (décision du 2026-11-06) : @crate::hashes::crypto_rhai_register et
+    @crate::hashes::crypto_module selon le catalogue de ../vyvil-core.sdd (`sha256` — lue de ./engine.rs,
+    liste `pub(crate)` —, `crc32_hash`, et sous `crypto` `bcrypt_hash`, `Argon`, `new_argon`, `hash`,
+    `gen_private_key`), qui remplacent `hashes_rhai_register`, `crypto_hashes_rhai_register` et leurs
+    jumeaux. Reprendre à la clôture les Scenario « rhai seul ne branche que crc32 », « crypto seul… »,
+    « crypto et rhai livrent tout via new_bare » et les deux « équivaut à ». Jumelle de « Fournir `core`
+    et `host` » de ./engine.sdd et de la tâche de ./key.sdd, cochée dans le même commit.
+
 Scenario: la face Rust crc32 survit sans aucune feature
   Given la crate compilée par `cargo check --no-default-features`
   Then @crate::hashes::crc32_hash compile et s'appelle depuis ce graphe
@@ -348,15 +362,15 @@ Scenario: bcrypt et argon acceptent le mot de passe vide
 
 Scenario: rhai seul ne branche que crc32
   Given la crate compilée par `cargo check --no-default-features --features rhai`
-  When un @rhai::Engine enregistré par @crate::hashes::hashes_rhai_register évalue `crc32_hash("hello")`
+  When un @rhai::Engine enregistré par @crate::hashes::crypto_rhai_register, sans la feature `crypto`, évalue `crc32_hash("hello")`
   Then l'évaluation réussit et rend la valeur `907060870` de `type_of` `u32`
-  And `bcrypt_hash("x")` comme `new_argon()` y échouent en fonction inconnue
+  And `sha256("a")` y réussit, `bcrypt_hash("x")` comme `new_argon()` y échouent en fonction inconnue
 
 Scenario: crypto seul garde la face Rust sans aucune glue
   Given la crate compilée par `cargo check --no-default-features --features crypto`
   Then @crate::hashes::Argon, @crate::hashes::Argon::new et @crate::hashes::bcrypt_hash compilent
     et s'appellent, crc32 avec eux
-  But @crate::hashes::hashes_rhai_register et @crate::hashes::crypto_hashes_rhai_register ne sont
+  But @crate::hashes::crypto_rhai_register n'est
     pas compilées et ./engine.rs n'existe pas
 
 Scenario: crypto et rhai livrent tout via new_bare
@@ -385,7 +399,7 @@ Scenario: une instance rejoue son sel, Rust comme Rhai
   Given une instance `a` d'@crate::hashes::Argon créée sous `crypto`
   When `a.hash("p")` est appelée deux fois sur cette même instance
   Then les deux chaînes sont identiques, segment de sel compris
-  And côté Rhai, après enregistrement par @crate::hashes::crypto_hashes_rhai_register,
+  And côté Rhai, après enregistrement par @crate::hashes::crypto_rhai_register,
     `let a = new_argon(); a.hash("p") == a.hash("p")` rend vrai
 
 Scenario: le clone préserve le sel
@@ -416,8 +430,15 @@ Scenario: bcrypt refuse cent octets
   And un mot de passe de `71` octets est encore accepté
   But un mot de passe de `72` octets est déjà refusé, la borne utile étant `71` et non `72`
 
+Scenario: bcrypt : la borne 71/72 par le script
+  Given un engine portant `crypto_rhai_register` sous `crypto`
+  When un script évalue `bcrypt_hash("x" * 71)` (chaîne de 71 octets)
+  Then le résultat est une chaîne de 60 caractères préfixée `$2b$12$`
+  When un script évalue `bcrypt_hash` sur une chaîne de 72 octets
+  Then l'évaluation échoue avec `Bcrypt hash error Expected 72 bytes or fewer; found 73 bytes`
+
 Scenario: le script ne coerce aucun scalaire vers les collages
-  Given un @rhai::Engine enregistré par @crate::hashes::crypto_hashes_rhai_register
+  Given un @rhai::Engine enregistré par @crate::hashes::crypto_rhai_register
   When un script évalue `crc32_hash(1)`, `bcrypt_hash(true)`, `new_argon(0)` ou
     `let a = new_argon(); a.hash(123)`
   Then les trois premières évaluations échouent en fonction inconnue
@@ -425,23 +446,22 @@ Scenario: le script ne coerce aucun scalaire vers les collages
   But aucune des fonctions Rust du module ne s'exécute pour ces quatre appels
 
 Scenario: la forme globale hash réussit aussi
-  Given un @rhai::Engine enregistré par @crate::hashes::crypto_hashes_rhai_register
+  Given un @rhai::Engine enregistré par @crate::hashes::crypto_rhai_register
   When un script évalue `let a = new_argon(); hash(a, "p")`
   Then l'évaluation réussit et rend une chaîne commençant par `$argon2id$v=19$m=19456,t=2,p=1$`
   And cette forme globale vient de l'entrée @crate::engine::register_at exposant la méthode en fonction
     de premier argument l'objet
 
 Scenario: le réenregistrement reste sans effet visible
-  Given un @rhai::Engine déjà enregistré par @crate::hashes::hashes_rhai_register puis
-    @crate::hashes::crypto_hashes_rhai_register
-  When les deux mêmes registres sont rappelés une seconde fois sur cet engine
-  Then les deux nouveaux appels rendent `()` sans erreur
+  Given un @rhai::Engine déjà enregistré par @crate::hashes::crypto_rhai_register
+  When ce même registre est rappelé une seconde fois sur cet engine
+  Then le nouvel appel rend `()` sans erreur
   And `crc32_hash("hello")`, `bcrypt_hash("p")` et `new_argon().hash("p")` réussissent avec les
     mêmes formes de sortie qu'auparavant
 
-Scenario: hashes_module équivaut à hashes_rhai_register
-  Given un @rhai::Engine où hashes_rhai_register est appelé et un second, vierge, où le résultat de
-    @crate::hashes::hashes_module est enregistré par register_static_module sous le nom `m`
+Scenario: crypto_module équivaut à crypto_rhai_register sans la feature crypto
+  Given un @rhai::Engine où crypto_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::hashes::crypto_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
     (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
   Then les résultats et les erreurs sont identiques
@@ -450,9 +470,9 @@ Scenario: hashes_module équivaut à hashes_rhai_register
   And sur le premier engine, @rhai::Engine::gen_fn_signatures sans les paquets liste les mêmes
     fonctions qu'avant : l'enregistreur n'a pas déplacé ses fonctions dans un module global
 
-Scenario: crypto_hashes_module équivaut à crypto_hashes_rhai_register
-  Given un @rhai::Engine où crypto_hashes_rhai_register est appelé et un second, vierge, où le résultat de
-    @crate::hashes::crypto_hashes_module est enregistré par register_static_module sous le nom `m`
+Scenario: crypto_module équivaut à crypto_rhai_register sous la feature crypto
+  Given sous `crypto`, un @rhai::Engine où crypto_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::hashes::crypto_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
     (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
   Then les résultats et les erreurs sont identiques
@@ -463,7 +483,7 @@ Scenario: crypto_hashes_module équivaut à crypto_hashes_rhai_register
 
 Scenario: fonctions documentées sous metadata (hashes)
   Given la crate compilée avec la feature `metadata` (porte `--all-features`)
-  When l'introspection de l'engine (hashes_rhai_register; crypto_hashes_rhai_register) liste ses fonctions
+  When l'introspection de l'engine (crypto_rhai_register) liste ses fonctions
     (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
   Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
     pas seulement leurs types

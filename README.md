@@ -21,12 +21,13 @@ abstractions (CRDs, package model, instance controllers).
 A plain `vynil-core = "x"` dependency (default features) gets all three, unchanged from previous
 releases. Each is independently optional for a consumer that only needs one — see below.
 
-The sixteen core helpers `new_bare` always registers come in three public, additive groups —
-`core_pure_rhai_register`, `core_host_rhai_register`, `core_sleep_rhai_register` (plus
-`fs_rhai_register` under `fs`) — so a consumer granting a script only part of them composes
-those groups onto a plain `rhai::Engine::new` instead. Every public `*_rhai_register` also has a
-`*_module()` twin registrable through `Engine::register_static_module` under a namespace of your
-choosing, and under the optional `metadata` feature each registered function carries its
+The Rhai functions come in domain modules — `core` (no host authority), `host` (environment, logs,
+and under `fs`/`shell` the disk and processes), `crypto`, `semver`, `password`, `oci`, `http`, `s3`
+and `k8s` — each with a public, additive `X_rhai_register(engine)` registrar that `new_bare` calls
+for the always-on modules, so a consumer granting a script only part of them composes those
+registrars onto a plain `rhai::Engine::new` instead. Every registrar also has a `X_module()` twin
+registrable through `Engine::register_static_module` under a namespace of your choosing, and under
+the optional `metadata` feature each registered function carries its
 comment and parameter names for introspection. `cancel::CancelToken` + `cancel::scope` make the
 crate's blocking native calls (`sleep`, network waits) interruptable per thread, completing
 `rhai::Engine::on_progress`. See [docs/rhai_helpers.md](docs/rhai_helpers.md).
@@ -46,6 +47,7 @@ crate's blocking native calls (`sleep`, network waits) interruptable per thread,
 | `fs` | off | Filesystem access from Rhai scripts | — |
 | `shell` | off | Shell command execution | — |
 | `password` | off | `gen_password`/`gen_password_alphanum` (off by default to avoid a name collision with a consumer's own password semantics) | — |
+| `quantity` | off | Kubernetes `Quantity` parser: `cpu_millis_of` / `memory_bytes_of` (exact integer arithmetic). Their Rhai glue is in the `core` module and exists only when `rhai` is on too | — |
 | `metadata` | off | Rhai introspection metadata: `///` comments + parameter names on registered script functions, consumed by `gen_fn_signatures`/`gen_fn_metadata_to_json`. Implies `rhai` — metadata alone has no engine to register on. Pure metadata: registrations behave identically without it | `rhai/metadata` |
 | `rt` | off | Async → sync bridge `rt::block_on` for consumers calling async code from synchronous Rhai natives (public; `http`, `oci`, `s3` and `k8s` depend on it). Does not imply `rhai` | `tokio` |
 

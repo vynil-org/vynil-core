@@ -1,6 +1,6 @@
 [package]
 name = "vynil-core"
-version = "0.9.0"
+version = "0.9.1"
 authors = [
     "Sébastien Huss <sebastien.huss@gmail.com>",
     "Xavier Mortelette <reivaxm@gmail.com>"
@@ -55,7 +55,7 @@ default = ["http", "crypto", "rhai", "hbs", "hbs-scripting"]
 k8s = ["dep:kube", "dep:k8s-openapi", "rt", "rhai"]
 # Registry::push_image et al. take/return rhai types (Map, ImmutableString) directly in their
 # core signatures, same reasoning as k8s above.
-oci = ["dep:oci-client", "rt", "rhai"]
+oci = ["dep:oci-client", "dep:tar", "dep:flate2", "rt", "rhai"]
 # s3_get_yaml/s3_list_keys are RhaiRes-typed from the start, no plain-Rust equivalent — same
 # reasoning as k8s above.
 s3 = ["dep:object_store", "dep:futures", "rt", "rhai"]
@@ -69,6 +69,10 @@ shell = []
 # based). Off by default so consumers with their own password generation semantics (e.g. a
 # weight-based one exposed through a public API) don't get a name collision.
 password = []
+# Kubernetes `Quantity` parser (src/quantity.rs, issue #42): `cpu_millis_of` / `memory_bytes_of`,
+# exact integer arithmetic with no Kubernetes crate. The `core` registrar and module expose them
+# when `rhai` is on too; this feature does not imply `rhai`.
+quantity = []
 # reqwest-based RestClient (src/http.rs) + schemars-derived config types. Like K8sGeneric above,
 # RestClient stores its headers as a rhai::Map internally rather than wrapping a plain-Rust type,
 # so it isn't independently rhai-optional either. RestClientMock (src/http_mock.rs) is a Rhai-only
@@ -79,7 +83,7 @@ http = ["dep:reqwest", "dep:schemars", "rt", "rhai", "dep:rustls-pki-types"]
 # when "hbs" is on. The Rhai bindings in both modules additionally need "rhai".
 crypto = ["dep:openssl", "dep:argon2", "dep:bcrypt"]
 # The Rhai scripting engine (src/engine.rs) plus every other module's *_rhai_register glue.
-rhai = ["dep:rhai", "dep:smartstring"]
+rhai = ["dep:rhai", "dep:smartstring", "dep:regex"]
 # The Handlebars templating engine (src/hbs.rs, src/hbs_json.rs).
 hbs = ["dep:handlebars", "dep:handlebars_misc_helpers", "dep:jmespath", "dep:toml"]
 # HandleBars::register_helper_dir/rhai_register_helper_dir, i.e. Handlebars's own `script_helper`
@@ -103,6 +107,9 @@ metadata = ["rhai", "rhai/metadata"]
 rt = ["dep:tokio"]
 
 [dependencies]
+# Features par défaut de rhai CONSERVÉES (dont `ahash/runtime-rng`, seed de hachage tiré à l'exécution) :
+# les retirer ne supprime pas le doublon `getrandom` (0.2 reste, imposé par `ahash/compile-time-rng`
+# de rhai lui-même) et fixerait le seed à la compilation. Décision du développeur principal (issue #36).
 rhai = { version = "1.23.3", features = ["sync", "serde", "internals"], optional = true }
 # rhai::Map is a BTreeMap keyed by rhai's `Identifier` alias, which is `smartstring::SmartString`
 # directly (not the `ImmutableString` newtype rhai implements Serialize for by hand) -- so any
@@ -125,19 +132,21 @@ reqwest = { version = "0.12.24", default-features = false, features = ["rustls-t
 rustls-pki-types = { version = "1.15", optional = true }
 serde = { version = "1.0.214", features = ["derive"] }
 serde_json = "1.0.150"
-serde_yaml = "0.9"
+serde_yaml = { package = "yaml_serde", version = "0.10" }
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "net", "time"], optional = true }
 chrono = { version = "0.4.38", features = ["serde"] }
 base64 = "0.23.1"
 thiserror = "2.0.3"
 tracing = "0.1.37"
-sha256 = "1.5.0"
+sha2 = "0.11"
+hex = "0.4"
 argon2 = { version = "0.5.3", features = ["std"], optional = true }
 bcrypt = { version = "0.19.2", optional = true }
 crc32fast = "1.5.0"
 semver = { version = "1.0.24", features = ["serde"] }
 url = "2.5.4"
-regex = "1.12.2"
+# Moteur de `regex_is_match` (groupe PUR de src/engine.rs, issue #41) : optionnel, tiré par `rhai`.
+regex = { version = "1.12.2", optional = true }
 wildmatch = "2.6.1"
 openssl = { version = "0.10.73", optional = true }
 http = "1.1.0"
@@ -148,8 +157,8 @@ k8s-openapi = { version = "0.28.0", features = ["latest", "schemars"], default-f
 futures = { version = "0.3", optional = true }
 oci-client = { version = "0.15.0", default-features = false, features = ["rustls-tls"], optional = true }
 object_store = { version = "0.11", features = ["aws"], optional = true }
-flate2 = "1.1.4"
-tar = "0.4.46"
+flate2 = { version = "1.1.4", optional = true }
+tar = { version = "0.4.46", optional = true }
 
 [dev-dependencies]
 wiremock = "0.6"

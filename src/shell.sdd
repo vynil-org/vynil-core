@@ -5,7 +5,7 @@ Purpose:
     `sh -c`, dans la limite exacte de @std::process : deux portes Rust @crate::shell::run et
     @crate::shell::get_out qui ne diffèrent que par le sort des flux — hérités du terminal pour
     l'une, capturés dans @std::process::Output pour l'autre — et deux noms de script `shell_run`
-    et `shell_output` branchés par @crate::shell::shell_rhai_register, collés sans logique
+    et `shell_output` branchés par le groupe `host` de ./engine.sdd (@crate::shell::shell_fns), collés sans logique
     ajoutée sur @crate::shell::rhai_run et @crate::shell::rhai_get_stdout. La feature cargo
     `shell`, éteinte par défaut et ne faisant dériver ni `rhai` ni aucune dépendance, rend la
     capacité explicitement opt-in à la compilation ; l'exécution elle-même est sans limite, sans
@@ -25,10 +25,10 @@ References:
     features de la rustdoc racine nomme les quatre faces — `shell::run` / `shell::get_out` +
     Rhai `shell_run` / `shell_output` — et dit l'assomption unix seul depuis la tâche close de
     ./src/lib.sdd.
-  ./engine.rs — ./engine.rs n'existe que sous `rhai` ; son import et son appel de
-    @crate::shell::shell_rhai_register dans @Script::new_bare sont gated `shell` seuls, placés
-    après @crate::oci::oci_rhai_register et avant @Script::add_common — la condition effective
-    du câblage automatique est donc `shell` + `rhai`, ./engine.rs étant l'unique appelant du
+  ./engine.rs — ./engine.rs n'existe que sous `rhai` ; le groupe `host`
+    (@crate::engine::host_rhai_register / @crate::engine::host_module, décision du 2026-11-06)
+    appelle @crate::shell::shell_fns sous `shell` seul, et @Script::new_bare appelle `host` avant
+    @Script::add_common — la condition effective du câblage automatique est donc `shell` + `rhai`, ./engine.rs étant l'unique appelant du
     registre. Nulle part ailleurs `shell_run` ou `shell_output` n'est mentionné hors rustdoc.
   ./Cargo.toml — la feature est `shell = []` : elle ne fait dériver aucune autre feature ni
     dépendance optionnelle, et son commentaire confirme que la face Rust `run`/`get_out` est
@@ -47,7 +47,7 @@ References:
 Must:
   La table des portes est exactement : @crate::shell::run et @crate::shell::get_out sous
     `shell` seule ; @crate::shell::rhai_run, @crate::shell::rhai_get_stdout et
-    @crate::shell::shell_rhai_register sous `shell` et `rhai` cumulés — module gated `shell`,
+    @crate::shell::shell_fns sous `shell` et `rhai` cumulés — module gated `shell`,
     items gated `rhai` ; @Script::new_bare ne câble le registre que sous `shell`, ./engine.rs
     étant déjà conditionné par `rhai`. ./Cargo.toml `shell = []` ne fait dériver aucune de ces
     features d'aucune autre.
@@ -98,7 +98,7 @@ Must:
     cas d'octets invalides, sinon @std::result::Result::Ok de la stdout seule, sans rognage. Un
     code non nul masque donc la branche stderr, et à code nul un unique octet de stderr suffit
     à faire échouer l'appel.
-  @crate::shell::shell_rhai_register n'ajoute sur l'@rhai::Engine reçu que deux enregistrements
+  @crate::shell::shell_fns n'ajoute sur la cible reçue (engine ou module, une seule liste) que deux enregistrements
     unaires sur un `string` : `shell_run` branché sur @crate::shell::rhai_run et `shell_output`
     branché sur @crate::shell::rhai_get_stdout — le nom de script `shell_output` ne correspond
     au nom d'aucune fonction Rust du module, seule indirection à connaître. L'engine n'est pas
@@ -111,7 +111,7 @@ Must:
     `@std::option::Option::unwrap_or` du helper de verdict n'est pas un lint du harnais (c'est
     `unwrap_or`, pas `@std::option::Option::unwrap`) ; les six items publics
     portent leur rustdoc, quatre avec une section `# Errors` nommant les variantes traversées ;
-    le seul `#[must_use]` de ./shell.rs est celui du jumeau @crate::shell::shell_module.
+    ./shell.rs ne porte plus d'enregistreur ni de jumeau `pub` (décision du 2026-11-06).
 
 Must not:
   Traiter un code de sortie non nul comme une erreur de @crate::shell::run, de
@@ -157,12 +157,10 @@ Exposes:
     porte `shell` puis `rhai` ; présenté aux scripts sous le seul nom `shell_run`.
   @crate::shell::rhai_get_stdout — signature `pub fn rhai_get_stdout(command: @std::string::String) -> @crate::RhaiRes<@std::string::String>`,
     mêmes portes ; présenté aux scripts sous le seul nom `shell_output`.
-  @crate::shell::shell_rhai_register — signature `pub fn shell_rhai_register(engine: &mut @rhai::Engine)`,
-    mêmes portes, unique câblage automatique de ./engine.rs.
-  @crate::shell::shell_module — `#[must_use] pub fn() -> @rhai::Module`, porte `shell` et `rhai`, jumeau de
-    @crate::shell::shell_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
-    mêmes noms, même comportement, enregistrable par @rhai::Engine::register_static_module ;
-    l'enregistreur reste, inchangé pour ses appelants.
+  @crate::shell::shell_fns — signature `pub(crate) fn shell_fns(target: &mut @crate::engine::Target)`,
+    mêmes portes, appelée par le groupe `host` de ./engine.rs ; l'enregistreur et le jumeau module de
+    `shell_run`/`shell_output` sont ceux de `host` (@crate::engine::host_rhai_register /
+    @crate::engine::host_module), noms inchangés.
   Rien de plus : aucun type, aucune constante, aucune réexportation à la racine de la crate.
 
 Accepts:
@@ -172,7 +170,7 @@ Accepts:
   `shell_run` et `shell_output` — exactement un `string`, reçu sous les formes que @rhai accepte
     pour une signature @std::string::String ; un entier, un booléen, un flottant, un tableau ou
     une @rhai::Map en cette position reste fonction inconnue, ./shell.rs ne coerce rien.
-  @crate::shell::shell_rhai_register — un `&mut` @rhai::Engine fourni par l'appelant, appelé
+  @crate::shell::shell_fns — un `&mut` @crate::engine::Target fourni par l'appelant, appelé
     zéro, une ou plusieurs fois, y compris avant ou après d'autres registres.
 
 Returns:
@@ -189,7 +187,7 @@ Returns:
     d'exit transposé, `128 + signal` sous signal unix, `-1` si aucun des deux n'existe.
   @crate::shell::rhai_get_stdout — un @std::string::String de la stdout seule, sans rognage,
     vide quand le fils n'a rien écrit sur stdout, jamais un mélange des deux flux.
-  @crate::shell::shell_rhai_register — `()`.
+  @crate::shell::shell_fns — `()`.
 
 Raises:
   @crate::shell::run et @crate::shell::get_out — @crate::Error::Stdio, unique erreur possible,
@@ -209,7 +207,7 @@ Raises:
     de fin incluse ; @crate::Error::UTF8 dont l'affichage commence par `UTF8 error ` — suite
     portée par @std::string::FromUtf8Error, non verrouillée — quand le stderr du cas « exit 0
     avec stderr » ou le stdout du cas de succès n'est pas UTF-8 strict.
-  @crate::shell::shell_rhai_register — rien : les deux entrées @crate::engine::register_at sont
+  @crate::shell::shell_fns — rien : les deux entrées @crate::engine::register_at sont
     infaillibles.
 
 Handles:
@@ -255,7 +253,7 @@ Tasks:
 # leur provenance. Cette spec ne garde que ce qui touche son `Owns`.
   [x] Convertir chaque Scenario de cette spec en test Rust dans un `mod tests` sous
     `#[cfg(test)]` de ./shell.rs, plus les appels de script sur un @rhai::Engine local
-    enregistré par @crate::shell::shell_rhai_register et @Script::new_bare pour le Scenario de
+    enregistré par @crate::engine::host_rhai_register et @Script::new_bare pour le Scenario de
     câblage ; les Scenario `cargo check` relèvent de la batterie de features. Inventaire réel
     (repris après 3e4295d) : ./shell.rs a un `mod tests` de cinq verrous `all(test, shell, rhai)`
     — signal `143` des deux collages, rc rendu et extrait stderr borné à 512 octets — qui
@@ -295,6 +293,10 @@ Tasks:
     pilote de ./engine.sdd cochée, la feature `metadata` de ../vyvil-core.sdd. Si une famille
     d'enregistrements (type personnalisé, accesseur, indexeur, opérateur) ne s'exprime pas dans
     un @rhai::Module, remonter au développeur principal avant de réduire le contrat.
+  [x] Fusion dans `host` (décision du 2026-11-06) : retirer `shell_rhai_register` et `shell_module` publics
+    de ./shell.rs, liste d'entrées `pub(crate)` appelée par `host` sous la feature `shell`. Noms
+    inchangés (`shell_run`, `shell_output`). Jumelle de « Fournir `core` et `host` » de ./engine.sdd,
+    cochée dans le même commit.
 
 Scenario: la table des portes compile la face Rust sans rhai et le câblage sous rhai plus shell
   Given la crate compilée par `cargo check --no-default-features`
@@ -302,7 +304,7 @@ Scenario: la table des portes compile la face Rust sans rhai et le câblage sous
   When la crate est compilée par `cargo check --no-default-features --features shell`
   Then @crate::shell::run et @crate::shell::get_out compilent sans aucune dépendance @rhai dans
     le graphe, et ni @crate::shell::rhai_run, @crate::shell::rhai_get_stdout ni
-    @crate::shell::shell_rhai_register n'existe
+    @crate::shell::shell_fns n'existe
   When la crate est compilée par `cargo check --no-default-features --features rhai,shell`
   Then les six items compilent et @Script::new_bare câble le registre
   But dans les graphes sans `shell`, @crate::shell est absent et un @Script::new_bare ignore les
@@ -347,7 +349,7 @@ Scenario: la commande vide et le fils muet sont des succès nuls
   Then le premier rend l'entier `0` et le second la chaîne vide
 
 Scenario: shell_run rend le code de sortie comme un entier i64
-  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register sous `rhai` et `shell`
+  Given un @rhai::Engine enregistré par @crate::engine::host_rhai_register sous `rhai` et `shell`
   When un script évalue `shell_run("true")`
   Then l'évaluation réussit, `type_of` rend `i64` (mesure @rhai 1.25 : les entiers rendent
     `i64`, pas `int`), et la valeur est `0`
@@ -358,7 +360,7 @@ Scenario: shell_run rend le code de sortie comme un entier i64
   Then le rendu est `0` bien que la commande ait écrit, le stdout hérité étant étranger au code
 
 Scenario: la mort par signal rend 128 + signal des deux côtés
-  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register, sous unix
+  Given un @rhai::Engine enregistré par @crate::engine::host_rhai_register, sous unix
   When un script évalue `shell_run("kill -TERM $$")`
   Then l'évaluation réussit et rend `143`, @std::process::ExitStatus::code ayant rendu
     @std::option::Option::None et le helper y ayant substitué `128 + 15`
@@ -369,7 +371,7 @@ Scenario: la mort par signal rend 128 + signal des deux côtés
     code, y demeure non testable par construction
 
 Scenario: shell_output rend la stdout seule, non rognée
-  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register sous `rhai` et `shell`
+  Given un @rhai::Engine enregistré par @crate::engine::host_rhai_register sous `rhai` et `shell`
   When un script évalue `shell_output("printf 'ligne1\nligne2\n'")`
   Then l'évaluation réussit, `type_of` rend `string`, et la valeur est `ligne1` suivi d'une
     nouvelle puis `ligne2` suivi d'une nouvelle, sans aucun rognage de bord
@@ -377,7 +379,7 @@ Scenario: shell_output rend la stdout seule, non rognée
     d'erreur préalable
 
 Scenario: shell_output échoue sur tout code non nul avec son rc rendu
-  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register sous `rhai` et `shell`
+  Given un @rhai::Engine enregistré par @crate::engine::host_rhai_register sous `rhai` et `shell`
   When un script évalue `shell_output("echo sortie && echo alerte >&2 && exit 2")`
   Then @crate::shell::rhai_get_stdout a bien appelé @crate::shell::get_out mais juge sur le
     status : l'évaluation échoue, rattrapable par un `try` de script
@@ -389,7 +391,7 @@ Scenario: shell_output échoue sur tout code non nul avec son rc rendu
   And un stderr de plus de 512 octets est tronqué à 512 octets dans le message
 
 Scenario: un filet de stderr sur sortie 0 est une erreur qui s'annonce
-  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register sous `rhai` et `shell`
+  Given un @rhai::Engine enregistré par @crate::engine::host_rhai_register sous `rhai` et `shell`
   When un script évalue `shell_output("echo sortie && echo alerte >&2")`
   Then l'évaluation échoue alors que le fils a réussi, portée par
     `Error: Command had stderr : alerte` suivi de la nouvelle de ligne capturée
@@ -398,7 +400,7 @@ Scenario: un filet de stderr sur sortie 0 est une erreur qui s'annonce
   And le stdout `sortie` capturé n'est pas restitué au script
 
 Scenario: la sortie non UTF-8 est refusée, pas assouplie
-  Given un @rhai::Engine enregistré par @crate::shell::shell_rhai_register sous `rhai` et `shell`
+  Given un @rhai::Engine enregistré par @crate::engine::host_rhai_register sous `rhai` et `shell`
   When un script évalue `shell_output("printf '\377'")`
   Then l'évaluation échoue en @crate::Error::UTF8 dont l'affichage commence par `UTF8 error `, la
     suite étant le texte de @std::string::FromUtf8Error, porté par la runtime et non verrouillé
@@ -426,18 +428,18 @@ Scenario: new_bare ne livre que deux noms, et rien d'autre
   Given un @Script::new_bare construit avec un vecteur de chemins vide sous `rhai` seul, sans
     `shell`
   Then `shell_run("true")` et `shell_output("echo")` y échouent en fonction inconnue, ./engine.rs
-    n'appelant pas @crate::shell::shell_rhai_register
+    n'appelant pas @crate::engine::host_rhai_register sous `shell`
   When le binaire est recompilé avec `rhai` et `shell` et le même engine rebâti
   Then `shell_run("true")` rend `0` et `shell_output("echo hi")` rend `hi` suivi d'une nouvelle
   When le script évalue `shell_run(12)`, `shell_output(#{})`, `shell_run("true", 1)` puis
     `shell_output("a", "b")`
   Then les quatre échouent en fonction inconnue : seules les deux arités unaires sur `string` existent
   But aucun autre nom n'apparaît, ni `shell`, `sh`, `run` ni `get_out` en script, et un second
-    appel manuel de @crate::shell::shell_rhai_register laisse tout identique
+    appel manuel de @crate::engine::host_rhai_register laisse tout identique
 
-Scenario: shell_module équivaut à shell_rhai_register
-  Given un @rhai::Engine où shell_rhai_register est appelé et un second, vierge, où le résultat de
-    @crate::shell::shell_module est enregistré par register_static_module sous le nom `m`
+Scenario: host_module équivaut à host_rhai_register pour shell
+  Given un @rhai::Engine où @crate::engine::host_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::engine::host_module est enregistré par register_static_module sous le nom `m`
   When les appels représentatifs des Scenario existants de cette spec sont rejoués sur chacun
     (nom nu sur le premier ; nom nu ET qualifié `m::nom` sur le second)
   Then les résultats et les erreurs sont identiques
@@ -448,7 +450,7 @@ Scenario: shell_module équivaut à shell_rhai_register
 
 Scenario: fonctions documentées sous metadata (shell)
   Given la crate compilée avec la feature `metadata` (porte `--all-features`)
-  When l'introspection de l'engine (shell_rhai_register) liste ses fonctions
+  When l'introspection de l'engine (host_rhai_register) liste les fonctions de shell
     (`gen_fn_signatures`, `gen_fn_metadata_to_json`)
   Then chaque fonction enregistrée porte un commentaire non vide et les NOMS de ses paramètres,
     pas seulement leurs types

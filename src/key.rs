@@ -1,12 +1,11 @@
 //! Private key generation (RSA / ed25519 via OpenSSL).
 //!
-//! Feature `crypto` only. Rhai bindings are registered by `key_rhai_register`, whose
-//! module twin is `key_module` (both under `rhai`).
+//! Feature `crypto` only. Rhai bindings are registered by `crate::hashes::crypto_rhai_register`,
+//! which lists the two `gen_private_key` overloads through the crate-private `key_fns`.
 
 #[cfg(feature = "rhai")] use crate::engine::{Target, register_at};
 use crate::{Error, Result};
 use openssl::{pkey::PKey, rsa::Rsa};
-#[cfg(feature = "rhai")] use rhai::{Engine, Module};
 
 /// Default RSA key size when `bits` is not specified.
 pub const DEFAULT_RSA_BITS: u32 = 4096;
@@ -27,52 +26,20 @@ pub fn gen_private_key(algo: &str, bits: u32) -> Result<String> {
     String::from_utf8(pem).map_err(Error::UTF8)
 }
 
-// ── Motif double cible (key.sdd, issues #19 et #20) ──────────────────────────
-// Les deux surcharges de script sont définies UNE seule fois, dans `key_fns`, comme une
-// liste d'enregistrements (nom, fonction, noms des paramètres et commentaire `///` sous
-// `metadata`) appliquée soit directement à l'Engine (l'enregistreur — les fonctions
-// restent en namespace global de l'engine, visibles de gen_fn_signatures comme avant),
-// soit à un Module dans ce même namespace global (le jumeau module, enregistrable par
-// Engine::register_static_module). Les aides Target/register_at du pilote sont
-// centralisées dans ./engine.rs (`pub(crate)`), key.rs les importe. La porte du fichier
-// étant `crypto` (le module n'existe pas
-// sans elle), tout le motif est gated `rhai` en plus — sous `crypto` seul, seule la voie
-// Rust `gen_private_key` reste compilée, comme avant le motif.
+// ── Motif double cible (key.sdd, issues #19 et #20 ; tâche « Fusion dans `crypto` ») ──
+// Les deux surcharges de script sont définies UNE seule fois, dans `key_fns`, comme une liste
+// d'enregistrements (nom, fonction, noms des paramètres et commentaire `///` sous `metadata`).
+// Il n'existe plus d'enregistreur propre à ce module : `key_fns` est appelée par la liste
+// `crypto` de ./hashes.rs (`crypto_entries`), sous la feature `crypto` et `rhai`. Les aides
+// Target/register_at sont centralisées dans ./engine.rs (`pub(crate)`).
 
-/// Registers the two `gen_private_key` overloads on a Rhai `engine`: the unary form
-/// applying [`DEFAULT_RSA_BITS`], the binary form guarding `bits` before any dispatch.
-/// The bodies and the guard are unchanged; the registrations now come from the single
-/// `key_fns` list.
-///
-/// Additive and idempotent: callable alone on a fresh [`Engine`], registering nothing
-/// outside the script name `gen_private_key`. The functions stay directly on the engine —
-/// no intermediate global module.
-///
-/// Module twin: [`key_module`] — same single `key_fns` list, same semantics.
+/// The two `gen_private_key` registrations defined once (motif double cible), applied by the
+/// `crypto` group of ./hashes.rs. Each entry is a name, its function, its parameter names and
+/// its `///` comment (both under `metadata` only). The bodies are verbatim the ones the former
+/// `key_rhai_register` used — the same [`gen_private_key`] door, the same `format!("{e}")` error
+/// text, the same `u32::try_from` guard placed before any dispatch.
 #[cfg(feature = "rhai")]
-pub fn key_rhai_register(engine: &mut Engine) {
-    key_fns(&mut Target::Engine(engine));
-}
-
-/// Module twin of [`key_rhai_register`] (issue #19): the same two functions, under the
-/// global namespace of a fresh [`Module`], registrable by [`Engine::register_static_module`]
-/// under the name the consumer picks. A twin that drifts from its registrar is a defect:
-/// both share the single `key_fns` list.
-#[cfg(feature = "rhai")]
-#[must_use]
-pub fn key_module() -> Module {
-    let mut module = Module::new();
-    key_fns(&mut Target::Module(&mut module));
-    module
-}
-
-/// The two `gen_private_key` registrations defined once (motif double cible): each entry
-/// is a name, its function, its parameter names and its `///` comment (both under
-/// `metadata` only). The bodies are verbatim the ones `key_rhai_register` used before the
-/// motif — the same [`gen_private_key`] door, the same `format!("{e}")` error text, the
-/// same `u32::try_from` guard placed before any dispatch.
-#[cfg(feature = "rhai")]
-fn key_fns(target: &mut Target<'_>) {
+pub(crate) fn key_fns(target: &mut Target<'_>) {
     register_at(
         target,
         "gen_private_key",
@@ -222,7 +189,7 @@ mod tests {
 
     // ── Scenario « sans rhai la face Rust reste et la porte script ferme » ──
     // Joué uniquement sur la porte `--no-default-features --features crypto` : verrou de
-    // compilation — `key_rhai_register` n'existe pas dans ce graphe (sa propre porte
+    // compilation — `crypto_rhai_register` n'existe pas dans ce graphe (sa propre porte
     // `#[cfg(feature = "rhai")]` fait défaut, rien à appeler pour l'affirmer) et si
     // `gen_private_key` ou `DEFAULT_RSA_BITS` passaient un jour derrière `rhai`, ce test
     // ne compilerait plus sur cette porte. Aligné sur `surface_without_features` de
@@ -248,12 +215,12 @@ mod tests {
         use super::*;
         use crate::Script;
         use openssl::pkey::Private;
-        use rhai::ImmutableString;
+        use rhai::{Engine, ImmutableString};
 
-        // Engine fraîchement enregistré par `key_rhai_register`.
+        // Engine fraîchement enregistré par `crypto_rhai_register`.
         fn engine() -> Engine {
             let mut e = Engine::new();
-            crate::key::key_rhai_register(&mut e);
+            crate::hashes::crypto_rhai_register(&mut e);
             e
         }
 
@@ -415,7 +382,7 @@ mod tests {
 
         // ── Scenario « l'engine sans enregistrement ne connaît aucun des deux noms » ──
         // Refuse : un enregistrement qui fuiterait sur tout `Engine::new` sans passer par
-        // `key_rhai_register` (les deux appels n'échoueraient pas en ErrorFunctionNotFound).
+        // `crypto_rhai_register` (les deux appels n'échoueraient pas en ErrorFunctionNotFound).
         // Le même engine, enregistré dans la foulée, doit voir les deux appels réussir.
         #[test]
         fn scenario_l_engine_sans_enregistrement_ne_connet_aucun_des_deux_noms() {
@@ -429,7 +396,7 @@ mod tests {
                     "attendu une erreur de fonction inconnue, obtenu {err:?}"
                 );
             }
-            crate::key::key_rhai_register(&mut fresh);
+            crate::hashes::crypto_rhai_register(&mut fresh);
             let out = fresh
                 .eval::<ImmutableString>(r#"gen_private_key("ed25519")"#)
                 .expect("après enregistrement, l'unaire doit réussir");
@@ -439,7 +406,7 @@ mod tests {
         }
 
         // ── Scenario « new_bare livre les deux surcharges » ──
-        // Refuse : un `Script::new_bare` qui n'appellerait pas `key_rhai_register` (le
+        // Refuse : un `Script::new_bare` qui n'appellerait pas `crypto_rhai_register` (le
         // câblage `#[cfg(feature = "crypto")]` dans ./engine.rs sauterait) ou n'en
         // brancherait qu'une — chaque chaîne rendue doit de plus être un PEM PKCS8.
         #[test]
@@ -496,7 +463,7 @@ mod tests {
 
         // ════════════════════════════════════════════════════════════════════
         // Tâche « Jumeau module et documentation » (key.sdd, issues #19 et #20) —
-        // Scenario « key_module équivaut à key_rhai_register » et « fonctions
+        // Scenario « crypto_module équivaut à crypto_rhai_register » et « fonctions
         // documentées sous metadata (key) », sur le motif double cible posé par le
         // pilote de ./engine.sdd (Target/documented/register_at, dont ./key.rs porte
         // sa propre copie privée gated `rhai`, comme glob/chrono/semver/yaml/hashes).
@@ -541,10 +508,6 @@ mod tests {
                     s.strip_prefix("m::").unwrap_or(s).to_string()
                 })
                 .collect()
-        }
-
-        fn set_of(noms: &[&str]) -> std::collections::BTreeSet<String> {
-            noms.iter().map(|nom| (*nom).to_string()).collect()
         }
 
         /// Résultat normalisé d'un appel représentatif, indépendant de l'aléa de
@@ -595,7 +558,7 @@ mod tests {
             }
         }
 
-        /// Scenario « `key_module` équivaut à `key_rhai_register` » : les appels
+        /// Scenario « `crypto_module` équivaut à `crypto_rhai_register` » : les appels
         /// représentatifs des Scenario existants sont rejoués en nom nu sur l'engine de
         /// l'enregistreur, puis en nom nu ET qualifié `m::gen_private_key` sur l'engine
         /// du jumeau module — mêmes résultats, mêmes erreurs (oracle décodé, jamais
@@ -605,16 +568,15 @@ mod tests {
             // Then « les deux ensembles de noms de fonctions sont égaux », et exactement
             // { gen_private_key } : le module n'apporte aucun type, aucune fonction de
             // plus ni de moins (portabilité totale, key.sdd `Exposes`).
-            let noms_registrateur = names_added_by(crate::key::key_rhai_register);
-            let noms_module = names_added_by_module(crate::key::key_module());
+            let noms_registrateur = names_added_by(crate::hashes::crypto_rhai_register);
+            let noms_module = names_added_by_module(crate::hashes::crypto_module());
             assert_eq!(
                 noms_module, noms_registrateur,
                 "le jumeau module et l'enregistreur accordent les mêmes noms"
             );
-            assert_eq!(
-                noms_registrateur,
-                set_of(&["gen_private_key"]),
-                "key_rhai_register n'accorde que gen_private_key (diff de baseline)"
+            assert!(
+                noms_registrateur.contains("gen_private_key"),
+                "crypto_rhai_register accorde gen_private_key (la table complète de `crypto` est verrouillée dans hashes.rs)"
             );
 
             // When : les appels représentatifs sont rejoués nu / nu / qualifié. Échecs
@@ -664,11 +626,11 @@ mod tests {
             ];
             for (bare, qualified) in calls {
                 let mut nu = Engine::new();
-                crate::key::key_rhai_register(&mut nu);
+                crate::hashes::crypto_rhai_register(&mut nu);
                 let reference = outcome(&mut nu, bare);
                 // Face « nom nu aussi sur le second engine » : le jumeau est en namespace
                 // global (FnNamespace::Global), le nom nu doit y résoudre pareil.
-                let mut jumeau = engine_with_module(crate::key::key_module());
+                let mut jumeau = engine_with_module(crate::hashes::crypto_module());
                 let nu_jumeau = outcome(&mut jumeau, bare);
                 let qualifie = outcome(&mut jumeau, qualified);
                 assert_eq!(
@@ -682,7 +644,7 @@ mod tests {
             }
         }
 
-        /// Scenario « `key_module` équivaut à `key_rhai_register` », `And` « les deux
+        /// Scenario « `crypto_module` équivaut à `crypto_rhai_register` », `And` « les deux
         /// ensembles de noms sont égaux (aucune fonction en plus ni en moins, comparés
         /// sous `metadata` par l'introspection de Rhai) » : la face noms du test précédent
         /// ne distingue pas les arités (les deux surcharges portent un seul nom), c'est
@@ -707,10 +669,15 @@ mod tests {
                 ajoutees
             }
             let mut nu = Engine::new();
-            crate::key::key_rhai_register(&mut nu);
-            let jumelle = engine_with_module(crate::key::key_module());
-            let nues = added_signatures(&nu, "");
-            let qualifiees = added_signatures(&jumelle, "m::");
+            crate::hashes::crypto_rhai_register(&mut nu);
+            let jumelle = engine_with_module(crate::hashes::crypto_module());
+            let gen_only = |v: Vec<String>| -> Vec<String> {
+                v.into_iter()
+                    .filter(|s| s.starts_with("gen_private_key("))
+                    .collect()
+            };
+            let nues = gen_only(added_signatures(&nu, ""));
+            let qualifiees = gen_only(added_signatures(&jumelle, "m::"));
             assert_eq!(
                 qualifiees, nues,
                 "le jumeau module porte le même inventaire de signatures que l'enregistreur"
@@ -727,7 +694,7 @@ mod tests {
             );
         }
 
-        /// Scenario « `key_module` équivaut à `key_rhai_register` », dernier `And` : sur
+        /// Scenario « `crypto_module` équivaut à `crypto_rhai_register` », dernier `And` : sur
         /// l'engine de l'enregistreur, `rhai::Engine::gen_fn_signatures` sans les paquets
         /// liste les mêmes fonctions qu'avant — les deux surcharges en fonctions directes,
         /// non déplacées dans un module global. Porte `metadata` de `@rhai`.
@@ -735,11 +702,12 @@ mod tests {
         #[test]
         fn scenario_key_enregistreur_fonctions_directement_sur_l_engine() {
             let mut engine = Engine::new();
-            crate::key::key_rhai_register(&mut engine);
+            crate::hashes::crypto_rhai_register(&mut engine);
             let signatures = engine.gen_fn_signatures(false);
             let baseline = Engine::new().gen_fn_signatures(false);
             let ajoutees: Vec<&String> = signatures
                 .iter()
+                .filter(|s| s.starts_with("gen_private_key("))
                 .filter(|s| !baseline.iter().any(|b| b == *s))
                 .collect();
             assert_eq!(
@@ -763,7 +731,7 @@ mod tests {
         #[test]
         fn scenario_fonctions_documentees_sous_metadata_key() {
             let mut engine = Engine::new();
-            crate::key::key_rhai_register(&mut engine);
+            crate::hashes::crypto_rhai_register(&mut engine);
             // Face 1 — `gen_fn_signatures` : chaque surcharge nomme ses paramètres.
             let signatures = engine.gen_fn_signatures(false);
             let nues: Vec<&String> = signatures
@@ -840,7 +808,7 @@ mod tests {
         #[test]
         fn scenario_fonctions_documentees_sous_metadata_key_sans_la_feature() {
             let mut engine = Engine::new();
-            crate::key::key_rhai_register(&mut engine);
+            crate::hashes::crypto_rhai_register(&mut engine);
             let key = eval_key(&engine, r#"gen_private_key("ed25519")"#);
             assert_eq!(
                 key.id(),
@@ -852,109 +820,26 @@ mod tests {
                 r#"gen_private_key("ed25519", -1)"#,
                 "unsupported key size: -1",
             );
-            assert_eq!(
-                names_added_by(crate::key::key_rhai_register),
-                set_of(&["gen_private_key"]),
-                "sans `metadata`, les noms accordés sont identiques"
+            assert!(
+                names_added_by(crate::hashes::crypto_rhai_register).contains("gen_private_key"),
+                "sans `metadata`, gen_private_key reste accordé par le registre crypto"
             );
         }
 
         // ── Scenario « le réenregistrement est sans effet visible » ──
-        // Refuse : une seconde `key_rhai_register` qui cassero la dispatch (fonction
+        // Refuse : une seconde `crypto_rhai_register` qui cassero la dispatch (fonction
         // devenue inconnue ou ambiguë), perdrait le garde, ou brancherait une autre
         // taille — binaire à taille licite et garde du négatif rejoués après doublon.
         #[test]
         fn scenario_le_reenregistrement_est_sans_effet_visible() {
             let mut e = engine();
-            crate::key::key_rhai_register(&mut e);
+            crate::hashes::crypto_rhai_register(&mut e);
             let key = eval_key(&e, r#"gen_private_key("ed25519", 2048)"#);
             assert_eq!(key.id(), Id::ED25519, "la binaire doit survivre au doublon");
             assert_guard_rejection(
                 &e,
                 r#"gen_private_key("ed25519", -1)"#,
                 "unsupported key size: -1",
-            );
-        }
-    }
-}
-
-#[cfg(all(test, feature = "metadata", feature = "crypto"))]
-mod signatures_documentees {
-    use super::*;
-
-    /// Signatures attendues du groupe `key`, écrites à la main depuis les closures
-    /// (vocabulaire du script ; retour fallible déballé ; retour absent quand l'unité).
-    const SIGNATURES_ATTENDUES: &[(&str, &str)] = &[
-        ("gen_private_key", "gen_private_key(algo: string) -> string"),
-        (
-            "gen_private_key",
-            "gen_private_key(algo: string, bits: i64) -> string",
-        ),
-    ];
-
-    /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
-    fn ajoutees_par_enregistreur() -> Vec<String> {
-        let mut engine = rhai::Engine::new_raw();
-        key_rhai_register(&mut engine);
-        engine.gen_fn_signatures(false).into_iter().collect()
-    }
-
-    /// Signatures que le jumeau module ajoute à la base, enregistré sous `m` (préfixe `m::`
-    /// retiré : seuls les noms et types comptent).
-    fn ajoutees_par_module() -> Vec<String> {
-        let mut engine = rhai::Engine::new_raw();
-        engine.register_static_module("m", key_module().into());
-        engine
-            .gen_fn_signatures(false)
-            .into_iter()
-            .map(|s| s.strip_prefix("m::").map_or_else(|| s.clone(), str::to_string))
-            .collect()
-    }
-
-    /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
-    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
-        let mut obtenues = ajoutees;
-        obtenues.sort();
-        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
-            .iter()
-            .map(|(_, signature)| (*signature).to_string())
-            .collect();
-        attendues.sort();
-        assert_eq!(obtenues, attendues, "signatures de la face {face}");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_enregistreur_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_jumeau_module_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_completude() {
-        assert_eq!(
-            ajoutees_par_enregistreur().len(),
-            SIGNATURES_ATTENDUES.len(),
-            "une fonction du groupe sans entrée de table fait échouer ce test"
-        );
-        assert_eq!(
-            ajoutees_par_module().len(),
-            SIGNATURES_ATTENDUES.len(),
-            "jumeau module : une fonction sans entrée de table fait échouer ce test"
-        );
-    }
-
-    #[test]
-    fn scenario_signatures_documentees_sans_vocabulaire_rust() {
-        let mut engine = rhai::Engine::new();
-        key_rhai_register(&mut engine);
-        for signature in engine.gen_fn_signatures(false) {
-            assert!(
-                !signature.contains("String") && !signature.contains("ImmutableString"),
-                "signature hors vocabulaire rhai : {signature}"
             );
         }
     }

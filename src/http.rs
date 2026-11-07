@@ -5,7 +5,7 @@
 
 use crate::{
     Error, RhaiRes,
-    engine::{Target, register_at, register_type_at},
+    engine::{Target, register_at, register_engine_only_at, register_free_at, register_type_at},
     rhai_err,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -26,9 +26,11 @@ const DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(5);
 /// Read verb accepted by [`RestClient::obj_read`].
 #[derive(Serialize, Deserialize, Eq, PartialEq, Clone, Debug, JsonSchema, Default)]
 pub enum ReadMethod {
-    /// `GET` (the only supported read verb).
+    /// `GET` (the default read verb).
     #[default]
     Get,
+    /// `POST` with an empty body, same path, headers and response handling as `Get`.
+    Post,
 }
 /// Create verbs accepted by [`RestClient::obj_create`].
 #[derive(Serialize, Deserialize, Eq, PartialEq, Clone, Debug, JsonSchema, Default)]
@@ -265,23 +267,7 @@ impl RestClient {
     /// on a non-success status (with the body excerpt).
     pub fn body_get(&mut self, path: &str) -> crate::Result<String> {
         let response = self.http_get(path)?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let text = crate::rt::block_on(async move { response.text().await })
-                .and_then(|r| r.map_err(Error::ReqwestError))?;
-            return Err(Error::MethodFailed(
-                "Get".to_string(),
-                status.as_u16(),
-                format!(
-                    "The server returned the error: {} {} | {text}",
-                    status.as_str(),
-                    status.canonical_reason().unwrap_or("unknown")
-                ),
-            ));
-        }
-        let text = crate::rt::block_on(async move { response.text().await })
-            .and_then(|r| r.map_err(Error::ReqwestError))?;
-        Ok(text)
+        get_response_text(response)
     }
 
     /// GETs `path` and deserializes the response body as JSON.
@@ -976,6 +962,11 @@ impl RestClient {
         };
         match method {
             ReadMethod::Get => self.json_get(&full_path),
+            ReadMethod::Post => {
+                let response = self.http_post(&full_path, "")?;
+                let text = get_response_text(response)?;
+                serde_json::from_str(&text).map_err(Error::JsonError)
+            }
         }
     }
 
@@ -1183,6 +1174,32 @@ impl RestClient {
     }
 }
 
+/// Reads a response body as text, or fails with [`Error::MethodFailed`] (`Get` label, status
+/// and body excerpt) on a non-success status. Shared by `body_get` and the `Post` read of
+/// [`RestClient::obj_read`], which must report errors exactly as `Get` does.
+///
+/// # Errors
+///
+/// Returns [`Error::ReqwestError`] if the body read fails, [`Error::MethodFailed`] on a
+/// non-success status.
+fn get_response_text(response: Response) -> crate::Result<String> {
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = crate::rt::block_on(async move { response.text().await })
+            .and_then(|r| r.map_err(Error::ReqwestError))?;
+        return Err(Error::MethodFailed(
+            "Get".to_string(),
+            status.as_u16(),
+            format!(
+                "The server returned the error: {} {} | {text}",
+                status.as_str(),
+                status.canonical_reason().unwrap_or("unknown")
+            ),
+        ));
+    }
+    crate::rt::block_on(async move { response.text().await }).and_then(|r| r.map_err(Error::ReqwestError))
+}
+
 /// Case-insensitive lookup of a single response header by name. `headers` is the opaque
 /// `Vec<(String, String)>` returned as the `headers` field of `get`/`post`/... results — it
 /// carries no rhai-visible indexing or iteration of its own, so this is the only way to read
@@ -1200,6 +1217,53 @@ pub fn headers_get(headers: Vec<(String, String)>, name: String) -> Dynamic {
 #[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
 pub fn headers_has(headers: Vec<(String, String)>, name: String) -> bool {
     headers.iter().any(|(k, _)| k.eq_ignore_ascii_case(&name))
+}
+
+/// Whether `observed` satisfies every expectation of `wanted`: each key of a `wanted` object
+/// must exist in `observed`, with a value that satisfies it recursively when both are objects,
+/// and compares strictly otherwise (arrays included: order and length). Keys added to
+/// `observed` are ignored, an absent key is a difference even when its value is `null`, and an
+/// empty `wanted` object is satisfied by any object `observed`. Typing is strict: `"1"` is not
+/// `1`, and `1` is not `1.0`. Pure: no I/O.
+#[must_use]
+pub fn json_subset(observed: &Value, wanted: &Value) -> bool {
+    match (observed, wanted) {
+        (Value::Object(obs), Value::Object(want)) => want
+            .iter()
+            .all(|(key, expected)| obs.get(key).is_some_and(|got| json_subset(got, expected))),
+        _ => observed == wanted,
+    }
+}
+
+/// Strict equality of two JSON values, extra keys on either side included (`exact` mode of
+/// [`json_subset`]). Typing is strict, as for [`json_subset`].
+#[must_use]
+pub fn json_equal(observed: &Value, wanted: &Value) -> bool {
+    observed == wanted
+}
+
+/// Converts a Rhai value into a [`Value`] for the comparators; a value that cannot be
+/// serialized (a function pointer, for instance) is a Rhai error, never a panic.
+fn dynamic_to_json(value: &Dynamic) -> RhaiRes<Value> {
+    rhai::serde::from_dynamic(value)
+}
+
+/// Script face of [`json_subset`].
+#[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
+fn json_subset_rhai(observed: Dynamic, wanted: Dynamic) -> RhaiRes<bool> {
+    Ok(json_subset(
+        &dynamic_to_json(&observed)?,
+        &dynamic_to_json(&wanted)?,
+    ))
+}
+
+/// Script face of [`json_equal`].
+#[allow(clippy::needless_pass_by_value)] // signature imposée par l'API Rhai (vyvil-core.sdd)
+fn json_equal_rhai(observed: Dynamic, wanted: Dynamic) -> RhaiRes<bool> {
+    Ok(json_equal(
+        &dynamic_to_json(&observed)?,
+        &dynamic_to_json(&wanted)?,
+    ))
 }
 
 /// GETs `url`, optionally authenticated (`auth_type` `""` for an anonymous request, `bearer`
@@ -1268,8 +1332,9 @@ pub fn http_get_yaml(url: String, auth_type: String, credential: String) -> Rhai
 // http.rs les importe.
 
 /// Registers `RestClient` (`new_http_client`/`new_client`), the HTTP verbs (each with its
-/// `http_`-prefixed alias, `head`/`http_head` included — 29 names) and the header helpers
-/// (`http_get_yaml`, `headers_get`, `headers_has`) on a Rhai engine.
+/// `http_`-prefixed alias, `head`/`http_head` included — 31 names in total), the header helpers
+/// (`http_get_yaml`, `headers_get`, `headers_has`) and the JSON comparators (`json_subset`,
+/// `json_equal`) on a Rhai engine.
 ///
 /// Additive and idempotent: callable alone on a fresh [`Engine`]. The functions stay
 /// directly on the engine — no intermediate global module.
@@ -1296,15 +1361,16 @@ pub fn http_module() -> Module {
 #[allow(clippy::too_many_lines)] // trente entrées du Must de ./http.sdd en une seule liste, forme du motif (#19/#20).
 fn http_fns(target: &mut Target<'_>) {
     register_type_at::<RestClient>(target, "RestClient");
-    register_at(
+    register_engine_only_at(
         target,
         "new_http_client",
         &["/// New HTTP client whose requests target `base` (joined literally as `base/path`). No errors."],
         &["base: string", "RestClient"],
         RestClient::new,
     );
-    register_at(
+    register_free_at(
         target,
+        "new_client",
         "new_client",
         &["/// Twin of `new_http_client` — same construction, same type `RestClient`."],
         &["base: string", "RestClient"],
@@ -1388,7 +1454,7 @@ fn http_fns(target: &mut Target<'_>) {
         &["client: &mut RestClient", "path: string", "map"],
         RestClient::rhai_head,
     );
-    register_at(
+    register_engine_only_at(
         target,
         "http_head",
         &["/// Alias of `head` — same real HEAD, same {code, headers} map."],
@@ -1405,7 +1471,7 @@ fn http_fns(target: &mut Target<'_>) {
         &["client: &mut RestClient", "path: string", "map"],
         RestClient::rhai_get,
     );
-    register_at(
+    register_engine_only_at(
         target,
         "http_get",
         &["/// Alias of `get`."],
@@ -1419,7 +1485,7 @@ fn http_fns(target: &mut Target<'_>) {
         &["client: &mut RestClient", "path: string", "map"],
         RestClient::rhai_delete,
     );
-    register_at(
+    register_engine_only_at(
         target,
         "http_delete",
         &["/// Alias of `delete`."],
@@ -1435,7 +1501,7 @@ fn http_fns(target: &mut Target<'_>) {
         &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_delete_with_body,
     );
-    register_at(
+    register_engine_only_at(
         target,
         "http_delete_with_body",
         &["/// Alias of `delete_with_body`."],
@@ -1449,7 +1515,7 @@ fn http_fns(target: &mut Target<'_>) {
         &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_patch,
     );
-    register_at(
+    register_engine_only_at(
         target,
         "http_patch",
         &["/// Alias of `patch`."],
@@ -1463,7 +1529,7 @@ fn http_fns(target: &mut Target<'_>) {
         &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_post,
     );
-    register_at(
+    register_engine_only_at(
         target,
         "http_post",
         &["/// Alias of `post`."],
@@ -1477,7 +1543,7 @@ fn http_fns(target: &mut Target<'_>) {
         &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
         RestClient::rhai_put,
     );
-    register_at(
+    register_engine_only_at(
         target,
         "http_put",
         &["/// Alias of `put`."],
@@ -1494,16 +1560,17 @@ fn http_fns(target: &mut Target<'_>) {
         &["client: &mut RestClient", "path: string", "val: map", "map"],
         RestClient::rhai_post_form,
     );
-    register_at(
+    register_engine_only_at(
         target,
         "http_post_form",
         &["/// Alias of `post_form`."],
         &["client: &mut RestClient", "path: string", "val: map", "map"],
         RestClient::rhai_post_form,
     );
-    register_at(
+    register_free_at(
         target,
         "http_get_yaml",
+        "get_yaml",
         &[
             "/// GETs the absolute `url` (auth `\"\"` anonymous, `bearer` or `basic`, case-insensitive;",
             "/// any other auth_type errors before connecting) and renders the YAML body as a Rhai value.",
@@ -1516,8 +1583,9 @@ fn http_fns(target: &mut Target<'_>) {
         ],
         http_get_yaml,
     );
-    register_at(
+    register_free_at(
         target,
+        "headers_get",
         "headers_get",
         &[
             "/// First value of header `name` (case-insensitive) in a response `headers` vector, unit when absent.",
@@ -1525,12 +1593,36 @@ fn http_fns(target: &mut Target<'_>) {
         &["headers: array", "name: string", "Dynamic"],
         headers_get,
     );
-    register_at(
+    register_free_at(
         target,
+        "headers_has",
         "headers_has",
         &["/// Whether header `name` is present in a response `headers` vector, case-insensitively."],
         &["headers: array", "name: string", "bool"],
         headers_has,
+    );
+    register_free_at(
+        target,
+        "json_subset",
+        "json_subset",
+        &[
+            "/// True when `observed` satisfies every expectation of `wanted`: extra keys in",
+            "/// `observed` are ignored, an absent key fails even when `null`, arrays compare",
+            "/// strictly (order and length), typing is strict. Pure: no I/O.",
+        ],
+        &["observed: Dynamic", "wanted: Dynamic", "bool"],
+        json_subset_rhai,
+    );
+    register_free_at(
+        target,
+        "json_equal",
+        "json_equal",
+        &[
+            "/// Strict equality of `observed` and `wanted`, extra keys on either side included;",
+            "/// `1` and `1.0` differ, `\"1\"` and `1` differ.",
+        ],
+        &["observed: Dynamic", "wanted: Dynamic", "bool"],
+        json_equal_rhai,
     );
 }
 
@@ -2334,6 +2426,161 @@ JI/2Ub72WWBi1OfE3agVbrU/sewOI4hlz7Sq5O1ccQ==
         assert_eq!(out, json!({"list": true}));
     }
 
+    // Scenario « obj_read POST lit sans rien créer » (issue #39) : `ReadMethod::Post` émet un
+    // POST à corps vide, sur le même chemin complet que Get, avec les en-têtes du client, et
+    // rend le JSON de la réponse.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn obj_read_post_reads_without_body_on_same_path() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"token": "t"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/x/k"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"key": "k"})))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        client.add_header("X-Probe", "p");
+        client.add_header("Accept", "application/json");
+
+        let out = client
+            .obj_read(ReadMethod::Post, "api/v1/x", "")
+            .expect("POST sur `api/v1/x` attendu");
+        assert_eq!(out, json!({"token": "t"}));
+        let received = server.received_requests().await.unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].method.as_str(), "POST");
+        assert_eq!(received[0].url.path(), "/api/v1/x");
+        assert!(received[0].body.is_empty(), "corps de requête vide attendu");
+        assert_eq!(received[0].headers.get("x-probe").unwrap().to_str().unwrap(), "p");
+        assert_eq!(
+            received[0].headers.get("accept").unwrap().to_str().unwrap(),
+            "application/json"
+        );
+
+        let out = client
+            .obj_read(ReadMethod::Post, "api/v1/x", "k")
+            .expect("POST sur `api/v1/x/k` attendu");
+        assert_eq!(out, json!({"key": "k"}));
+    }
+
+    // Scenario « obj_read POST lit sans rien créer » : un 500 au POST rend la même erreur
+    // que Get pour le même statut ; `ReadMethod::default()` reste Get et le schéma JSON liste
+    // Get et Post.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn obj_read_post_error_matches_get_and_default_stays_get() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        for verb in ["GET", "POST"] {
+            Mock::given(method(verb))
+                .and(path("/e"))
+                .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+                .mount(&server)
+                .await;
+        }
+        let mut client = RestClient::new(server.uri().as_str());
+        let get_err = client
+            .obj_read(ReadMethod::Get, "e", "")
+            .expect_err("un 500 au GET doit échouer");
+        let post_err = client
+            .obj_read(ReadMethod::Post, "e", "")
+            .expect_err("un 500 au POST doit échouer");
+        assert_eq!(post_err.to_string(), get_err.to_string());
+
+        assert_eq!(ReadMethod::default(), ReadMethod::Get);
+        let schema = serde_json::to_value(schemars::schema_for!(ReadMethod)).unwrap();
+        let variants: Vec<&Value> = schema
+            .get("oneOf")
+            .and_then(Value::as_array)
+            .expect("le schéma de ReadMethod doit lister ses variantes en oneOf")
+            .iter()
+            .filter_map(|v| v.get("const"))
+            .collect();
+        assert_eq!(variants, vec![&json!("Get"), &json!("Post")]);
+    }
+
+    // Scenario « json_subset ignore les clés en plus, json_equal non » (issue #40), face Rust :
+    // verdicts sur l'observé de référence.
+    #[test]
+    fn json_subset_et_json_equal_verdicts_rust() {
+        let observed = json!({"a": 1, "b": {"c": 2, "d": 3}, "t": [1, 2]});
+        for wanted in [
+            json!({"a": 1}),
+            json!({"b": {"c": 2}}),
+            json!({"t": [1, 2]}),
+            json!({}),
+        ] {
+            assert!(
+                json_subset(&observed, &wanted),
+                "json_subset doit valider {wanted}"
+            );
+        }
+        for wanted in [
+            json!({"b": {"c": 9}}),
+            json!({"z": null}),
+            json!({"t": [2, 1]}),
+            json!({"t": [1]}),
+            json!({"a": "1"}),
+            json!({"a": 1.0}),
+        ] {
+            assert!(
+                !json_subset(&observed, &wanted),
+                "json_subset doit refuser {wanted}"
+            );
+        }
+        assert!(
+            json_subset(&json!({}), &json!({})),
+            "voulu objet vide contre observé objet"
+        );
+        assert!(
+            !json_subset(&json!(1), &json!({"a": 1})),
+            "voulu objet contre observé scalaire"
+        );
+        assert!(
+            !json_subset(&observed, &json!(1)),
+            "voulu scalaire contre observé objet"
+        );
+
+        assert!(json_equal(&observed, &observed));
+        assert!(!json_equal(&observed, &json!({"a": 1})));
+        assert!(!json_equal(&json!(1), &json!(1.0)), "entier ≠ flottant");
+        assert!(!json_equal(&json!("1"), &json!(1)), "chaîne ≠ entier");
+    }
+
+    // Scenario « json_subset ignore les clés en plus, json_equal non » : les mêmes verdicts
+    // sortent du script, et un pointeur de fonction en argument est une erreur, sans panique.
+    #[test]
+    fn json_subset_et_json_equal_verdicts_script() {
+        let mut engine = Engine::new();
+        http_rhai_register(&mut engine);
+        let subset: bool = engine
+            .eval("json_subset(#{a: 1, b: #{c: 2, d: 3}}, #{a: 1})")
+            .expect("json_subset doit s'évaluer en script");
+        assert!(subset, "les clés en plus côté observé sont ignorées");
+        let refuse: bool = engine
+            .eval("json_subset(#{a: 1}, #{a: \"1\"})")
+            .expect("json_subset doit s'évaluer en script");
+        assert!(!refuse, "\"1\" ≠ 1 en script");
+        let egal: bool = engine
+            .eval("json_equal(#{a: 1}, #{a: 1})")
+            .expect("json_equal doit s'évaluer en script");
+        assert!(egal);
+        let different: bool = engine
+            .eval("json_equal(#{a: 1, b: 2}, #{a: 1})")
+            .expect("json_equal doit s'évaluer en script");
+        assert!(!different, "clés en plus des deux côtés comprises");
+        assert!(
+            engine
+                .eval::<bool>("let f = Fn(\"abs\"); json_subset(f, #{})")
+                .is_err(),
+            "un pointeur de fonction doit être une erreur de script"
+        );
+    }
+
     // Must (obj_create) : `CreateMethod::Post` → POST, `CreateMethod::Put` → PUT, sur le chemin
     // de collection.
     #[tokio::test(flavor = "multi_thread")]
@@ -3004,10 +3251,57 @@ mod jumeau_module_http {
         matchers::{method, path},
     };
 
-    /// Les VINGT-NEUF noms du `Must` de ./http.sdd (§ « Enregistrer dans
+    /// Les TRENTE-ET-UN noms du `Must` de ./http.sdd (§ « Enregistrer dans
     /// `http_rhai_register` ») : jumeaux du constructeur, dix setters/builders,
-    /// huit verbes à double alias, trois libres.
-    const HTTP_FNS: [&str; 29] = [
+    /// huit verbes à double alias, cinq libres (dont les deux comparateurs JSON).
+    /// Noms (appels `nom(`) qu'un script du jumeau ne résout jamais nus : libres renommées et
+    /// alias engine seulement (Must « Noms courts du jumeau », ./http.sdd).
+    const NON_RESOLUS_NUS: [&str; 15] = [
+        "new_http_client(",
+        "new_client(",
+        "http_get_yaml(",
+        "headers_get(",
+        "headers_has(",
+        "json_subset(",
+        "json_equal(",
+        "http_get(",
+        "http_head(",
+        "http_post(",
+        "http_put(",
+        "http_patch(",
+        "http_delete(",
+        "http_delete_with_body(",
+        "http_post_form(",
+    ];
+
+    /// Les 22 noms du jumeau module : l'enregistreur moins ses 9 engine-only, `http_get_yaml`
+    /// devenu `get_yaml` (table « Noms courts du jumeau » de ../http.sdd).
+    const HTTP_JUMEAU: [&str; 22] = [
+        "new_client",
+        "headers_reset",
+        "set_baseurl",
+        "set_server_ca",
+        "set_mtls_cert_key",
+        "add_header",
+        "add_header_json",
+        "add_header_bearer",
+        "add_header_basic",
+        "head",
+        "get",
+        "delete",
+        "delete_with_body",
+        "patch",
+        "post",
+        "put",
+        "post_form",
+        "get_yaml",
+        "headers_get",
+        "headers_has",
+        "json_subset",
+        "json_equal",
+    ];
+
+    const HTTP_FNS: [&str; 31] = [
         "new_http_client",
         "new_client",
         "headers_reset",
@@ -3037,6 +3331,8 @@ mod jumeau_module_http {
         "http_get_yaml",
         "headers_get",
         "headers_has",
+        "json_subset",
+        "json_equal",
     ];
 
     /// Nom → paramètres attendus NOMMÉS dans la signature (receveur `client`
@@ -3044,7 +3340,7 @@ mod jumeau_module_http {
     /// leurs types » du Scenario metadata. Porte `metadata` : sans la feature,
     /// l'introspection des noms ne tourne pas.
     #[cfg(feature = "metadata")]
-    const HTTP_PARAMS: [(&str, &[&str]); 29] = [
+    const HTTP_PARAMS: [(&str, &[&str]); 31] = [
         ("new_http_client", &["base"]),
         ("new_client", &["base"]),
         ("headers_reset", &["client"]),
@@ -3074,6 +3370,8 @@ mod jumeau_module_http {
         ("http_get_yaml", &["url", "auth_type", "credential"]),
         ("headers_get", &["headers", "name"]),
         ("headers_has", &["headers", "name"]),
+        ("json_subset", &["observed", "wanted"]),
+        ("json_equal", &["observed", "wanted"]),
     ];
 
     /// Engine vierge portant le jumeau module enregistré par
@@ -3153,13 +3451,14 @@ mod jumeau_module_http {
     }
 
     /// Scenario « `http_module` équivaut à `http_rhai_register` » : les deux
-    /// ensembles de noms sont égaux et exactement les VINGT-NEUF du `Must`
+    /// ensembles de noms sont égaux et exactement les TRENTE-ET-UN du `Must`
     /// (aucune fonction en plus ni en moins, comparés par l'introspection de
     /// Rhai) ; les appels représentatifs des Scenario existants de cette spec
     /// sont rejoués sur chacun — nom nu sur l'engine de l'enregistreur, nom nu
     /// ET qualifié `m::nom` sur l'engine du jumeau — mêmes résultats, mêmes
     /// noyaux d'erreur.
     #[tokio::test(flavor = "multi_thread")]
+    #[allow(clippy::too_many_lines)] // test de parité d'un seul Scenario (http.sdd), découpé par faces.
     async fn http_module_equivalent_a_http_rhai_register() {
         crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start().await;
@@ -3184,16 +3483,16 @@ mod jumeau_module_http {
             .await;
         let uri = server.uri();
 
-        // Then « les deux ensembles de noms sont égaux », et exactement les 29.
+        // Then « les deux ensembles de noms sont égaux », et exactement les 31.
         assert_eq!(
             names_added_by(http_rhai_register),
             set_of(&HTTP_FNS),
-            "l'enregistreur accorde exactement les VINGT-NEUF noms du Must"
+            "l'enregistreur accorde exactement les TRENTE-ET-UN noms du Must"
         );
         assert_eq!(
             names_added_by_module(http_module()),
-            set_of(&HTTP_FNS),
-            "le jumeau module rend exactement les noms de l'enregistreur, aucun en plus ni en moins"
+            set_of(&HTTP_JUMEAU),
+            "le jumeau module rend exactement ses 22 noms (sans alias ni new_http_client)"
         );
 
         let mut enregistreur = Engine::new();
@@ -3205,7 +3504,7 @@ mod jumeau_module_http {
             // "RestClient", des deux voies, nu et qualifié.
             (
                 format!(r#"let c = new_http_client("{uri}"); type_of(c)"#),
-                Some(format!(r#"let c = m::new_http_client("{uri}"); type_of(c)"#)),
+                Some(format!(r#"let c = m::new_client("{uri}"); type_of(c)"#)),
                 None,
             ),
             // Scenario « le registre des 29 noms », jumeau du constructeur :
@@ -3219,7 +3518,7 @@ mod jumeau_module_http {
             (
                 r#"let c = new_http_client("http://x"); c.set_baseurl("http://y"); c.add_header("X-A", "1"); c.headers_reset(); c.add_header_json(); c.add_header_bearer("t"); c.add_header_basic("u", "p"); c.set_server_ca("pem"); c.set_mtls_cert_key("cert", "cle"); type_of(c)"#.into(),
                 Some(
-                    r#"let c = m::new_http_client("http://x"); m::set_baseurl(c, "http://y"); m::add_header(c, "X-A", "1"); m::headers_reset(c); m::add_header_json(c); m::add_header_bearer(c, "t"); m::add_header_basic(c, "u", "p"); m::set_server_ca(c, "pem"); m::set_mtls_cert_key(c, "cert", "cle"); type_of(c)"#
+                    r#"let c = m::new_client("http://x"); m::set_baseurl(c, "http://y"); m::add_header(c, "X-A", "1"); m::headers_reset(c); m::add_header_json(c); m::add_header_bearer(c, "t"); m::add_header_basic(c, "u", "p"); m::set_server_ca(c, "pem"); m::set_mtls_cert_key(c, "cert", "cle"); type_of(c)"#
                         .into(),
                 ),
                 None,
@@ -3231,7 +3530,7 @@ mod jumeau_module_http {
                     r#"let c = new_http_client("{uri}"); c.get("a").code.to_string() + "|" + c.http_get("a").code.to_string() + "|" + c.head("h").code.to_string() + "|" + c.post("a", "brut").code.to_string()"#
                 ),
                 Some(format!(
-                    r#"let c = m::new_http_client("{uri}"); m::get(c, "a").code.to_string() + "|" + m::http_get(c, "a").code.to_string() + "|" + m::head(c, "h").code.to_string() + "|" + m::post(c, "a", "brut").code.to_string()"#
+                    r#"let c = m::new_client("{uri}"); m::get(c, "a").code.to_string() + "|" + m::get(c, "a").code.to_string() + "|" + m::head(c, "h").code.to_string() + "|" + m::post(c, "a", "brut").code.to_string()"#
                 )),
                 None,
             ),
@@ -3242,7 +3541,7 @@ mod jumeau_module_http {
                     r#"let c = new_http_client("{uri}"); let r = c.get("a"); let v = (if headers_has(r.headers, "X-TOTAL-PAGES") {{ headers_get(r.headers, "x-total-pages") }} else {{ "absent" }}); v"#
                 ),
                 Some(format!(
-                    r#"let c = m::new_http_client("{uri}"); let r = m::get(c, "a"); let v = (if m::headers_has(r.headers, "X-TOTAL-PAGES") {{ m::headers_get(r.headers, "x-total-pages") }} else {{ "absent" }}); v"#
+                    r#"let c = m::new_client("{uri}"); let r = m::get(c, "a"); let v = (if m::headers_has(r.headers, "X-TOTAL-PAGES") {{ m::headers_get(r.headers, "x-total-pages") }} else {{ "absent" }}); v"#
                 )),
                 None,
             ),
@@ -3250,21 +3549,21 @@ mod jumeau_module_http {
             // toute connexion, texte porté à l'identique des deux voies.
             (
                 r#"let c = new_http_client("http://127.0.0.1:1"); c.post_form("/a", #{k: #{sub: 1}})"#.into(),
-                Some(r#"let c = m::new_http_client("http://127.0.0.1:1"); m::post_form(c, "/a", #{k: #{sub: 1}})"#.into()),
+                Some(r#"let c = m::new_client("http://127.0.0.1:1"); m::post_form(c, "/a", #{k: #{sub: 1}})"#.into()),
                 Some("form field 'k' must be a scalar"),
             ),
             // Scenario « http_get_yaml parle bearer, basic, et scanne » :
             // `unknown auth_type` avant toute connexion.
             (
                 r#"http_get_yaml("http://127.0.0.1:1/a.yaml", "digest", "")"#.into(),
-                Some(r#"m::http_get_yaml("http://127.0.0.1:1/a.yaml", "digest", "")"#.into()),
+                Some(r#"m::get_yaml("http://127.0.0.1:1/a.yaml", "digest", "")"#.into()),
                 Some("unknown auth_type 'digest'"),
             ),
             // Scenario « rhai_get ne pleure jamais un statut », given port
             // fermé : l'erreur transporte la CAUSE aplatie par error_chain.
             (
                 r#"let c = new_http_client("http://127.0.0.1:1"); c.get("x")"#.into(),
-                Some(r#"let c = m::new_http_client("http://127.0.0.1:1"); m::get(c, "x")"#.into()),
+                Some(r#"let c = m::new_client("http://127.0.0.1:1"); m::get(c, "x")"#.into()),
                 Some("Connection refused"),
             ),
         ];
@@ -3273,7 +3572,14 @@ mod jumeau_module_http {
             // Face « nom nu aussi sur le second engine » : le jumeau est en
             // namespace global (FnNamespace::Global), le nom nu y résout pareil.
             let rb = par_module.eval::<rhai::Dynamic>(&nu);
-            comparer_resultats(&nu, marqueur, rn, rb);
+            if NON_RESOLUS_NUS.iter().any(|nom| nu.contains(nom)) {
+                assert!(
+                    rb.is_err_and(|e| e.to_string().contains("Function not found")),
+                    "libre ou alias du jumeau inconnu nu attendu : {nu}"
+                );
+            } else {
+                comparer_resultats(&nu, marqueur, rn, rb);
+            }
             if let Some(q) = &qualifie {
                 let rn = enregistreur.eval::<rhai::Dynamic>(&nu);
                 let rq = par_module.eval::<rhai::Dynamic>(q);
@@ -3284,7 +3590,7 @@ mod jumeau_module_http {
 
     /// Scenario « `http_module` équivaut à `http_rhai_register` », dernier `And` :
     /// sur l'engine de l'enregistreur, `rhai::Engine::gen_fn_signatures` sans les
-    /// paquets liste les mêmes fonctions qu'avant — les vingt-neuf enregistrements
+    /// paquets liste les mêmes fonctions qu'avant — les trente-et-un enregistrements
     /// en fonctions DIRECTES, non passés dans un module global. Porte `metadata`
     /// de `@rhai`.
     #[cfg(feature = "metadata")]
@@ -3300,8 +3606,8 @@ mod jumeau_module_http {
             .collect();
         assert_eq!(
             ajoutees.len(),
-            29,
-            "les vingt-neuf noms du Must sont les seules signatures ajoutees a la baseline : {ajoutees:?}"
+            31,
+            "les trente-et-un noms du Must sont les seules signatures ajoutees a la baseline : {ajoutees:?}"
         );
         for prefix in [
             "new_http_client(",
@@ -3318,7 +3624,7 @@ mod jumeau_module_http {
     }
 
     /// Scenario « fonctions documentées sous metadata (http) » : sous la feature
-    /// `metadata`, chacune des vingt-neuf fonctions enregistrees porte un
+    /// `metadata`, chacune des trente-et-une fonctions enregistrees porte un
     /// commentaire `///` non vide et les NOMS de ses parametres — pas seulement
     /// leurs types —, vérifiés par `gen_fn_signatures` et
     /// `gen_fn_metadata_to_json`.
@@ -3423,14 +3729,14 @@ mod jumeau_module_http {
                 .expect("constructeur et setters réussissent sans `metadata`")
                 .to_string(),
             par_module
-                .eval::<rhai::Dynamic>(r#"let c = new_http_client("http://x"); c.add_header("K", "v"); c.headers_reset(); type_of(c)"#)
+                .eval::<rhai::Dynamic>(r#"let c = m::new_client("http://x"); c.add_header("K", "v"); c.headers_reset(); type_of(c)"#)
                 .expect("la voie jumelle rend la même valeur sans `metadata`")
                 .to_string(),
         );
         assert_eq!(
-            names_added_by(http_rhai_register),
             names_added_by_module(http_module()),
-            "sans `metadata`, les deux ensembles de noms restent égaux"
+            set_of(&HTTP_JUMEAU),
+            "sans `metadata`, le jumeau pose ses 22 noms courts"
         );
     }
 }
@@ -3534,6 +3840,85 @@ mod signatures_documentees {
             "headers_get(headers: array, name: string) -> Dynamic",
         ),
         ("headers_has", "headers_has(headers: array, name: string) -> bool"),
+        (
+            "json_subset",
+            "json_subset(observed: Dynamic, wanted: Dynamic) -> bool",
+        ),
+        (
+            "json_equal",
+            "json_equal(observed: Dynamic, wanted: Dynamic) -> bool",
+        ),
+    ];
+
+    /// Signatures du jumeau module : 22 entrées, sans les 9 engine-only, libre renommée `get_yaml`.
+    const SIGNATURES_JUMEAU: &[(&str, &str)] = &[
+        ("new_client", "new_client(base: string) -> RestClient"),
+        ("headers_reset", "headers_reset(client: &mut RestClient)"),
+        (
+            "set_baseurl",
+            "set_baseurl(client: &mut RestClient, base: string)",
+        ),
+        (
+            "set_server_ca",
+            "set_server_ca(client: &mut RestClient, ca: string)",
+        ),
+        (
+            "set_mtls_cert_key",
+            "set_mtls_cert_key(client: &mut RestClient, cert: string, key: string)",
+        ),
+        (
+            "add_header",
+            "add_header(client: &mut RestClient, key: string, value: string)",
+        ),
+        ("add_header_json", "add_header_json(client: &mut RestClient)"),
+        (
+            "add_header_bearer",
+            "add_header_bearer(client: &mut RestClient, token: string)",
+        ),
+        (
+            "add_header_basic",
+            "add_header_basic(client: &mut RestClient, username: string, password: string)",
+        ),
+        ("head", "head(client: &mut RestClient, path: string) -> map"),
+        ("get", "get(client: &mut RestClient, path: string) -> map"),
+        ("delete", "delete(client: &mut RestClient, path: string) -> map"),
+        (
+            "delete_with_body",
+            "delete_with_body(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "patch",
+            "patch(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "post",
+            "post(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "put",
+            "put(client: &mut RestClient, path: string, val: Dynamic) -> map",
+        ),
+        (
+            "post_form",
+            "post_form(client: &mut RestClient, path: string, val: map) -> map",
+        ),
+        (
+            "get_yaml",
+            "get_yaml(url: string, auth_type: string, credential: string) -> Dynamic",
+        ),
+        (
+            "headers_get",
+            "headers_get(headers: array, name: string) -> Dynamic",
+        ),
+        ("headers_has", "headers_has(headers: array, name: string) -> bool"),
+        (
+            "json_subset",
+            "json_subset(observed: Dynamic, wanted: Dynamic) -> bool",
+        ),
+        (
+            "json_equal",
+            "json_equal(observed: Dynamic, wanted: Dynamic) -> bool",
+        ),
     ];
 
     /// Signatures que l'enregistreur ajoute à la base, directement sur l'engine.
@@ -3556,10 +3941,10 @@ mod signatures_documentees {
     }
 
     /// Égalité stricte (ensembles triés) entre les signatures ajoutées et la table.
-    fn assert_egale_a_la_table(ajoutees: Vec<String>, face: &str) {
+    fn assert_egale_a_la_table(ajoutees: Vec<String>, table: &[(&str, &str)], face: &str) {
         let mut obtenues = ajoutees;
         obtenues.sort();
-        let mut attendues: Vec<String> = SIGNATURES_ATTENDUES
+        let mut attendues: Vec<String> = table
             .iter()
             .map(|(_, signature)| (*signature).to_string())
             .collect();
@@ -3569,12 +3954,12 @@ mod signatures_documentees {
 
     #[test]
     fn scenario_signatures_documentees_enregistreur_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_enregistreur(), "enregistreur");
+        assert_egale_a_la_table(ajoutees_par_enregistreur(), SIGNATURES_ATTENDUES, "enregistreur");
     }
 
     #[test]
     fn scenario_signatures_documentees_jumeau_module_egal_table() {
-        assert_egale_a_la_table(ajoutees_par_module(), "jumeau module");
+        assert_egale_a_la_table(ajoutees_par_module(), SIGNATURES_JUMEAU, "jumeau module");
     }
 
     #[test]
@@ -3586,7 +3971,7 @@ mod signatures_documentees {
         );
         assert_eq!(
             ajoutees_par_module().len(),
-            SIGNATURES_ATTENDUES.len(),
+            SIGNATURES_JUMEAU.len(),
             "jumeau module : une fonction sans entrée de table fait échouer ce test"
         );
     }
@@ -3601,5 +3986,119 @@ mod signatures_documentees {
                 "signature hors vocabulaire rhai : {signature}"
             );
         }
+    }
+}
+
+// Table « Noms courts du jumeau » (décision du 2026-11-06, ./http.sdd) : 31 noms de
+// l'enregistreur, 22 dans le jumeau. Engine seulement : les 8 alias `http_*` et
+// `new_http_client`. Libres (qualifiées) : `new_client`, `get_yaml`, `headers_get`,
+// `headers_has`, `json_subset`, `json_equal`. Les autres sont des méthodes (globales).
+#[cfg(all(test, feature = "http"))]
+mod table_noms_courts {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    const ENREGISTREUR: [&str; 31] = [
+        "new_http_client",
+        "new_client",
+        "headers_reset",
+        "set_baseurl",
+        "set_server_ca",
+        "set_mtls_cert_key",
+        "add_header",
+        "add_header_json",
+        "add_header_bearer",
+        "add_header_basic",
+        "head",
+        "http_head",
+        "get",
+        "http_get",
+        "delete",
+        "http_delete",
+        "delete_with_body",
+        "http_delete_with_body",
+        "patch",
+        "http_patch",
+        "post",
+        "http_post",
+        "put",
+        "http_put",
+        "post_form",
+        "http_post_form",
+        "http_get_yaml",
+        "headers_get",
+        "headers_has",
+        "json_subset",
+        "json_equal",
+    ];
+
+    const JUMEAU: [&str; 22] = [
+        "new_client",
+        "headers_reset",
+        "set_baseurl",
+        "set_server_ca",
+        "set_mtls_cert_key",
+        "add_header",
+        "add_header_json",
+        "add_header_bearer",
+        "add_header_basic",
+        "head",
+        "get",
+        "delete",
+        "delete_with_body",
+        "patch",
+        "post",
+        "put",
+        "post_form",
+        "get_yaml",
+        "headers_get",
+        "headers_has",
+        "json_subset",
+        "json_equal",
+    ];
+
+    fn noms_de(engine: &Engine) -> BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn table_enregistreur_garde_ses_31_noms() {
+        let mut engine = Engine::new();
+        http_rhai_register(&mut engine);
+        let ajoutes: BTreeSet<String> = noms_de(&engine)
+            .difference(&noms_de(&Engine::new()))
+            .cloned()
+            .collect();
+        let attendus: BTreeSet<String> = ENREGISTREUR.iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(ajoutes, attendus);
+    }
+
+    #[test]
+    fn table_jumeau_pose_les_22_noms_sans_alias_ni_nouveau_http_client() {
+        let mut engine = Engine::new();
+        engine.register_static_module("http", http_module().into());
+        let ajoutes: BTreeSet<String> = noms_de(&engine)
+            .difference(&noms_de(&Engine::new()))
+            .map(|nom| nom.strip_prefix("http::").unwrap_or(nom).to_string())
+            .collect();
+        let attendus: BTreeSet<String> = JUMEAU.iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(ajoutes, attendus);
+    }
+
+    #[test]
+    fn table_libre_courte_inconnue_nue_methode_globale() {
+        let mut engine = Engine::new();
+        engine.register_static_module("http", http_module().into());
+        assert!(
+            engine.eval::<rhai::Dynamic>(r#"get_yaml("u", "", "")"#).is_err(),
+            "libre nue"
+        );
+        let type_client: String = engine
+            .eval(r#"let c = http::new_client("http://x"); c.add_header("k", "v"); type_of(c)"#)
+            .expect("le constructeur qualifié et la méthode globale répondent");
+        assert_eq!(type_client, "RestClient");
     }
 }

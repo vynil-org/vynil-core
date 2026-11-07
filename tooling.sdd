@@ -274,6 +274,14 @@ Tasks:
     (jumelle de ./.github/workflows/workflows.sdd). Les sept fichiers de `src/` touchés portent
     chacun leur jumelle, cochées dans le même commit.
 
+  [x] Ajouter la porte `--no-default-features --features rhai,quantity` à la batterie (test et clippy) :
+    branche gated `quantity` des enregistrements de `new_bare`, que `--each-feature` ne compile pas
+    (même motif que `rhai,fs` et `rhai,password`). Lockstep des quatre emplacements : ce fichier,
+    ./AGENTS.md (liste de commandes et phrase des combinaisons explicites), l'agent `validator`
+    (./.opencode/agents/validator.md) et ./.github/workflows/test.yml. Jumelle de « Exposer la feature
+    `quantity` » de ./vyvil-core.sdd et de la tâche de ./.github/workflows/workflows.sdd, cochée dans
+    le même commit.
+
 Done when:
   `cargo clippy --all-targets -- -D warnings` et `cargo clippy --all-features --all-targets
     -- -D warnings` trient sans warning, comme chaque entrée de la matrice de features, et

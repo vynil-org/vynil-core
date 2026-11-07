@@ -4,12 +4,12 @@ Purpose:
   Point d'entrée Rhai de la crate : @crate::engine::Script, couple d'un @rhai::Engine et
     d'un @rhai::Scope persistant, construit par @crate::engine::Script::new_bare qui pose
     trois réglages d'engine, REMPLACE le module resolver par une collection de
-    @rhai::module_resolvers::FileModuleResolver, puis enregistre dans un ordre figé seize
-    utilitaires communs répartis en trois groupes PUBLICS et additifs (pur, hôte,
-    attente — un consommateur qui ne veut accorder qu'une partie à un script construit un
-    @rhai::Engine::new et n'appelle que les groupes accordés, issue vynil-org/vynil-core#18), le
-    groupe `fs` public lui aussi, les modules toujours disponibles chrono/hashes/semver/yaml/glob,
-    les modules à features fs/crypto(+key)/password/oci/shell, et enfin sept shims écrits en
+    @rhai::module_resolvers::FileModuleResolver, puis enregistre dans un ordre figé les deux modules PUBLICS et additifs `core` (aucune
+    autorité sur l'hôte : encodage, texte, glob, temps) et `host` (touche l'hôte : environnement,
+    journaux, et sous features disque et shell) — un consommateur qui ne veut accorder qu'une partie
+    à un script construit un @rhai::Engine::new et n'appelle que les modules accordés (issue
+    vynil-org/vynil-core#18, refondue le 2026-11-06 en catalogue de ../vyvil-core.sdd) —, puis les
+    modules `crypto`, `password` (feature), `semver` et `oci` (feature), et enfin sept shims écrits en
     Rhai (@assert absent du nom — fonction Rhai `assert` à deux arguments, `import_run` ×3
     arités, `import_template` ×3 arités) qui rendent silencieusement absents les modules
     d'import introuvables. Cinq méthodes d'évaluation partagent le scope, donc les variables
@@ -29,8 +29,9 @@ References:
     @variant-Error::UTF8, @variant-Error::SerializationError, @variant-Error::Base64DecodeError.
     @crate::rhai_err est importe ; @crate::rhai_err_str ne l'est pas.
   ./Cargo.toml — table de ce que chaque feature ajoute à CE fichier : `rhai` compile le
-    module entier ; `fs = []` câble @crate::engine::fs_rhai_register (publique) ;
-    `shell = []` câble @crate::shell::shell_rhai_register ; `password = []` câble
+    module entier ; `fs = []` câble les entrées `fs` du module `host` ;
+    `shell = []` câble @crate::shell::shell_fns dans `host` ; `quantity = []` câble
+    @crate::quantity::quantity_fns dans `core` ; `password = []` câble
     @crate::password::password_rhai_register ; `crypto` câble
     @crate::hashes::crypto_hashes_rhai_register puis @crate::key::key_rhai_register ; `oci`
     câble @crate::oci::oci_rhai_register ; `k8s`/`s3`/`http` n'activent AUCUN appel
@@ -47,7 +48,7 @@ References:
   ./hbs.rs — ./engine.rs n'importe RIEN de @crate::hbs ni ./hbs_json.rs : le mot
     `template` des shims désigne une fonction DE MODULE Rhai côté consommateur, sans aucun
     rapport au @crate::hbs::HandleBars::register_template.
-  ./docs/rhai_helpers.md — tables fidèles aux seize noms communs et aux sept shims ; sa
+  ./docs/rhai_helpers.md — tables fidèles aux modules `core`/`host`/`crypto` et aux sept shims ; sa
     section 12 portait une phrase fausse sur reqwest « dependency de base » : retirée à la
     clôture de ./docs.sdd.
   ./lib.rs (rustdoc racine) — quickstart `new_bare(vec![...])` + `run_file(&PathBuf)` ;
@@ -68,43 +69,45 @@ Must:
     dans l'ordre du vecteur, puis @rhai::Engine::set_module_resolver — la collection
     REMPLACE le resolver par défaut, y compris quand le vecteur est vide ;
     @rhai::Engine::set_max_expr_depths pose 256 (256, 128) ; @rhai::Engine::set_max_call_levels(512) ;
-    les trois groupes communs dans l'ordre pur, hôte, attente
-    (@crate::engine::core_pure_rhai_register, @crate::engine::core_host_rhai_register,
-    @crate::engine::core_sleep_rhai_register) ;
-    @crate::engine::fs_rhai_register sous `fs` ; @crate::chrono::chrono_rhai_register ; @crate::hashes::hashes_rhai_register ; sous
-    `crypto` @crate::hashes::crypto_hashes_rhai_register PUIS @crate::key::key_rhai_register ;
-    @crate::password::password_rhai_register sous `password` ;
-    @crate::semver::semver_rhai_register ; @crate::yaml::yaml_rhai_register ;
-    @crate::glob::glob_rhai_register ; @crate::oci::oci_rhai_register sous `oci` ;
-    @crate::shell::shell_rhai_register sous `shell` ; @crate::engine::Script::add_common en
-    DERNIER (les shims Rhai appellent `log_debug` posé avant eux).
-  Répartir les seize noms communs, toujours présents sous `rhai` dans `new_bare`, en quatre
-    groupes dont chacun est une fonction PUBLIQUE `pub fn(engine: &mut` @rhai::Engine `)` appelable
-    seule sur un @rhai::Engine::new vierge, additive (un groupe ne retire ni ne suppose un
-    autre), idempotente à l'appel répété et sans effet hors des noms de son groupe :
-    PUR (@crate::engine::core_pure_rhai_register) — `sha256`, `url_encode`, `to_decimal`,
-    `base64_decode`, `base64_encode`, `json_encode`, `json_encode_escape`, `json_decode`,
-    `basename`, `dirname` : calcul sur leurs arguments, aucun accès à l'hôte (`basename` et
-    `dirname` découpent une chaîne, ne touchent pas le disque) ; HÔTE
-    (@crate::engine::core_host_rhai_register) — `get_env`, `log_debug`, `log_info`, `log_warn`,
-    `log_error` : ce que le script lit de l'environnement du processus et écrit dans ses
-    journaux ; ATTENTE (@crate::engine::core_sleep_rhai_register) — `sleep`.
-    La partition est un contrat, pas une commodité : `sleep` n'accorde aucune autorité sur quoi
-    que ce soit (il bloque, il ne lit ni n'écrit rien) et ne voyage donc pas avec `get_env`
-    (décision du développeur principal). Les shims de @crate::engine::Script::add_common
-    appellent `log_debug` sur leur chemin de skip : un engine qui n'a pas le groupe hôte les
+    @crate::engine::core_rhai_register PUIS @crate::engine::host_rhai_register ;
+    @crate::hashes::crypto_rhai_register ; @crate::password::password_rhai_register sous
+    `password` ; @crate::semver::semver_rhai_register ; @crate::oci::oci_rhai_register sous `oci` ;
+    @crate::engine::Script::add_common en DERNIER (les shims Rhai appellent `log_debug` posé avant
+    eux par `host`). Les modules chrono, glob, yaml, quantity, shell et les entrées `fs` ne sont plus
+    appelés séparément : ce sont des listes d'entrées `pub(crate)` composées par `core` et `host`.
+  Répartir les noms communs, toujours présents sous `rhai` dans `new_bare`, en DEUX modules dont
+    chacun est une paire PUBLIQUE enregistreur `pub fn(engine: &mut` @rhai::Engine `)` / jumeau
+    `pub fn() -> @rhai::Module`, appelable seule sur un @rhai::Engine::new vierge, additive (un module
+    ne retire ni ne suppose un autre), idempotente à l'appel répété et sans effet hors de ses noms
+    (décision du 2026-11-06, catalogue de ../vyvil-core.sdd) :
+    `core` (@crate::engine::core_rhai_register / @crate::engine::core_module) — aucune autorité sur
+    l'hôte : `url_encode`, `to_decimal`, `base64_decode`, `base64_encode`, `json_encode`,
+    `json_encode_escape`, `json_decode`, `basename`, `dirname` (qui découpent une chaîne, ne touchent pas
+    le disque), `regex_is_match`, et les entrées des specs sœurs : temps (`sleep` d'ici, `date_now`/`format`
+    de ./chrono.sdd), `glob` de ./glob.sdd, `yaml_encode`/`yaml_decode`/`yaml_decode_multi` de ./yaml.sdd,
+    et sous `quantity` `cpu_millis_of`/`memory_bytes_of` de ./quantity.sdd ;
+    `host` (@crate::engine::host_rhai_register / @crate::engine::host_module) — ce que le script lit
+    de l'environnement du processus, écrit dans ses journaux, et sous features sur le disque et le
+    shell : `get_env`, `log_debug`, `log_info`, `log_warn`, `log_error` ; sous `fs` les `file_*` ci-dessous ;
+    sous `shell` `shell_run`/`shell_output` de ./shell.sdd. `sha256` n'est plus ici : il appartient au
+    module `crypto` de ./hashes.sdd, la fonction restant définie dans ./engine.rs et exposée par la
+    liste `pub(crate)` @crate::engine::sha256_fns.
+    La partition est un contrat, pas une commodité : `core` est ce qu'on accorde à un moteur
+    restreint ; `sleep` y figure (décision du développeur principal du 2026-11-06 : il bloque, il ne
+    lit ni n'écrit rien, et il est annulable). Les shims de @crate::engine::Script::add_common
+    appellent `log_debug` sur leur chemin de skip : un engine qui n'a pas le module `host` les
     voit échouer en fonction inconnue, à documenter en rustdoc de `add_common` — le
-    consommateur qui construit son engine à la main accorde le groupe hôte avant d'appeler
+    consommateur qui construit son engine à la main accorde le module `host` avant d'appeler
     `add_common`, ce qui lui donne aussi `get_env` ; s'il ne veut pas de `get_env`, il
-    enregistre lui-même un `log_debug` avant `add_common`. Sémantiques figées de chaque nom : `sha256` rend le digest hex de @sha256::digest ; `log_debug`/
+    enregistre lui-même un `log_debug` avant `add_common`. Sémantiques figées de chaque nom : `sha256` rend le digest hex minuscule de @sha2::Sha256 ; `log_debug`/
     `log_info`/`log_warn`/`log_error` appellent la macro @tracing du nom et rendent l'unité ;
     `url_encode` est @crate::engine::url_encode, percent-encode @url::form_urlencoded dont
     l'espace devient `+` ; `sleep` reçoit un @std::primitive::i64 et ne dort
     (@std::thread::sleep, sans plafond) que si la conversion @std::primitive::u64 reussit ET
     la valeur est strictement positive — 0 et négatifs sont des no-op immédiats, sans plafond
     (le script d'un opérateur peut légitimement attendre) ; quand le fil porte un jeton
-    d'annulation (@crate::cancel::scope, ./cancel.sdd, issue #21) il dort par tranches de 25 ms
-    au plus et rend @variant-Error::Cancelled (via @crate::rhai_err, message `CANCEL-001 operation cancelled`) dès que le jeton est
+    d'annulation (@crate::cancel::scope, ./cancel.sdd, issue #21) il dort sur l'attente bornée du jeton,
+    réveillée aussitôt par `cancel()` (issue #26), et rend @variant-Error::Cancelled (via @crate::rhai_err, message `CANCEL-001 operation cancelled`) dès que le jeton est
     vu annulé, jeton déjà annulé à l'entrée compris (pour une durée strictement positive) —
     ce n'est PAS un appel à @rhai::Engine::on_progress, qui ne peut pas s'exécuter pendant un
     appel natif ; sans jeton le comportement est l'ancien, un seul @std::thread::sleep ; `get_env` rend la chaîne vide quand
@@ -120,9 +123,18 @@ Must:
     echappés (JSON imbriqué d'un cran) ; `basename`/`dirname` appliquent
     @std::path::Path::file_name et @std::path::Path::parent, tout `None` et tout non-UTF-8
     rendant la chaîne vide.
-  Enregistrer sous `fs` (fonction PUBLIQUE @crate::engine::fs_rhai_register — `pub fn(engine:
-    &mut` @rhai::Engine `)` sous `all(feature = "rhai", feature = "fs")`, rustdoc qui dit ce
-    qu'elle accorde : lire, écrire, copier, créer et lister sur le disque de l'hôte, sans
+  `regex_is_match(pattern, text) -> bool` (module `core`, issue #41, 0.9.1) : vrai quand l'expression
+    régulière `pattern` (syntaxe et moteur de la crate @regex) trouve une correspondance QUELQUE PART dans
+    `text` (non ancrée). Pure : aucune E/S, ni réseau ni fichier ; le moteur de @regex garantit un temps
+    linéaire en la taille du texte et sa compilation reste bornée par sa limite de taille par défaut. Un
+    motif invalide est une erreur @crate::RhaiRes portant le message de @regex::Error, jamais une panique
+    ni un `false`. Pas de cache de motifs compilés. Elle n'est pas réservée au lint de l'agent vynil
+    (décision du développeur principal : « aucune raison de la limiter au lint ») qui réutilise cette
+    fonction à la place de la sienne ; un moteur restreint qui n'accorde que le module `core` l'obtient
+    sans élargir ses capacités sur l'hôte.
+  Enregistrer sous `fs` (entrées du module `host`, liste interne `fs_fns` sous
+    `all(feature = "rhai", feature = "fs")`, rustdoc de `host` qui dit ce
+    qu'elles accordent : lire, écrire, copier, créer et lister sur le disque de l'hôte, sans
     chroot) : `file_read` en
     @std::fs::read_to_string donc UTF-8 strict ; `file_write` en @std::fs::write donc
     écrasement intégral et création du fichier mais AUCUNE création des dossiers parents ;
@@ -236,7 +248,7 @@ Depends on:
   std — @std::thread::sleep/@std::time::Duration, @std::env::var, @std::path::Path/PathBuf,
     @std::fs sous `fs`, @std::ffi::OsStr.
   base64/url/sha256/serde_json/tracing — tous non optionnels : @base64 (STANDARD),
-    @url::form_urlencoded, @sha256::digest, @serde_json, @tracing (warn/error/debug).
+    @url::form_urlencoded, @sha2::Sha256 avec @hex::encode, @serde_json, @tracing (warn/error/debug).
   Modules des specs soeurs appelés par `new_bare` — @crate::chrono, @crate::hashes
     (hashes + crypto selon porte), @crate::key, @crate::password, @crate::semver,
     @crate::yaml, @crate::glob, @crate::shell, @crate::oci ; @crate::error_chain est
@@ -272,16 +284,17 @@ Exposes:
     Dynamic, Engine, Expr, ImmutableString, Map, Module, ParseError, Scope, Stmt,
     FileModuleResolver, ModuleResolversCollection, to_dynamic} — porte `rhai`, atteignables
     sans dépendre de @rhai directement (dont @crate::engine::to_dynamic jamais appelé ici).
-  Les quatre enregistreurs de groupe : @crate::engine::core_pure_rhai_register,
-    @crate::engine::core_host_rhai_register, @crate::engine::core_sleep_rhai_register
-    (porte `rhai`) et @crate::engine::fs_rhai_register
-    (porte `rhai` ET `fs`) — chacun un `pub fn(&mut` @rhai::Engine `)`, `#[must_use]` sans objet
-    (ils ne rendent rien). Leurs jumeaux module, `#[must_use] pub fn() -> @rhai::Module` :
-    @crate::engine::core_pure_module, @crate::engine::core_host_module,
-    @crate::engine::core_sleep_module et @crate::engine::fs_module (règle des jumeaux de ../vyvil-core.sdd, issue #19) ; mêmes noms
-    et mêmes sémantiques que l'enregistreur du groupe.
+  Les deux enregistreurs de module : @crate::engine::core_rhai_register et
+    @crate::engine::host_rhai_register (porte `rhai`) — chacun un `pub fn(&mut` @rhai::Engine `)`,
+    `#[must_use]` sans objet (ils ne rendent rien). Leurs jumeaux module, `#[must_use] pub fn() ->
+    @rhai::Module` : @crate::engine::core_module et @crate::engine::host_module (règle des jumeaux de
+    ../vyvil-core.sdd, issue #19) ; mêmes noms et mêmes sémantiques que l'enregistreur (aucun nom court
+    dans `core` ni `host`). Les helpers `pub(crate)` du motif : @crate::engine::register_at,
+    @crate::engine::register_free_at (entrée LIBRE : nom global dans l'engine, nom court qualifié seulement
+    dans le module), @crate::engine::register_engine_only_at (alias réservés à l'enregistreur),
+    @crate::engine::sha256_fns.
   Rien de plus : pas de fonction publique qui enregistre « tous les communs » d'un coup — le
-    consommateur compose les groupes qu'il accorde ; `new_bare` seul les accorde tous.
+    consommateur compose les modules qu'il accorde ; `new_bare` seul les accorde tous.
 
 Accepts:
   `resolver_path` : tout vecteur de chaînes de répertoires, vide compris ; les chemins ne
@@ -345,8 +358,8 @@ Handles:
   La persistance entre évaluations d'un même Script : données d'entrée par `set_dynamic`
     (nom homonyme écrasé via `set_or_push`), variables `let` de scripts précédents visibles
     des suivants, snapshot figé du ctx pour les modules `add_code`.
-  `sleep` annulé (jeton d'annulation du fil, ./cancel.sdd) : rend l'erreur @variant-Error::Cancelled au plus
-    une tranche (25 ms) après l'annulation, sans attendre la durée demandée ; un script qui
+  `sleep` annulé (jeton d'annulation du fil, ./cancel.sdd) : rend l'erreur @variant-Error::Cancelled dès
+    le réveil par `cancel()`, sans attendre la durée demandée ; un script qui
     l'attrape par `try` continue, la fin du script restant la décision de
     @rhai::Engine::on_progress du consommateur.
   La neutralité du client name : @crate::set_client_name reste sans effet sur ./engine.rs ;
@@ -488,10 +501,35 @@ Tasks:
     `rhai_err(Error::Cancelled)` au lieu de `Error::Other("cancelled")` ; les deux tests
     « sleep annulé » assertent le message de la variante. Tâche jumelle de « Ajouter
     @variant-Error::Cancelled » de ./lib.sdd.
+  [x] Rendre `sleep` réveillable par l'annulation (issue #26), selon le `Must` amendé : le groupe attente
+    appelle l'attente bornée de ./cancel.rs au lieu de dormir par tranches de 25 ms ; sans jeton, un seul
+    `std::thread::sleep` comme avant. Tests d'abord : les Scenario « sleep annulé » existants restent
+    verts, plus le Scenario « sleep annulé sans tranche » ci-dessous. À cocher dans le même commit que
+    les tâches jumelles de ./cancel.sdd et ./rt.sdd. À la clôture : reprendre rustdoc et `Depends on`.
+  [x] Ajouter `regex_is_match` au groupe PUR (issue #41), selon le `Must` : l'enregistrer dans
+    @crate::engine::core_pure_rhai_register ET dans son jumeau module, avec commentaire `///` et noms de
+    paramètres sous `metadata` (`regex_is_match(pattern: string, text: string) -> bool`). Dépendance
+    @regex ajoutée par la tâche jumelle de ../vyvil-core.sdd (feature `rhai`). Tests d'abord, depuis les
+    Scenario « regex_is_match » ci-dessous, dont celui du moteur à groupe unique. À la clôture : reprendre
+    les décomptes « seize noms communs » (`Purpose`, `Must`, Scenario) à « dix-sept », et le décompte
+    des noms du groupe PUR (dix à onze). Jumelle de « Livrer 0.9.1 » de ../vyvil-core.sdd, de la tâche de
+    ./lib.sdd et de la tâche 0.9.1 de ../docs.sdd.
+
 # Décisions figées sans changement de code — record d'arbitrage, pas une exigence.
 # La forme liante de chaque point vit dans les `Must`/`Must not` de cette spec.
 #   arités fermées des shims (`assert(cond, mess)`, `import_*`), snapshot `ctx.clone()` de
 #   `add_code`, fail-closed de `new_bare`.
+  [x] Fournir `core` et `host` (décision du 2026-11-06) : @crate::engine::core_rhai_register,
+    @crate::engine::core_module, @crate::engine::host_rhai_register, @crate::engine::host_module selon
+    le catalogue de ../vyvil-core.sdd, qui REMPLACE les trois groupes PUR/HÔTE/ATTENTE et `fs` de 0.9.0
+    (le `Must` ci-dessus qui les décrit est amendé par cette tâche : à reprendre à la clôture, avec
+    `Purpose`, `Exposes`, les Scenario « appartenance des fonctions à leur groupe », « moteur à groupe
+    unique », « add_common sans le groupe hôte » — `add_common` exige le module `host` — et
+    « new_bare inchangé »). Les listes d'entrées de chrono, glob, yaml et quantity sont appelées depuis
+    les enregistreurs de ./engine.rs (`pub(crate)`, tâches jumelles de leurs specs). `new_bare` appelle
+    `core`, `host`, `crypto`, `semver`, `password`, `oci` sous leurs features, dans cet ordre. Tests
+    d'abord : une table écrite à la main (nom global → nom de module → méthode/libre) par module,
+    comparée à l'introspection de l'engine et du module. Cocher dans le même commit que les jumelles.
 
 Scenario: sans rhai le module n'existe pas
   Given la crate compilée `--no-default-features` (sans `rhai`)
@@ -502,7 +540,7 @@ Scenario: sans rhai le module n'existe pas
 
 Scenario: la tier des noms suit les features
   Given un @crate::engine::Script construit par `new_bare(vec![])` aux features par défaut
-  Then les seize noms communs, les noms chrono/hashes(crc32)/semver/yaml/glob et les shims
+  Then les noms de `core`, de `host` (hors features), de `crypto` (`sha256`, `crc32_hash`), de `semver` et les shims
     se résolvent tous par `eval`
   Given la crate compilée sans `crypto` ni `password` ni `oci` ni `shell` ni `fs`
   When le script appelle `bcrypt_hash`, `gen_private_key`, `gen_password`, `shell_run`,
@@ -638,41 +676,48 @@ Scenario: la face Rust publique des communs
   And les ré-exports @rhai (dont @crate::engine::to_dynamic et la paire de resolveurs de
     module) sont atteignables sans que le consommateur dépende de @rhai nommément
 
-Scenario: appartenance des fonctions à leur groupe
-  Given un @rhai::Engine::new vierge sur lequel un seul groupe est enregistré à la fois
+Scenario: appartenance des fonctions à leur module
+  Given un @rhai::Engine::new_raw vierge sur lequel un seul module est enregistré à la fois
   When l'ensemble de ses noms de fonctions est lu (introspection de l'engine)
-  Then PUR rend exactement `sha256`, `url_encode`, `to_decimal`, `base64_decode`, `base64_encode`,
-    `json_encode`, `json_encode_escape`, `json_decode`, `basename`, `dirname`
-  And HÔTE rend exactement `get_env`, `log_debug`, `log_info`, `log_warn`, `log_error`
-  And ATTENTE rend exactement `sleep`
-  And sous `fs`, `fs_rhai_register` rend exactement `file_read`, `file_write`, `file_copy`,
-    `create_dir`, `read_dir`, `is_file`, `is_dir`
-  And les ensembles sont deux à deux disjoints et leur union (hors `fs`) est celle des seize noms
-    communs de `new_bare`
+  Then `core` rend exactement `url_encode`, `to_decimal`, `base64_decode`, `base64_encode`,
+    `json_encode`, `json_encode_escape`, `json_decode`, `basename`, `dirname`, `regex_is_match`,
+    `sleep`, `date_now`, `format`, `glob`, `yaml_encode`, `yaml_decode`, `yaml_decode_multi`, et sous
+    `quantity` `cpu_millis_of`, `memory_bytes_of` (les noms des specs sœurs sont verrouillés par
+    une TABLE écrite à la main dans ./engine.rs)
+  And `host` rend exactement `get_env`, `log_debug`, `log_info`, `log_warn`, `log_error`, plus sous
+    `fs` `file_read`, `file_write`, `file_copy`, `create_dir`, `read_dir`, `is_file`, `is_dir`, plus sous
+    `shell` `shell_run`, `shell_output`
+  And `sha256` n'est dans aucun des deux : seul le module `crypto` de ./hashes.sdd le pose
+  And les ensembles de `core` et `host` sont disjoints, et le jumeau module de chacun rend le même
+    ensemble que son enregistreur
 
-Scenario: moteur à groupe unique
-  Given un @rhai::Engine::new sur lequel seul le groupe PUR est enregistré
+Scenario: moteur à module unique
+  Given un @rhai::Engine::new_raw sur lequel seul le module `core` est enregistré
   When un script évalue `json_encode(#{a: 1})`
   Then la chaîne JSON est rendue
-  When un script évalue `get_env("PATH")`, `sleep(1)` ou `log_info("x")`
-  Then chacun est une fonction inconnue
-  Given le même engine avec le groupe hôte ajouté mais pas `add_common`
-  Then `log_info("x")` et `get_env` sont résolus et `sleep` reste inconnu : les groupes sont
-    additifs et n'en supposent aucun autre
+  When un script évalue `get_env("PATH")`, `log_info("x")`, `file_read("/etc/hostname")` ou `shell_run("true")`
+  Then chacun est une fonction inconnue : `core` n'accorde aucune autorité sur l'hôte
+  Given le même engine avec le module `host` ajouté mais pas `add_common`
+  Then `log_info("x")` et `get_env` sont résolus : les modules sont additifs et n'en supposent
+    aucun autre
+  Given un engine avec le module `host` seul
+  Then `get_env` répond et `json_encode`, `regex_is_match`, `glob`, `date_now` sont inconnus
 
-Scenario: add_common sans le groupe hôte
+Scenario: add_common sans le module host
   Given un @rhai::Engine::new vierge et un @crate::engine::Script bâti à la main autour de lui
   When `add_common` est appelé puis `import_run("absent", #{}, #{}, #[])` évalué
   Then l'évaluation échoue en fonction inconnue `log_debug`, la rustdoc de `add_common` le disant
-  Given le groupe hôte ajouté avant `add_common`
+  Given le module `host` ajouté avant `add_common`
   Then le même appel réussit avec skip silencieux, comme sous `new_bare`
 
-Scenario: new_bare inchangé
+Scenario: new_bare appelle les modules dans l'ordre
   Given un `new_bare(vec![])` aux features par défaut
-  Then chacun des seize noms communs répond comme avant la scission, et l'ensemble des noms
-    enregistrés est identique à celui d'avant la tâche (mesuré par introspection, mêmes
-    sémantiques de `to_decimal`, `get_env`, `sleep`)
-  And aucun nom n'a été ajouté ni retiré : la scission est sans effet pour vynil et kuberest
+  Then les noms de `core`, `host`, `crypto` (dont `sha256` et `crc32_hash`) et `semver` répondent, et
+    l'ensemble des noms enregistrés est la réunion des tables de ces modules, sans doublon
+  And `core` puis `host` sont enregistrés avant `crypto`, `password`, `semver`, `oci`, et
+    `add_common` en dernier
+  And la découpe par domaine du 2026-11-06 a ajouté `regex_is_match` (issue #41) et, sous `quantity`,
+    `cpu_millis_of`/`memory_bytes_of` (issue #42) : aucun autre nom n'a été ajouté ni retiré
 
 Scenario: sleep annulé
   Given un jeton installé par @crate::cancel::scope et un script `sleep(30)`
@@ -687,20 +732,20 @@ Scenario: sleep annulé
   When `sleep(1)` est évalué
   Then il bloque au moins 900 ms, sans différence avec le comportement d'avant
 
-Scenario: module équivalent à l'enregistreur (groupes communs)
-  Given pour chacun des quatre groupes un @rhai::Engine où l'enregistreur est appelé et un second,
-    vierge, où le jumeau module est enregistré par register_static_module sous le nom `m`
-  When les appels représentatifs des Scenario existants (valeurs de `sha256`, `base64_*`,
-    `to_decimal`, `get_env` absente, `file_write`/`file_read` sous `fs`…) sont rejoués sur
-    chacun, en nom nu ET qualifié `m::nom` sur le second
+Scenario: module équivalent à l'enregistreur (core et host)
+  Given pour chacun des modules `core` et `host` un @rhai::Engine où l'enregistreur est appelé et un
+    second, vierge, où le jumeau module est enregistré par register_static_module sous le nom `m`
+  When les appels représentatifs des Scenario existants (valeurs de `base64_*`, `to_decimal`, `get_env`
+    absente, `sleep(0)`, `date_now().format(…)`, `glob`, `yaml_encode`, `file_write`/`file_read` sous
+    `fs`, `shell_run` sous `shell`…) sont rejoués sur chacun, en nom nu ET qualifié `m::nom` sur le second
   Then les résultats et les erreurs sont identiques
   And les ensembles de noms de fonctions sont égaux
   And @rhai::Engine::gen_fn_signatures sur le premier engine liste les mêmes fonctions qu'avant
     la tâche (elles ne sont pas passées dans un module global)
 
-Scenario: fonctions documentées sous metadata (communs et fs)
+Scenario: fonctions documentées sous metadata (core et host)
   Given la crate compilée avec la feature `metadata` (porte `--all-features`)
-  When `gen_fn_signatures` et `gen_fn_metadata_to_json` listent un engine portant les quatre groupes
+  When `gen_fn_signatures` et `gen_fn_metadata_to_json` listent un engine portant `core` et `host`
   Then chaque fonction porte un commentaire non vide et les NOMS de ses paramètres (par exemple
     `json_encode(value: Dynamic) -> string` et non `json_encode(Dynamic)`)
   And le contrat des types est celui de rhai : chaque paramètre porte `nom: type` et la liste compte une
@@ -713,3 +758,24 @@ Scenario: fonctions documentées sous metadata (communs et fs)
     que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
     une signature sans retour
   And sans la feature, les mêmes tests de comportement passent sans différence
+
+Scenario: sleep annulé sans tranche
+  Given un jeton installé par @crate::cancel::scope et un script `sleep(30)`
+  When un autre fil annule le jeton 100 ms après le début de l'évaluation
+  Then @variant-Error::Cancelled est rendu en moins de 500 ms, sans dépendre d'aucune constante de tranche
+
+Scenario: regex_is_match cherche, n'ancre pas
+  Given un engine portant le module `core`
+  When un script évalue `regex_is_match("^a+$", "aaa")`, `regex_is_match("b", "abc")` et
+    `regex_is_match("^b", "abc")`
+  Then les résultats sont `true`, `true` et `false`
+  When un script évalue `regex_is_match("(", "x")`
+  Then l'évaluation échoue avec le message de l'erreur de motif, sans panique
+  When un script évalue `regex_is_match("(a+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab")`
+  Then le résultat est `false` en temps linéaire (le test borne la durée à moins de 1 s)
+
+Scenario: regex_is_match n'élargit pas un moteur restreint
+  Given un @rhai::Engine::new_raw sur lequel seul le module `core` est enregistré
+  When un script évalue `regex_is_match("a", "a")`
+  Then le résultat est `true`
+  And `get_env("PATH")` et `file_read("/etc/hostname")` restent des fonctions inconnues
