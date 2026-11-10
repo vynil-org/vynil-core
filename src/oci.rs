@@ -653,9 +653,7 @@ mod tests {
     /// se distingue donc par son ABSENCE (faute de priorité de mocks, le
     /// premier mock créé gagne — les mocks doivent être disjoints).
     fn request_without_last_param(req: &HttpMockRequest) -> bool {
-        req.query_params
-            .as_ref()
-            .is_none_or(|q| !q.iter().any(|(k, _)| k == "last"))
+        !req.query_params().iter().any(|(k, _)| k == "last")
     }
 
     /// Faux registre à `total` tags, servis par pages de 1000 (`last` = der-
@@ -675,7 +673,7 @@ mod tests {
                     when.method(GET)
                         .path(path.as_str())
                         .query_param("n", "1000")
-                        .matches(request_without_last_param);
+                        .is_true(request_without_last_param);
                     then.status(200)
                         .json_body(serde_json::json!({ "name": repo, "tags": tags }));
                 }),
@@ -790,7 +788,7 @@ mod tests {
         .expect("le pont doit servir")
         .expect("le registre répond 200");
         assert!(found, "manifeste existant → `true`");
-        m.assert_hits(1);
+        m.assert_calls(1);
     }
 
     #[test]
@@ -815,7 +813,7 @@ mod tests {
             Ok(false) => {}
             other => panic!("`false` sans erreur attendu, rendu : {other:?}"),
         }
-        m.assert_hits(1);
+        m.assert_calls(1);
     }
 
     #[test]
@@ -928,7 +926,7 @@ mod tests {
     const BLOB_SESSION: &str = "/v2/repo/img/blobs/uploads/session";
 
     fn json_body_of(req: &HttpMockRequest) -> Option<serde_json::Value> {
-        let body = req.body.as_ref()?;
+        let body = req.body_ref();
         if body.first() != Some(&b'{') {
             return None;
         }
@@ -960,7 +958,7 @@ mod tests {
     }
 
     fn body_is_gzip(req: &HttpMockRequest) -> bool {
-        req.body.as_ref().is_some_and(|b| b.starts_with(&[0x1f, 0x8b]))
+        req.body_ref().starts_with(&[0x1f, 0x8b])
     }
 
     /// `Some(annotations vides)` passé, jamais `None` : la clé `annotations`
@@ -1005,11 +1003,11 @@ mod tests {
         let config_mock = server.mock(|when, then| {
             when.method(PATCH)
                 .path(BLOB_SESSION)
-                .matches(config_body_locks_the_push_contract);
+                .is_true(config_body_locks_the_push_contract);
             then.status(202).header("Location", BLOB_SESSION);
         });
         server.mock(|when, then| {
-            when.method(PATCH).path(BLOB_SESSION).matches(body_is_gzip);
+            when.method(PATCH).path(BLOB_SESSION).is_true(body_is_gzip);
             then.status(202).header("Location", BLOB_SESSION);
         });
         server.mock(|when, then| {
@@ -1021,7 +1019,7 @@ mod tests {
         let manifest_mock = server.mock(move |when, then| {
             when.method(PUT)
                 .path("/v2/repo/img/manifests/1.0")
-                .matches(manifest_matcher);
+                .is_true(manifest_matcher);
             then.status(201).header("Location", location);
         });
         (config_mock, manifest_mock)
@@ -1310,10 +1308,9 @@ mod tests {
     // premier appelant gagnant dans le binaire : verrouillé par FILS, état frais) ──
 
     fn ua_is_oci_client_default(req: &HttpMockRequest) -> bool {
-        req.headers.as_ref().is_some_and(|hs| {
-            hs.iter()
-                .any(|(k, v)| k.eq_ignore_ascii_case("user-agent") && v.starts_with("oci-client/"))
-        })
+        req.headers_vec()
+            .iter()
+            .any(|(k, v)| k.eq_ignore_ascii_case("user-agent") && v.starts_with("oci-client/"))
     }
 
     #[test]
@@ -1340,7 +1337,7 @@ mod tests {
                 .await
                 .expect("le registre répond");
                 assert!(found, "l'User-Agent envoyé n'est pas le client name");
-                m.assert_hits_async(1).await;
+                m.assert_calls_async(1).await;
             })
             .expect("le pont doit servir");
             println!("{CHILD_ASSERTED}");
@@ -1374,7 +1371,7 @@ mod tests {
                     .mock_async(|when, then| {
                         when.method(GET)
                             .path("/v2/repo/img/manifests/1.0")
-                            .matches(ua_is_oci_client_default);
+                            .is_true(ua_is_oci_client_default);
                         then.status(200).body("{}");
                     })
                     .await;
@@ -1387,7 +1384,7 @@ mod tests {
                 .await
                 .expect("le registre répond");
                 assert!(found, "l'User-Agent envoyé n'est pas le défaut d'oci_client");
-                m.assert_hits_async(1).await;
+                m.assert_calls_async(1).await;
             })
             .expect("le pont doit servir");
             println!("{CHILD_ASSERTED}");
@@ -1479,7 +1476,7 @@ mod tests {
             text.contains("Stdio error"),
             "Error::Stdio attendu depuis `append_dir_all`, obtenu : {text}"
         );
-        post.assert_hits_async(0).await;
+        post.assert_calls_async(0).await;
     }
 
     // Scenario « hors runtime multi-thread, jamais de panique », bras
