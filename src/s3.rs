@@ -8,7 +8,7 @@ use crate::{
     rhai_err,
 };
 use futures::StreamExt;
-use object_store::{ObjectStore, path::Path};
+use object_store::{ObjectStore, ObjectStoreExt, path::Path};
 use rhai::{Dynamic, Engine, Module};
 
 /// Join `prefix` and `key` into one object key with a single `/` separator:
@@ -225,7 +225,7 @@ pub fn s3_module() -> Module {
 mod tests {
     use super::*;
     use crate::Error;
-    use object_store::{PutPayload, memory::InMemory, path::Path};
+    use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path};
 
     async fn put_key(store: &InMemory, key: &str, body: &[u8]) {
         store

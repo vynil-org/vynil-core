@@ -2,7 +2,7 @@ Spec: s3
 
 Purpose:
   Exposer deux helpers Rhai `s3_get_yaml` et `s3_list_keys` pour lire un object store
-    compatible S3 via @object_store 0.11 (avec endpoint HTTP personnalisable pour stores
+    compatible S3 via @object_store 0.14 (avec endpoint HTTP personnalisable pour stores
     self-hosted, en-tête du fichier), sous la seule feature `s3` qui implique `rhai`.
     Module de la tier « Never auto-wired » : aucun des deux helpers n'atteint un script via
     @crate::engine::Script::new_bare ; l'appelant branche la face lui-même en appelant
@@ -37,7 +37,7 @@ References:
     function yourself ». Lignes 51-54 : promesse de mock à corriger (§`Tasks`).
   ./Cargo.toml — `s3 = ["dep:object_store", "dep:futures", "dep:tokio", "rhai"]` (ligne 61) :
     la feature implique `rhai`, ses types cœur sont donc toujours des API Rhai ;
-    @object_store 0.11 avec features `aws` (lock 0.11.2) ; @tokio déclaré 1.48 features
+    @object_store 0.14 avec features `aws` (lock 0.14.2 ; `get`/`put` vivent sur le trait d'extension @object_store::ObjectStoreExt depuis 0.14) ; @tokio déclaré 1.48 features
     `macros`, `rt-multi-thread` (lock 1.53.1) ; @futures 0.3 (lock 0.3.34). @serde_yaml et
     @serde_json sont non optionnels : la double passe YAML→JSON→@rhai::Dynamic compile sous
     `s3`+`rhai` sans demander `hbs` ni `yaml`.
@@ -71,7 +71,7 @@ Must:
     — `prefix` privé de ses `/` finaux, `key` privé de ses `/` initiaux, joints par un unique
     `/` quand le préfixe restant est non vide, la clé seule sinon (décision actée : `"p"` et
     `"p/"` sont équivalents, la config utilisateur n'ayant pas de convention) ; chemin en
-    @object_store::path::Path::from ; @object_store::ObjectStore::get mappé en
+    @object_store::path::Path::from ; @object_store::ObjectStoreExt::get mappé en
     @variant-Error::Other ; @object_store::GetResult::bytes mappé en @variant-Error::Other ;
     @std::string::String::from_utf8 mappé en @variant-Error::UTF8 ; @serde_yaml::from_str
     mappé en @variant-Error::YamlError de `e.to_string()` ; @serde_json::to_string puis
@@ -127,7 +127,7 @@ Must not:
 
 Depends on:
   object_store — @object_store::aws::AmazonS3Builder, le trait @object_store::ObjectStore
-    (get, list), @object_store::path::Path, @object_store::Error ; 0.11.2 en lock sous feature
+    (get, list), @object_store::path::Path, @object_store::Error ; 0.14.2 en lock sous feature
     `aws` des S3. La sémantique complète du builder (validations, chaîne de credential,
     pagination, ordre de listing) et les textes d'erreur @object_store appartiennent à la
     dépendance et ne sont verrouillés ici que par leurs triggers, pas leurs formes.
