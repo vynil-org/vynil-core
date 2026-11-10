@@ -71,7 +71,7 @@ Must:
     depuis le dossier courant du processus, chemin relatif ou absolu accepté tel quel) ;
     digest `diff_id` = préfixe `sha256:` + hex @sha256::digest du tar NON compressé ;
     compression @flate2 niveau default ; @oci_client::client::ImageLayer::oci_v1_gzip ;
-    @oci_client::config::ConfigFile figé — created @chrono::Utc::now, architecture None,
+    @oci_client::config::ConfigFile figé — created @chrono::Utc::now, architecture `Other("")` (la variante `None` a disparu d'oci-spec 0.10, sortie fil inchangée : chaîne vide),
     os Linux, rootfs type `layers` avec l'unique diff_id, working_dir `/`, history à UNE
     entrée `created_by` `vynil` et commentaire `vynil.build`, empty_layer false ; @
     oci_client::client::Config::oci_v1_from_config_file ; @oci_client::manifest::OciImageManifest::build

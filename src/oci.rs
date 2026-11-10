@@ -102,7 +102,7 @@ impl Registry {
         let layer = client::ImageLayer::oci_v1_gzip(data, None);
         let cfg = config::ConfigFile {
             created: Some(Utc::now()),
-            architecture: config::Architecture::None,
+            architecture: config::Architecture::Other(String::new()),
             os: config::Os::Linux,
             rootfs: config::Rootfs {
                 r#type: "layers".to_string(),
