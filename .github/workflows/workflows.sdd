@@ -10,7 +10,10 @@ Purpose:
 Owns:
   ./test.yml
   ./publish.yml
+  ./audit.yml
   ../CODEOWNERS
+  ../dependabot.yml
+  ../../.cargo/audit.toml
 
 Can read:
   ../../tooling.sdd
@@ -92,6 +95,15 @@ Must:
     et les 17 checks de `./test.yml` au vert (14 `Tests (…)`, `Format`, `Clippy`,
     `Feature matrix (cargo hack)`), sans bypass. Décision des développeurs : le dépôt est
     codétenu, aucun merge sans l'autre.
+
+  Auditer `Cargo.lock` contre les advisories RustSec par `./audit.yml` (`rustsec/audit-check`, sur
+    PR et push vers `main` et chaque lundi 06:00 UTC) : une advisory active ouvre une issue GitHub
+    (`issues: write`). Le job est informatif (`continue-on-error: true`) : il ne rougit jamais la CI,
+    ne figure pas parmi les checks du ruleset `main` et ne bloque aucune publication.
+  Tenir `../../.cargo/audit.toml` pour les seules exceptions motivées, une ligne de justification par
+    `ignore` : une advisory corrigeable par `cargo update` n'y entre jamais ; celles corrigées en amont
+    mais bloquées par une dépendance épinglée restent visibles (issue ouverte).
+  Tenir `../dependabot.yml` (écosystèmes `cargo` et `github-actions`, hebdomadaire, groupe `kube-stack`).
 
 Must not:
   Publier alors que les tests `--all-features` du job de publication ont échoué.
@@ -177,6 +189,12 @@ Tasks:
     `rhai,quantity` à la boucle explicite du job `clippy` de ./test.yml, commentaires à l'état (la
     branche gated `quantity` de `new_bare`, que la matrice `--each-feature` ne compile pas). Le
     décompte des checks du ruleset `main` (Must, « les 16 checks ») passe à 17 avec elle.
+  [x] Remonter les advisories RustSec en issues (issue #45) : ajouter `./audit.yml` et
+    `../../.cargo/audit.toml` (liste d'`ignore` vide au premier passage), attribuer
+    `../dependabot.yml` (déjà présent, sans propriétaire) à `Owns`, et purger par `cargo update` les
+    advisories corrigées par le lock (rustls, rustls-webpki, yanked). Restent ouvertes, volontairement :
+    `async-std` et `pin-utils` (dev-dépendance `httpmock` 0.7, disparaissent avec la PR #32) et
+    `smartstring` (imposée en amont par `rhai`). Changement non-Rust : la validation tient lieu de relecture.
 
 Scenario: PR sans approbation d'un autre owner
   Given une PR ouverte par l'un des deux owners, checks verts

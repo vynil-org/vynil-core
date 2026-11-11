@@ -1,0 +1,6 @@
+# Exceptions motivées de l'audit RustSec (.github/workflows/audit.yml).
+# Une ligne de justification par `ignore`. Une advisory corrigeable par `cargo update`
+# n'entre jamais ici ; celles corrigées en amont mais bloquées par une dépendance épinglée
+# y restent visibles (donc absentes de cette liste).
+[advisories]
+ignore = []
