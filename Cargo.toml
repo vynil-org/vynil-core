@@ -118,7 +118,7 @@ rhai = { version = "1.23.3", features = ["sync", "serde", "internals"], optional
 # it (see rhai's Cargo.toml), so without this explicit dependency the build only works if some
 # unrelated crate elsewhere in the graph happens to enable it too -- which is exactly what broke
 # after a plain `cargo update` reshuffled the dependency graph.
-smartstring = { version = "1.0.1", features = ["serde"], optional = true }
+smartstring = { version = "2.0.0", features = ["serde"], optional = true }
 handlebars = { version = "6.4", features = ["string_helpers"], optional = true }
 handlebars_misc_helpers = { version = "0.17.0", default-features = false, features = ["string", "jsonnet", "regex", "uuid"], optional = true }
 # Direct dep (not via handlebars_misc_helpers's "json" feature, still pinned to jmespath 0.3.0
