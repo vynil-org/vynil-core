@@ -85,7 +85,10 @@ script.engine.register_static_module("core", vynil_core::engine::core_module());
 | `k8s` | `k8s::k8s_rhai_register` → `k8s::k8s_module` (`k8s`) | cluster | `K8sGeneric`, `K8sObject`, `DynamicObject`, `K8sRaw`, workload types |
 
 The test-double registrars (`httpmock_rhai_register`, `k8s_mock_rhai_register`,
-`oci_mock_rhai_register`) are not part of the catalogue: they have no twin, by decision.
+`oci_mock_rhai_register`) are not part of the catalogue, by decision — they stay out of it as
+registrars. They do have module twins, though: `httpmock_module(mocks)`,
+`k8s_mock_module(mocks, created)` and `oci_mock_module()`, registrable under the real module's
+name in place of its twin — see [mocking.md](mocking.md).
 
 #### Naming rule
 

@@ -419,7 +419,7 @@ Tasks:
   # `0.10.0`, dont le contenu n'est pas figé — d'autres tâches peuvent s'y ajouter ; la cible `0.9.2`
   # de l'issue #47 est donc caduque).
 
-  [ ] Jumeaux module des trois doubles de test (issue #47), selon le `Must` amendé du catalogue :
+  [x] Jumeaux module des trois doubles de test (issue #47), selon le `Must` amendé du catalogue :
     tâche portée par ./src/http.sdd (`httpmock_module`), ./src/k8s.sdd (`k8s_mock_module`) et
     ./src/oci.sdd (`oci_mock_module`), une jumelle chacune, plus ./docs.sdd (pages mocking et
     catalogue) ; cochée quand les quatre le sont. Pas de `s3_mock` (décision : aucun mock nouveau).

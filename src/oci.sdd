@@ -333,7 +333,7 @@ Handles:
     mondes, le dernier enregistré gagne à co-enregistrement — mécanisme laissé à @rhai.
 
 Tasks:
-  [ ] Jumeau module du double (issue #47) : ajouter @crate::oci_mock::oci_mock_module dans ./oci_mock.rs,
+  [x] Jumeau module du double (issue #47) : ajouter @crate::oci_mock::oci_mock_module dans ./oci_mock.rs,
     qui partage la liste de registrations de @crate::oci_mock::oci_mock_rhai_register (une seule
     définition). Tests d'abord depuis les Scenario ci-dessous. Reprendre `Exposes` à la clôture. Jumelle
     de ../vyvil-core.sdd (tâche « Jumeaux module des trois doubles »), de ./http.sdd, de ./k8s.sdd et de

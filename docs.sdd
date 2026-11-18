@@ -217,7 +217,7 @@ Tasks:
     elle cite les anciens enregistreurs. Jumelle de la tâche de ../vyvil-core.sdd, cochée dans le même
     commit que la dernière des specs ci-dessus.
 
-  [ ] ./docs/mocking.md et ./docs/rhai_helpers.md : documenter les jumeaux module des trois doubles (issue
+  [x] ./docs/mocking.md et ./docs/rhai_helpers.md : documenter les jumeaux module des trois doubles (issue
     #47) — `httpmock_module(mocks)`, `k8s_mock_module(mocks, created)`, `oci_mock_module()`, enregistrables par
     `register_static_module` sous le nom du module réel (`http`, `k8s`, `oci`) à sa place, et le critère
     « un même script en noms qualifiés tourne sous le réel et sous le double ». Rendre au livré la

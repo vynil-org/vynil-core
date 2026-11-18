@@ -15,8 +15,9 @@ Purpose:
     résolu rend @variant-Error::UnsupportedMethod à l'usage). Le module N'EST PAS auto-wired
     en script : UN enregistreur (@crate::k8s::k8s_rhai_register) et son jumeau module
     (@crate::k8s::k8s_module) à appeler par l'hôte (décision du 2026-11-06, qui fusionne les trois
-    paires `k8sgeneric_*`, `k8sraw_*`, `k8sworkload_*` de 0.9.0). @crate::k8s_mock est le mock le plus fidèle de la crate en SURFACE (aucun nom
-    manquant, contrairement à ./http_mock) ; les différences sont SÉMANTIQUES et documentées (./docs/mocking.md,
+    paires `k8sgeneric_*`, `k8sraw_*`, `k8sworkload_*` de 0.9.0). @crate::k8s_mock est le mock le plus fidèle de la crate en SURFACE : aucun nom
+    manquant, en noms globaux comme en noms qualifiés sous @crate::k8s_mock::k8s_mock_module
+    (contrairement à ./http_mock) ; les différences sont SÉMANTIQUES et documentées (./docs/mocking.md,
     décision actée : le mock ne change pas) : kind sensible à la casse là où le vrai est
     insensible et pluriel, `list` figé au snapshot de construction, `get_meta` renvoyant l'objet
     complet, `exist` toujours vrai, `created` recevant une vue fusionnée que `patch` ne remplit
@@ -456,10 +457,11 @@ Handles:
     sont perdus silencieusement (workloads typés, borne documentée).
 
 Tasks:
-  [ ] Jumeau module du double (issue #47) : ajouter @crate::k8s_mock::k8s_mock_module dans ./k8s_mock.rs,
+  [x] Jumeau module du double (issue #47) : ajouter @crate::k8s_mock::k8s_mock_module dans ./k8s_mock.rs,
     qui partage la liste de registrations de @crate::k8s_mock::k8s_mock_rhai_register (une seule
     définition ; le double s'écrit aujourd'hui par macros `register_k8s_*!` sur l'engine : le motif
-    « double cible » du réel, `Target`, est à réutiliser plutôt que dupliquer). Tests d'abord depuis
+    « double cible » du réel, `Target`, est à réutiliser plutôt que dupliquer ; le commentaire de
+     ./k8s.rs sur le sort des macros est repris avec). Tests d'abord depuis
     les Scenario ci-dessous. Reprendre à la clôture `Purpose` et `Exposes` à l'état produit (« le
     mock le plus fidèle en SURFACE » inclut désormais ses noms qualifiés). Jumelle de ../vyvil-core.sdd
     (tâche « Jumeaux module des trois doubles »), de ./http.sdd, de ./oci.sdd et de ../docs.sdd,

@@ -32,6 +32,37 @@ A given `Engine` should get *either* the real registration *or* the mock one for
 never both — they claim the same Rhai type/function names and the second registration would
 shadow the first.
 
+### Module twins
+
+Each mock registrar also has a module twin — a `Module` built from the same single registration
+list, with the same semantics (a twin that drifts from its registrar is a defect):
+
+```rust
+let mut script = vynil_core::Script::new_bare(vec![]);
+
+#[cfg(feature = "http")]
+script.engine.register_static_module("http", vynil_core::http_mock::httpmock_module(my_http_fixtures));
+
+#[cfg(feature = "k8s")]
+script.engine.register_static_module("k8s", vynil_core::k8s_mock::k8s_mock_module(mocks.clone(), created.clone()));
+
+#[cfg(feature = "oci")]
+script.engine.register_static_module("oci", vynil_core::oci_mock::oci_mock_module());
+```
+
+Registered under the name of the *real* module (`http`, `k8s`, `oci`), the twin takes its place:
+free functions carry the real twin's short, qualified names (`http::new_client`,
+`k8s::resource`, `k8s::new_raw`, `k8s::update_crd_cache`, `oci::new_registry`,
+`oci::get_auth_from_file`), and methods keep their names — see the naming rule in
+[rhai_helpers.md](rhai_helpers.md). The criterion is that **one and the same script, written in
+qualified names, runs unmodified under the real module and under its double**: the production
+engine gets `http_module` / `k8s_module` / `oci_module`, the test engine gets
+`httpmock_module` / `k8s_mock_module` / `oci_mock_module`, and the `.rhai` source is untouched.
+
+The one exception is the accepted holes of the `http` double: `http::get_yaml`,
+`http::json_subset` and `http::json_equal` are **not** registered by `httpmock_module`
+(section 1) — a script calling them is not source-compatible with the mock.
+
 ---
 
 ## 1. `http_mock` — feature `http` (implies `rhai`)
@@ -42,7 +73,15 @@ source-compatible between the real and mocked engine.
 
 ```rust
 pub fn httpmock_rhai_register(engine: &mut Engine, mocks: Vec<HttpMockItem>)
+
+// module twin
+pub fn httpmock_module(mocks: Vec<HttpMockItem>) -> Module
 ```
+
+Under the twin the mock constructor answers to the short qualified name `http::new_client`,
+`headers_get`/`headers_has` keep their names, and the `http_`-prefixed verb aliases are
+registrar-only (methods are global on both sides). The real twin's `get_yaml`/`json_subset`/
+`json_equal` are absent from the mock — the gaps below.
 
 Fixtures, supplied up front instead of via context wiring:
 
@@ -96,11 +135,12 @@ it (e.g. set `return_obj = #{code: 200, json: #{...}}`).
 
 ## 2. `k8s_mock` — feature `k8s`
 
-Reuses the *same* `register_k8s_object!` / `register_k8s_generic!` / `register_k8s_raw!` macros
-that `k8s.rs` uses for the real client, instantiated against mock structs but registered under
-the **exact same Rhai type names**: `K8sObject`, `K8sGeneric`, `K8sRaw`, `K8sDeploy`,
-`K8sDaemonSet`, `K8sStatefulSet`, `K8sJob`. A script written against the real `k8s` module runs
-unmodified against the mock.
+Registers the mock structs under the **exact same Rhai type names** as the real client:
+`K8sObject`, `K8sGeneric`, `K8sRaw`, `K8sDeploy`, `K8sDaemonSet`, `K8sStatefulSet`, `K8sJob`.
+The surface is defined once, in a single registration list shared by the registrar and its
+module twin (the `register_k8s_object!`/`register_k8s_generic!`/`register_k8s_raw!` macros are no
+longer the mechanism — they are only replayed against the mocks in this crate's own equivalence
+tests). A script written against the real `k8s` module runs unmodified against the mock.
 
 ```rust
 pub fn k8s_mock_rhai_register(
@@ -108,7 +148,17 @@ pub fn k8s_mock_rhai_register(
     mocks: Arc<Mutex<Vec<Dynamic>>>,    // fixture objects
     created: Arc<Mutex<Vec<Dynamic>>>,  // write-log for assertions
 )
+
+// module twin
+pub fn k8s_mock_module(
+    mocks: Arc<Mutex<Vec<Dynamic>>>,
+    created: Arc<Mutex<Vec<Dynamic>>>,
+) -> Module
 ```
+
+Under the twin the free names are the real twin's short names — `k8s::resource`,
+`k8s::new_raw`, `k8s::update_crd_cache` — and the workload constructors keep their names
+(`k8s::get_deployment`, …), exactly as under the real `k8s_module`.
 
 Unlike the real module, **no runtime context wiring is required**: `k8s_mock` never touches
 `set_client_name`/`set_get_client`/the discovery cache, so it's safe to use in a plain unit test
@@ -151,9 +201,14 @@ are all accepted — the mock will not change (decision on record).
 
 ```rust
 pub fn oci_mock_rhai_register(engine: &mut Engine)
+
+// module twin
+pub fn oci_mock_module() -> Module
 ```
 
-No fixtures — every method returns a fixed canned value regardless of its arguments.
+No fixtures — every method returns a fixed canned value regardless of its arguments. Under the
+twin the names are the same as under the registrar, qualified: `oci::new_registry` and
+`oci::get_auth_from_file` (both were already short — no renaming on either side).
 
 > **Caveat:** the mock registers the **same** Rhai type name as the real client —
 > `Registry` — like `http_mock` and `k8s_mock` do for their types: a script that only does
