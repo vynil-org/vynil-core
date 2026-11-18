@@ -217,6 +217,29 @@ Tasks:
     elle cite les anciens enregistreurs. Jumelle de la tâche de ../vyvil-core.sdd, cochée dans le même
     commit que la dernière des specs ci-dessus.
 
+  [ ] ./docs/mocking.md et ./docs/rhai_helpers.md : documenter les jumeaux module des trois doubles (issue
+    #47) — `httpmock_module(mocks)`, `k8s_mock_module(mocks, created)`, `oci_mock_module()`, enregistrables par
+    `register_static_module` sous le nom du module réel (`http`, `k8s`, `oci`) à sa place, et le critère
+    « un même script en noms qualifiés tourne sous le réel et sous le double ». Rendre au livré la
+    phrase de ./docs/rhai_helpers.md (autour de la ligne 87) « The test-double registrars … are not part
+    of the catalogue: they have no twin, by decision » : elle devient fausse (ils restent hors catalogue
+    comme ENREGISTREURS, mais ont un jumeau) ; garder dans la page mocking les trous assumés
+    (`http::get_yaml`, `http::json_subset` et `http::json_equal` absentes du double). Jumelle de
+    ./src/http.sdd, ./src/k8s.sdd, ./src/oci.sdd et de ./vyvil-core.sdd (tâche « Jumeaux module des trois
+    doubles »), cochée dans le même commit que la dernière d'entre elles.
+  [ ] ./docs/rhai_helpers.md et ./README.md : documenter les features `feeds`, `prometheus` et `loki` (issues
+    #56 et #57) — une section numérotée par module dans la page des helpers (enregistrement, signatures,
+    formes de sortie, erreurs à code stable `FEED-00x` / `QUERY-00x`, curseur de `feed_poll` rendu opaque),
+    pour `prometheus` et `loki` la phrase de principe « l'hôte configure, le script interroge » et
+    l'enregistrement d'un module d'hôte sous le nom choisi ; la ligne de chaque feature dans la table de
+    ./README.md ; une section par double dans ./docs/mocking.md (`feeds_mock_module`,
+    `prometheus_mock_module`, `loki_mock_module`, surface enregistrée et écarts). Reprendre au mot près
+    les bornes (`ms UTC`, `NaN` → `null`, `±Inf` refusé, `truncated`) des specs de ./src/. Jumelle de
+    ./src/feeds.sdd, ./src/prometheus.sdd, ./src/loki.sdd et ./src/query_client.sdd, cochée dans le même
+    commit que la dernière d'entre elles.
+  [ ] ./README.md et les extraits `vynil-core = ...` de ./docs/ passent de `0.9` à `0.10` avec la livraison de
+    ./vyvil-core.sdd (tâche « Livrer 0.10.0 », même commit).
+
 Done when:
   Les trois pages et ./README.md ne contiennent plus une phrase contredisant la spec d'un module,
     et chaque fait contracté visible d'un consommateur y trouve sa ligne ; l'intention bilingue

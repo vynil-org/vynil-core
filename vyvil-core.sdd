@@ -4,7 +4,8 @@ Platform: Rust edition 2024, toolchain stable 1.99.0, rustfmt nightly
 
 Purpose:
   Boîte à outils Rust générique combinant un moteur de scripts Rhai et un moteur de templates
-    Handlebars, avec handlers Kubernetes / OCI / S3 / HTTP optionnels, réutilisable par les
+    Handlebars, avec handlers Kubernetes / OCI / S3 / HTTP et clients de protocole en lecture
+    (flux RSS/Atom, Prometheus/Mimir, Loki) optionnels, réutilisable par les
     projets consommateurs (vynil, kuberest, kydah) sans embarquer les abstractions métier de
     vynil. Publiée sur crates.io, API instable avant `1.0`.
 
@@ -90,7 +91,9 @@ Must:
     le catalogue ci-dessous remplace la découpe par fichier de 0.9.0.
   Découper les enregistreurs ET leurs jumeaux module par DOMAINE et par AUTORITÉ, non par fichier
     source : un module = un domaine = une autorité, et l'autorité se lit dans le nom. Catalogue
-    FERMÉ (neuf enregistreurs publics, neuf jumeaux) :
+    FERMÉ (un enregistreur public et un jumeau par module nommé ci-dessous, hors les deux modules
+    d'hôte `prometheus` et `loki`, qui n'ont qu'un jumeau — voir plus bas ; amendé le 2026-11-18,
+    issues #56 et #57, qui ajoutent `feeds`, `prometheus` et `loki`) :
     `core` (@crate::engine::core_rhai_register / @crate::engine::core_module) — aucune autorité sur
     l'hôte : encodage (`base64_*`, `url_encode`, `json_*`, `yaml_*`, `to_decimal`), texte
     (`regex_is_match`, `basename`, `dirname`), `glob`, temps (`sleep`, `date_now`, `format`, type
@@ -102,7 +105,15 @@ Must:
     `crc32_hash` (sans feature `crypto`), `bcrypt_hash`, type `Argon` avec `new_argon`/`hash` et
     `gen_private_key` (sous `crypto`) ; `password`, `semver`, `http`, `oci`, `s3` inchangés ; `k8s`
     (@crate::k8s::k8s_rhai_register / @crate::k8s::k8s_module) — fusion des trois enregistreurs
-    `k8sgeneric`, `k8sraw`, `k8sworkload`. Les enregistreurs de test double restent hors périmètre.
+    `k8sgeneric`, `k8sraw`, `k8sworkload` ; `feeds` (@crate::feeds::feeds_rhai_register /
+    @crate::feeds::feeds_module, sous la feature `feeds`, ./src/feeds.sdd) — client de protocole sans
+    autorité sur l'hôte hors le réseau, comme `http`. Les modules `prometheus`
+    (@crate::prometheus::prometheus_module, ./src/prometheus.sdd) et `loki`
+    (@crate::loki::loki_module, ./src/loki.sdd) sont des MODULES D'HÔTE : le jumeau prend un client
+    configuré par l'hôte (@crate::query_client::QueryClient, ./src/query_client.sdd) et l'hôte
+    l'enregistre sous le nom qu'il choisit ; ils n'ont PAS d'enregistreur global (aucun type de handle
+    côté script : l'instance configurée est liée au module), exception motivée à la règle de
+    l'enregistreur et de son jumeau — le script ne voit ni l'URL, ni le tenant, ni le jeton.
     Disparaissent : `core_pure_*`, `core_host_*`, `core_sleep_*`, `fs_*`, `chrono_*`, `glob_*`,
     `yaml_*`, `shell_*`, `hashes_*`, `crypto_hashes_*`, `key_*`, `quantity_*`, `k8sgeneric_*`,
     `k8sraw_*`, `k8sworkload_*`. Le contenu d'un module varie avec les features, pas son nom.
@@ -118,10 +129,20 @@ Must:
     moteur — une fonction d'un module statique posée en espace global répond sans qualifier). Un
     test par module compare les deux jeux de noms à une TABLE écrite à la main (nom global → nom de
     module), au lieu de l'égalité d'ensembles de 0.9.0.
-    Hors périmètre, par décision de cette spec : les trois enregistreurs de test double
-    (`httpmock_rhai_register`, `oci_mock_rhai_register`, `k8s_mock_rhai_register`), qui
-    reçoivent des fixtures en paramètre pour `http` et `k8s`, sont un double constant sans
-    fixtures pour `oci`, et n'ont pas de consommateur par groupe.
+    Les trois enregistreurs de test double (`httpmock_rhai_register`, `oci_mock_rhai_register`,
+    `k8s_mock_rhai_register`) restent des enregistreurs HORS catalogue (ils reçoivent des fixtures en
+    paramètre pour `http` et `k8s`, sont un double constant sans fixtures pour `oci`), mais gagnent
+    chacun un jumeau module (amendé le 2026-11-18, issue #47, décision du développeur principal : les
+    mocks existants seulement, aucun mock nouveau — en particulier pas de `s3_mock`) :
+    @crate::http_mock::httpmock_module(mocks), @crate::k8s_mock::k8s_mock_module(mocks, created) et
+    @crate::oci_mock::oci_mock_module(), enregistrables par @rhai::Engine::register_static_module
+    sous le MÊME nom de namespace que le module réel (`http`, `k8s`, `oci`) À SA PLACE : le contrat
+    « soit le réel, soit le double » de ./docs/mocking.md demeure, et un script écrit en noms
+    qualifiés s'exécute sans modification sous le moteur réel et sous le moteur de mock. Mêmes noms
+    courts et mêmes méthodes/libres que les jumeaux réels, restreints à ce que le double simule — les
+    trous actés du double (./src/http.sdd : `get_yaml`, soit `http_get_yaml`, reste absente) restent
+    des trous. Les doubles des modules d'hôte (`prometheus_mock_module`, `loki_mock_module`) et de
+    `feeds` (`feeds_mock_module`) suivent la même règle des noms identiques au réel.
   Documenter les fonctions enregistrées pour l'introspection (issue vynil-org/vynil-core#20) :
     chaque fonction de script d'un enregistreur public porte, sous la feature `metadata`, un
     commentaire `///` (ce qu'elle fait, ses erreurs, sa valeur) et le NOM de chacun de ses
@@ -141,6 +162,15 @@ Must:
     comme `k8s`/`oci`/`s3`/`http` : seule, elle n'a pas de sens. Aucune porte nommée de plus dans
     la batterie : `cargo hack --each-feature` la compile et la lint, `--all-features` joue les
     verrous qu'elle porte (décision de cette spec ; ./tooling.sdd n'en change pas).
+  Exposer les features des clients de protocole (issues #56 et #57), hors `default`, chacune commentée
+    comme ses voisines dans ./Cargo.toml : `feeds = ["dep:feed-rs", "http", "rt", "rhai"]`
+    (./src/feeds.sdd) ; `query_client = ["http", "rt", "rhai"]`, feature INTERNE du noyau de lecture
+    de ./src/query_client.sdd, que le consommateur n'active pas seule ; `prometheus =
+    ["query_client"]` (./src/prometheus.sdd) et `loki = ["query_client"]` (./src/loki.sdd), chacune
+    indépendante de l'autre. Toutes impliquent `rhai` comme `k8s`/`oci`/`s3`/`http` : leurs types
+    cœur sont des API Rhai directes. Ces clients ne connaissent rien du domaine de l'appelant (stockage,
+    planification, masquage de secrets, corrélation d'incident) : cela reste dans le consommateur.
+    Les modules de ces features ne sont jamais câblés par @crate::engine::Script::new_bare.
 
 Must not:
   Dépendre de vynil, kuberest, kydah ou d'un autre consommateur de cette crate.
@@ -384,6 +414,67 @@ Tasks:
     0.9.1 (elles posent des fonctions que le catalogue déplace), avant « Livrer 0.9.1 ». Jumelle de la
     tâche de ./src/lib.sdd (ré-exports, `Purpose`) et de la tâche de ./docs.sdd (catalogue de
     ./docs/rhai_helpers.md). Aucune rupture pour un consommateur : aucun n'existe à ce jour.
+
+  # Lot de la prochaine livraison (décision du développeur principal le 2026-11-18 : ce sera la
+  # `0.10.0`, dont le contenu n'est pas figé — d'autres tâches peuvent s'y ajouter ; la cible `0.9.2`
+  # de l'issue #47 est donc caduque).
+
+  [ ] Jumeaux module des trois doubles de test (issue #47), selon le `Must` amendé du catalogue :
+    tâche portée par ./src/http.sdd (`httpmock_module`), ./src/k8s.sdd (`k8s_mock_module`) et
+    ./src/oci.sdd (`oci_mock_module`), une jumelle chacune, plus ./docs.sdd (pages mocking et
+    catalogue) ; cochée quand les quatre le sont. Pas de `s3_mock` (décision : aucun mock nouveau).
+    Critère de clôture de l'issue : un même script écrit en noms qualifiés s'exécute sous
+    `X_module` et sous `X_mock_module`, sans modification (scénario porté par chaque spec).
+  [ ] Exposer les features `feeds`, `query_client`, `prometheus` et `loki` dans ./Cargo.toml (issues #56
+    et #57), selon le `Must` ci-dessus, ajouter la dépendance `feed-rs` (version stable mesurée à
+    l'implémentation) ; vérifier `cargo hack check --each-feature --no-dev-deps` et son pendant clippy,
+    plus `cargo test --all-features`. Jumelle de ./src/feeds.sdd, ./src/query_client.sdd,
+    ./src/prometheus.sdd, ./src/loki.sdd (une tâche chacune pour son module), de ./src/lib.sdd
+    (déclarations, table de doc des features, variantes d'erreur) et de ./tooling.sdd (portes), cochée
+    dans le même commit que la dernière de celles-là.
+  [ ] Reprendre la batterie pour les trois portes neuves `--no-default-features --features feeds`,
+    `... --features prometheus` et `... --features loki` (test, et clippy `--all-targets -- -D
+    warnings`) : ./AGENTS.md (liste de commandes et phrase des combinaisons explicites) et
+    ./.opencode/agents/validator.md, sous la main de cette spec seule. Jumelles de la tâche de
+    ./tooling.sdd et de celle de ./.github/workflows/workflows.sdd, lockstep des quatre emplacements,
+    cochées dans le même commit. `query_client` n'a pas de porte propre (interne, sans consommateur
+    seule) : `cargo hack --each-feature` la couvre.
+  [ ] Intégrer les montées de dépendances qui ferment les advisories RustSec #50, #51, #52, #53 et #54
+    (audit informatif de ./.github/workflows/workflows.sdd), mesurées sur les branches de PR
+    dependabot : `object_store` 0.14.2 (PR #15, branche `fix/object-store-0.14`, qui porte déjà
+    l'adaptation `ObjectStoreExt` de ./src/s3.rs) retire `quick-xml` 0.37.5 (#50, #51) ; `oci-client` 0.18.0
+    (PR #16, branche `fix/oci-client-0.18`, qui porte déjà `Architecture::Other` dans ./src/oci.rs) retire
+    `jwt` (#53) ; `httpmock` 0.9.0 (PR #32, branche `fix/httpmock-0.9`, dev-dépendance, adaptation des
+    tests de ./src/oci.rs) retire `async-std` et `pin-utils` (#52, #54). Chaque montée se fait sous la
+    main de ./Cargo.toml (cette spec) et des specs qui nomment la version (./src/s3.sdd « @object_store
+    0.11 », ./src/oci.sdd « @oci_client 0.15 » : reprises descriptives de leur clôture), validée par la
+    batterie complète ; les quatre PR sont fusionnées par ordre de dépendance, une à la fois (les lock
+    se recouvrent), et chaque issue est fermée avec la mesure `cargo tree -i` qui prouve que le crate
+    a quitté le graphe. Une montée qui change un comportement observable (messages d'erreur d'`oci`
+    ou de `s3`, types du graphe) est un écart de contrat à remonter avant de cocher.
+  [ ] Suivre l'advisory RUSTSEC-2026-0249 `smartstring` (issue #55), NON corrigeable ici : `rhai` 1.27 le tire
+    lui-même en dépendance non optionnelle (aux côtés de `compact_str`), et la PR dependabot #49
+    (`smartstring` 2.0.0) n'enlève pas la 1.0.1 que `rhai` garde — elle échoue d'ailleurs sur douze jobs.
+    Décision du développeur principal (2026-11-18) : l'issue reste OUVERTE comme signal, sans `ignore`
+    dans ./.cargo/audit.toml (règle de ./.github/workflows/workflows.sdd : une advisory bloquée par une
+    dépendance amont y reste visible). Actions : fermer la PR #49 avec ce motif ; à chaque montée de
+    `rhai`, remesurer (`cargo tree -i smartstring`) et fermer l'issue le jour où `rhai` abandonne le
+    crate (ou migre vers `compact_str` seul) ; la dépendance directe `smartstring` de ./Cargo.toml
+    (feature `serde`, commentaire en tête) n'est retirée que si `rhai` active déjà cette feature, à
+    mesurer à ce moment-là. Aucun changement de code ici.
+  [ ] Livrer `0.10.0` (numéro et contenu non figés : décision du développeur principal 2026-11-18, « pas sûr que
+    ce soient les seuls trucs embarqués ») : bascule de `version` de ./Cargo.toml, ./CHANGELOG.md —
+    `Added` : les jumeaux module des doubles, les features `feeds`/`prometheus`/`loki` et leurs doubles,
+    les variantes d'erreur gated ; `Changed` : les montées `object_store`, `oci-client`, `httpmock` ; extraits
+    `vynil-core = ...` de la rustdoc racine, de ./README.md et de ./docs/ passés à `0.10`
+    (jumelles de ./src/lib.sdd et ./docs.sdd). Le tag n'est posé qu'APRÈS le merge et la CI verte, le workflow
+    `publish.yml` vérifiant tag et manifest. Issues closes par ce lot, à compléter à la livraison :
+    #47, #50, #51, #52, #53, #54, #56, #57 ; #55 reste ouverte ; #36 reste ouverte (voir ci-dessous).
+  [ ] Faire le point sur l'issue #36 (doublons de crates), restée ouverte alors que la tâche « Débarrasser le
+    graphe des doublons propres à `vynil-core` » est cochée : ce lot l'a fermée en PARTIEL par décision
+    (reste `getrandom` 0.2/0.3/0.4 et `syn`, d'origine amont). Poster le commentaire qui le dit, avec la
+    mesure `cargo tree -d` rejouée sur le crate sonde, puis la fermer ou la garder ouverte selon le
+    développeur principal. Aucun changement de code ni de spec ailleurs.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec revue (`Owns` groupé admis pour les mocks),

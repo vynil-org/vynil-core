@@ -373,6 +373,17 @@ Exposes:
     `new_k8s_raw` ; `get_deployment`, `get_deamonset`, `get_statefulset`, `get_job` inchangés) ;
     enregistrable par @rhai::Engine::register_static_module sous le nom `k8s`. L'enregistreur garde
     les noms historiques dans l'espace global.
+  @crate::k8s_mock::k8s_mock_module — `#[must_use] pub fn(arced_mocks, created) -> @rhai::Module`
+    (mêmes `Arc<Mutex<Vec<Dynamic>>>` que @crate::k8s_mock::k8s_mock_rhai_register), jumeau module du
+    double (issue vynil-org/vynil-core#47, décision du 2026-11-18 ; règle des jumeaux de
+    ../vyvil-core.sdd) : MÊME liste de registrations que l'enregistreur du double, qui reste la seule
+    définition ; enregistrable par @rhai::Engine::register_static_module sous le nom `k8s` À LA PLACE
+    de @crate::k8s::k8s_module. Mêmes noms courts que le jumeau réel : les MÉTHODES et accesseurs
+    gardent leurs noms et restent globaux ; les fonctions LIBRES ne s'appellent que qualifiées
+    (`k8s::resource`, branché sur les bases `arced_mocks` et `created`, `k8s::new_raw`,
+    `k8s::update_crd_cache` — no-op explicite, sans cluster —, `get_deployment`, `get_deamonset`,
+    `get_statefulset`, `get_job` inchangés). Seules les fonctions que le double simule sont posées : une
+    absence du réel est un trou du double, jamais une fonction inventée.
 
 Accepts:
   Des noms de ressources en kind OU plural, casse indifférente (vrai) — en kind EXACT casse
@@ -445,6 +456,14 @@ Handles:
     sont perdus silencieusement (workloads typés, borne documentée).
 
 Tasks:
+  [ ] Jumeau module du double (issue #47) : ajouter @crate::k8s_mock::k8s_mock_module dans ./k8s_mock.rs,
+    qui partage la liste de registrations de @crate::k8s_mock::k8s_mock_rhai_register (une seule
+    définition ; le double s'écrit aujourd'hui par macros `register_k8s_*!` sur l'engine : le motif
+    « double cible » du réel, `Target`, est à réutiliser plutôt que dupliquer). Tests d'abord depuis
+    les Scenario ci-dessous. Reprendre à la clôture `Purpose` et `Exposes` à l'état produit (« le
+    mock le plus fidèle en SURFACE » inclut désormais ses noms qualifiés). Jumelle de ../vyvil-core.sdd
+    (tâche « Jumeaux module des trois doubles »), de ./http.sdd, de ./oci.sdd et de ../docs.sdd,
+    cochée dans le même commit.
   [x] Convertir les Scenario sans test en tests passants. ./k8s.rs a 58 tests inline (53 annoncés
     à l'écriture, baseline mesurée au cochage 2026-10-11 — résolution
     APIService agrégé, job_is_completed ×8, prepare_handle ×11, conditions ×15, seam tower-test
@@ -750,6 +769,23 @@ Scenario: mock waits exist et no-op updates
   Then AUCUN touch de provider, AUCUNE panic même sans set_get_client — le no-op est
     enregistré explicitement par le mock, sans dépendre de l'ordre de réenregistrement ; Given @crate::k8s_mock::K8sRawMock
   Then les trois rendent une map VIDE figée
+
+Scenario: k8s_mock_module équivaut à k8s_mock_rhai_register
+  Given un @rhai::Engine où k8s_mock_rhai_register(engine, mocks, created) est appelé et un second,
+    vierge, où le résultat de @crate::k8s_mock::k8s_mock_module(mocks, created) est enregistré par
+    register_static_module sous le nom `k8s`
+  When un script écrit en noms qualifiés (`k8s::resource("Pod", "ns")`, `k8s::new_raw()`,
+    `k8s::update_crd_cache()`, `k8s::get_deployment(ns, name)`) tourne sur le second, et son équivalent
+    en noms globaux (`k8s_resource`, `new_k8s_raw`, `update_k8s_crd_cache`) sur le premier
+  Then les résultats et les erreurs sont identiques, `k8s::update_crd_cache()` est un no-op sans
+    cluster, et les méthodes (`get`, `list`, `create`…) restent globales
+  And les deux ensembles de noms de fonctions sont égaux (comparés sous `metadata`, par l'introspection)
+
+Scenario: même script sous le jumeau réel et sous le double
+  Given un script `let r = k8s::resource("Pod", "ns"); r.get("p")`
+  When il tourne sur un engine portant @crate::k8s::k8s_module puis sur un engine portant
+    @crate::k8s_mock::k8s_mock_module, sous le même nom `k8s`
+  Then il s'exécute sans modification dans les deux cas (cluster d'un côté, bases de mock de l'autre)
 
 Scenario: k8s_module équivaut à k8s_rhai_register (generic)
   Given un @rhai::Engine où k8s_rhai_register est appelé et un second, vierge, où le résultat de

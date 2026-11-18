@@ -246,6 +246,13 @@ Exposes:
     @rhai::Map — invisible en script.
   @crate::oci_mock::oci_mock_rhai_register — `pub fn(engine: &mut @rhai::Engine)` ; six
     enregistrements, `get_auth_from_file` compris.
+  @crate::oci_mock::oci_mock_module — `#[must_use] pub fn() -> @rhai::Module`, jumeau module du double
+    (issue vynil-org/vynil-core#47, décision du 2026-11-18 ; règle des jumeaux de ../vyvil-core.sdd) :
+    MÊME liste de registrations que @crate::oci_mock::oci_mock_rhai_register, qui reste la seule
+    définition ; enregistrable par @rhai::Engine::register_static_module sous le nom `oci` À LA PLACE
+    de @crate::oci::oci_module. Les noms courts sont ceux du jumeau réel : `oci::new_registry` et
+    `oci::get_auth_from_file` qualifiés seulement, les méthodes du type `Registry` (`list_tags`,
+    `get_manifest`, `push_image`, `sign_image`) restant globales.
   @crate::oci::oci_module — `#[must_use] pub fn() -> @rhai::Module`, porte `oci`, jumeau de
     @crate::oci::oci_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
     même comportement, enregistrable par @rhai::Engine::register_static_module sous le nom `oci` ;
@@ -326,6 +333,14 @@ Handles:
     mondes, le dernier enregistré gagne à co-enregistrement — mécanisme laissé à @rhai.
 
 Tasks:
+  [ ] Jumeau module du double (issue #47) : ajouter @crate::oci_mock::oci_mock_module dans ./oci_mock.rs,
+    qui partage la liste de registrations de @crate::oci_mock::oci_mock_rhai_register (une seule
+    définition). Tests d'abord depuis les Scenario ci-dessous. Reprendre `Exposes` à la clôture. Jumelle
+    de ../vyvil-core.sdd (tâche « Jumeaux module des trois doubles »), de ./http.sdd, de ./k8s.sdd et de
+    ../docs.sdd, cochée dans le même commit.
+    # Cette spec ne contracte pas les montées `oci-client` 0.18 (PR #16) : voir ../vyvil-core.sdd
+    # (tâche « Intégrer les montées de dépendances »), dont la branche `fix/oci-client-0.18` porte
+    # déjà ses lignes de ce fichier.
   [x] Convertir les Scenario en tests passants. ./oci.rs portait 7 `#[test]` inline à HEAD
     (get_auth_from_file ×4 via `tempfile`, sign_image clé vide, cosign introuvable en
     `is_err` seul, pull hors runtime servi par le runtime temporaire) plus 3
@@ -545,6 +560,21 @@ Scenario: co-enregistrement des deux mondes est possible mais déconseillé
     des trois chaînes résout le DERNIER enregistré — les méthodes se dispatchant par type,
     les deux types peuvent coexister ; la recommandation mocking.md (un seul monde par
     engine) est la conduite contractuelle, le mécanisme de coexistence restant détail @rhai
+
+Scenario: oci_mock_module équivaut à oci_mock_rhai_register
+  Given un @rhai::Engine où oci_mock_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::oci_mock::oci_mock_module() est enregistré par register_static_module sous le nom `oci`
+  When un script écrit en noms qualifiés (`let r = oci::new_registry("a","b","c"); r.list_tags("x")`,
+    `oci::get_auth_from_file("p","r")`) tourne sur le second, et son équivalent global
+    (`new_registry`, `get_auth_from_file`) sur le premier
+  Then les résultats sont identiques (listes de tags et digest constants, auth anonyme) et les
+    méthodes restent globales
+
+Scenario: même script sous le jumeau réel et sous le double
+  Given un script `let r = oci::new_registry("a","b","c"); r.list_tags("x")`
+  When il tourne sur un engine portant @crate::oci::oci_module puis sur un engine portant
+    @crate::oci_mock::oci_mock_module, sous le même nom `oci`
+  Then il s'exécute sans modification dans les deux cas
 
 Scenario: oci_module équivaut à oci_rhai_register
   Given un @rhai::Engine où oci_rhai_register est appelé et un second, vierge, où le résultat de

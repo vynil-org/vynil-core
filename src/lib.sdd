@@ -90,6 +90,16 @@ Must:
     `KEY-OPENSSL-001` (crypto) — gelés dans le Display : ce sont des identifiants stables
     faits pour être recherchés par les consommateurs, contrat d'API dit dans la rustdoc de
     @variant-Error, sans constante nécessaire (décision actée).
+  Variantes des clients de protocole (issues vynil-org/vynil-core#56 et #57, chacune gated avec
+    `#[cfg(feature = ...)]` + `#[cfg_attr(docsrs, doc(cfg(...)))]`, à joindre au décompte des variantes
+    gated à la clôture — écrit sans chiffre figé, règle de ../vyvil-core.sdd) : `feeds` →
+    @variant-Error::FeedInvalid — @std::string::String — `FEED-001 invalid feed: {0}` (flux invalide ou
+    réponse non-XML) et @variant-Error::FeedCursor — @std::string::String — `FEED-002 invalid feed
+    cursor: {0}` (curseur de version inconnue ou mal formé) ; `query_client` → @variant-Error::Query —
+    `#[from]` @crate::query_client::QueryError — `{0}`, dont le `Display` porte lui-même un code stable
+    `QUERY-001` à `QUERY-009` (./query_client.sdd), sans jamais embarquer de jeton ni d'URL à
+    identifiants. `FEED-001`, `FEED-002` et `QUERY-0xx` sont des identifiants stables, figés dans le
+    format comme `KEY-ALGO-001` et `CANCEL-001`.
   @fn-error_chain (non gated, `#[must_use]` — fonction pure comme ses deux fabriques) : part de
     l'@core::fmt::Display de l'erreur extérieure, puis remonte @core::error::Error::source de
     l'extérieur vers la racine en joignant chaque niveau par le séparateur `": "` (jamais
@@ -123,6 +133,10 @@ Must:
     #23 : le pont async → sync de ./rt.sdd, PUBLIC depuis cette issue, avec sa clause `doc(cfg)` et
     une ligne de rustdoc). Les quatre features réseau (`http`, `oci`, `s3`, `k8s`) activent `rt`,
     donc le module reste compilé là où il l'était : un seul gate `rt` et plus un `any(...)`.
+    Modules des clients de protocole, publics, chacun avec sa clause `doc(cfg)` : @crate::feeds et
+    @crate::feeds_mock (`feeds`) ; @crate::query_client (`query_client`, feature interne) ;
+    @crate::prometheus et @crate::prometheus_mock (`prometheus`) ; @crate::loki et @crate::loki_mock
+    (`loki`). Les `*_mock` de ces features sont publics hors `cfg(test)` comme les trois autres.
   Les trois modules `*_mock` sont PUBLICS hors `cfg(test)` : façade livrée volontairement aux
     tests des consommateurs (vynil s'appuie sur `oci_mock` et `k8s_mock`) — décision actée ;
     les isoler derrière une feature serait un autre contrat.
@@ -224,6 +238,18 @@ Handles:
     @core::convert::From dérivés par thiserror (7 non gated, 13 gated).
 
 Tasks:
+  [ ] Déclarer les modules et variantes des clients de protocole (issues #56 et #57) : dans ./lib.rs,
+    `pub mod feeds;`, `feeds_mock`, `query_client`, `prometheus`, `prometheus_mock`, `loki`, `loki_mock`
+    sous leurs gates et `doc(cfg)` ; variantes @variant-Error::FeedInvalid, @variant-Error::FeedCursor
+    et @variant-Error::Query avec leurs Display (`FEED-001`, `FEED-002`, `QUERY-xxx`), tests des Display sous
+    les modules `display_*` gated de la porte, ligne ajoutée dans la table de doc des features de ./lib.rs
+    (`feeds`, `prometheus`, `loki` ; `query_client` notée interne), les décomptes de variantes de ./lib.rs
+    et de cette spec repris à la clôture, `Purpose` et `References` à l'état produit. Jumelle de
+    ./feeds.sdd, ./query_client.sdd, ./prometheus.sdd, ./loki.sdd, de ../vyvil-core.sdd (feature) et de
+    ../tooling.sdd (portes), cochée dans le même commit que la dernière d'entre elles. Aucune API existante
+    ne change : additif.
+  [ ] Les trois extraits `vynil-core = ...` de la rustdoc racine passent de `0.9` à `0.10` avec la livraison
+    de ../vyvil-core.sdd (tâche « Livrer 0.10.0 », même commit).
   [x] Les trois extraits `vynil-core = ...` de la rustdoc racine passent de `0.7` à `0.8` avec la
     livraison de ./vyvil-core.sdd (tâche « Livrer 0.8.0 », même commit).
   [x] Les trois extraits `vynil-core = ...` de la rustdoc racine passent de `0.8` à `0.9` avec la

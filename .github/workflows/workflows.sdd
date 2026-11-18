@@ -195,6 +195,19 @@ Tasks:
     advisories corrigées par le lock (rustls, rustls-webpki, yanked). Restent ouvertes, volontairement :
     `async-std` et `pin-utils` (dev-dépendance `httpmock` 0.7, disparaissent avec la PR #32) et
     `smartstring` (imposée en amont par `rhai`). Changement non-Rust : la validation tient lieu de relecture.
+  [ ] Porte jumelle de « Ajouter les portes `feeds`, `prometheus` et `loki` à la batterie » de
+    ../../tooling.sdd, cochée avec elle : ajouter les entrées `feeds`, `prometheus` et `loki`
+    (`args: "--no-default-features --features feeds"` et ses deux pareilles) au matrix du job `test`, et
+    `feeds`, `prometheus` et `loki` à la boucle explicite du job `clippy` de ./test.yml, commentaires à
+    l'état (la porte nommée n'est pas déductible de `--each-feature`, qui ne joue aucun test). Le décompte
+    des checks du ruleset `main` (Must, « les 17 checks ») monte de trois avec elles : à reprendre à la
+    clôture, et le ruleset est à mettre à jour côté dépôt par le développeur principal (réglage du
+    dépôt, hors fichiers de cette spec).
+  [ ] Suivre les montées de dépendances de ../../vyvil-core.sdd (tâche « Intégrer les montées de
+    dépendances », issues #50 à #54) : après la fusion de chaque PR dependabot concernée (#15, #16, #32), vérifier que
+    l'audit `./audit.yml` ne rouvre plus l'advisory correspondante au passage suivant, et que le `.cargo/audit.toml`
+    n'a pas gagné d'`ignore` (règle du `Must` : une advisory corrigeable par la mise à jour n'y entre
+    jamais). `smartstring` (#55) y reste volontairement visible. Aucune modification de workflow attendue.
 
 Scenario: PR sans approbation d'un autre owner
   Given une PR ouverte par l'un des deux owners, checks verts

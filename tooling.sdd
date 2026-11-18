@@ -282,6 +282,19 @@ Tasks:
     `quantity` » de ./vyvil-core.sdd et de la tâche de ./.github/workflows/workflows.sdd, cochée dans
     le même commit.
 
+  [ ] Ajouter les portes `--no-default-features --features feeds`, `... --features prometheus` et `... --features
+    loki` à la batterie (test et clippy `--all-targets -- -D warnings`) : chacune joue les verrous de son
+    module sous sa seule feature (le graphe `http`+`rt`+`rhai` qu'elle implique, sans `default`), et la
+    porte `prometheus` comme la porte `loki` jouent ensemble les verrous du noyau `query_client`, qui n'a
+    PAS de porte nommée propre (feature interne sans consommateur seule, couverte aussi par `cargo hack
+    --each-feature` ; décision de ./src/query_client.sdd). Les trois s'ajoutent aux combinaisons explicites
+    (elles ne se déduisent pas de `--each-feature`, qui ne joue aucun test). Lockstep des quatre
+    emplacements : ce fichier, ./AGENTS.md (liste de commandes et phrase des combinaisons explicites),
+    l'agent `validator` (./.opencode/agents/validator.md) et ./.github/workflows/test.yml. Jumelle de
+    « Reprendre la batterie pour les trois portes neuves » de ./vyvil-core.sdd, de la tâche de
+    ./.github/workflows/workflows.sdd et des portes désignées de ./src/feeds.sdd, ./src/prometheus.sdd,
+    ./src/loki.sdd, cochée dans le même commit.
+
 Done when:
   `cargo clippy --all-targets -- -D warnings` et `cargo clippy --all-features --all-targets
     -- -D warnings` trient sans warning, comme chaque entrée de la matrice de features, et
