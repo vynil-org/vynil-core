@@ -3,7 +3,7 @@ Spec: oci
 Purpose:
   Contrat groupé de ./oci.rs et ./oci_mock.rs (règle source+mock d'un seul contrat,
     tâche nommée de ./vyvil-core.sdd) : @crate::oci::Registry, client de registre OCI sur
-    @oci_client 0.15 — push d'une image une-couche tar+gzip fabriquée depuis un dossier
+    @oci_client 0.18 — push d'une image une-couche tar+gzip fabriquée depuis un dossier
     local, pull décompressé sur disque, listing de tags paginé jusqu'à épuisement (borné à 10 000), manifeste rendu en
     @rhai::Dynamic par double passe JSON, signature par le binaire EXTERNE `cosign`, plus
     la lecture locale d'un docker-config JSON (@crate::oci::get_auth_from_file) et deux
@@ -40,8 +40,8 @@ References:
     rédiger avec le lot http), le même que ./s3.sdd : plus aucune panique tokio.
   ./Cargo.toml — `oci = ["dep:oci-client", "dep:tokio", "rhai"]` (ligne 58) : la feature
     implique `rhai`, les signatures Rust des méthodes prennent donc des types Rhai en dur
-    (commentaire lignes 56-57). @oci-client déclaré et lock 0.15.0 (@oci-spec 0.8.4 et
-    @reqwest 0.12.28 en transitif) ; @tokio 1.48 déclaré, lock 1.53.1. Non optionnels
+    (commentaire lignes 56-57). @oci-client déclaré et lock 0.18.0 (@oci-spec 0.10.0 et
+    @reqwest 0.12.28 en transitif) ; @tokio 1.48 déclaré, lock 1.54.1. Non optionnels
     consommés par CE groupe : @base64, @chrono (@chrono::Utc::now), @sha256, @flate2,
     @tar, @serde_json, @rhai (feature `serde`). Le mock ne tient qu'à @rhai + @crate.
   ./docs/rhai_helpers.md — section 11 « Feature `oci` (auto-wired) », table des 5 méthodes
@@ -195,7 +195,7 @@ Depends on:
     @oci_client::client::{ClientConfig, ImageLayer, Config}, @oci_client::config::{ConfigFile,
     Architecture, Os, Rootfs, Config, History}, @oci_client::manifest::{OciImageManifest,
     OCI_IMAGE_MEDIA_TYPE, IMAGE_LAYER_GZIP_MEDIA_TYPE, IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE},
-    @oci_client::errors::{OciDistributionError, OciErrorCode} ; 0.15.0 en lock. Les flux
+    @oci_client::errors::{OciDistributionError, OciErrorCode} ; 0.18.0 en lock. Les flux
     réseau réels (auth, retries, timeouts) appartiennent à la dépendance ; son backend TLS par
     défaut est rustls (`default-features = false`, feature `rustls-tls` — bascule jouée
     2026-10-10, `native-tls`/OpenSSL système exclus du graphe, verrou cargo tree ; §`Tasks`).
