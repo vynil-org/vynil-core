@@ -55,11 +55,13 @@ Must:
     together` (décision actée : un secret perdu en silence est une mauvaise configuration) ;
     puis .with_endpoint(endpoint).with_allow_http(true) seulement si `endpoint` est non vide ;
     @object_store::aws::AmazonS3Builder::build() mappé en @variant-Error::Other de son
-    `e.to_string()`. Sonde rejouée sur object_store 0.11.2 (mesure @validator, bin hors
+    `e.to_string()`. Sonde rejouée sous object_store 0.11.2, re-verrouillée par les tests
+    sous 0.14.2 (mesure @validator, bin hors
     arbre, hors réseau) : bucket vide → build Ok dans les quatre formes testées, la sonde
     « Err (MissingBucketName) » qui circulait était FAUSSE — l'échec du bucket vide
     appartient à la REQUÊTE (sa forme textuelle dépend des credentials — sans credentials
-    explicites @object_store 0.11.2 sonde IMDS avant tout, mesure 2026-10-11 reprise à la
+    explicites @object_store sonde IMDS avant tout (mesure 2026-10-11 sous 0.11.2, fait de
+    dépendance hors contrat), reprise à la
     mesure : seule l'appartenance à la requête est contractuelle) ; region vide,
     aucune credential, access non vide + secret vide,
     endpoint http y compris sans allow_http → tous build Ok — les gardes credentials et
@@ -127,7 +129,8 @@ Must not:
 
 Depends on:
   object_store — @object_store::aws::AmazonS3Builder, le trait @object_store::ObjectStore
-    (get, list), @object_store::path::Path, @object_store::Error ; 0.14.2 en lock sous feature
+    (list) et son trait d'extension @object_store::ObjectStoreExt (`get`/`put` depuis 0.14),
+    @object_store::path::Path, @object_store::Error ; 0.14.2 en lock sous feature
     `aws` des S3. La sémantique complète du builder (validations, chaîne de credential,
     pagination, ordre de listing) et les textes d'erreur @object_store appartiennent à la
     dépendance et ne sont verrouillés ici que par leurs triggers, pas leurs formes.
@@ -181,7 +184,8 @@ Raises:
   Les deux fonctions publiques rendent @crate::RhaiRes, échec porté par @crate::rhai_err
     autour de @variant-Error::Other d'affichage `Error: <texte d'erreur @object_store>` —
     triggers : build du store (credentials incomplets gardés par nous ; bucket vide PAS un
-    échec de build — re-mesure object_store 0.11.2 2026-10-10, l'échec part de la
+    échec de build — re-mesure 2026-10-10 sous 0.11.2, re-verrouillée sous 0.14.2, l'échec
+    part de la
     requête), get, bytes,
     et chaque erreur du flux de list ; la forme interne du texte est de @object_store et
     n'est pas verrouillée.
@@ -274,15 +278,15 @@ Scenario: deux enregistrements successifs ne duppliquent pas
 
 Scenario: bucket vide parle à la requête, pas au build
   Given un runtime tokio multi-thread (le corps passe par @crate::rt::block_on) et des
-    credentials explicites avec un endpoint refusé local (mesure 2026-10-11 : sans credentials
-    explicites @object_store 0.11.2 sonde d'abord IMDS `169.254.169.254` — 10 retries, ~13 s —
+    credentials explicites avec un endpoint refusé local (mesure 2026-10-11 sous 0.11.2 :
+    sans credentials explicites @object_store sonde d'abord IMDS `169.254.169.254` — 10 retries, ~13 s —
     et une region non vide produit `https://s3.<region>.amazonaws.com/` résolvable en DNS,
     jamais l'« URL malformée » `https://s3..amazonaws.com/` ; décision du développeur
     principal : reprise à la mesure — la forme de l'échec dépend des credentials, seuls
     build Ok et échec à la requête sont contractuels)
   When @crate::s3::s3_get_yaml est appelée avec `bucket=""` et le reste arbitraire, hors
     réseau réel requis
-  Then le build interne rend Ok (re-mesure object_store 0.11.2 du validator : aucune
+  Then le build interne rend Ok (re-verrouillé sous 0.14.2 par le validator : aucune
     failure de build sur bucket vide dans les quatre formes testées) et l'échec remonte de
     la REQUÊTE via @crate::rhai_err portant @variant-Error::Other de @object_store — le
     trigger « l'échec vient de la requête, pas du build » est verrouillé, sa forme textuelle
@@ -294,7 +298,7 @@ Scenario: region, credentials et endpoint vides construisent quand-même, creden
   Given un runtime tokio multi-thread, aucune credential d'environnement
   When le build interne est exercé via les fonctions publiques avec `region=""`, sans aucune
     credential explicite
-  Then aucune erreur de build ne survient (mesuré 0.11.2 : build Ok) — l'échec éventuel
+  Then aucune erreur de build ne survient (re-verrouillé sous 0.14.2 : build Ok) — l'échec éventuel
     appartient à la requête, pas à la configuration
   When un `access_key=""` est passé avec un `secret_key` non vide
   Then l'appel échoue en @variant-Error::Other `s3: access_key and secret_key must be provided

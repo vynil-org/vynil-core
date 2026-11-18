@@ -934,7 +934,7 @@ mod tests {
     }
 
     /// Corps du blob de config : le contrat du `ConfigFile` figé (`os` Linux,
-    /// architecture None sérialisée en chaîne vide, rootfs `layers` à l'unique
+    /// architecture `Other` vide sérialisée en chaîne vide, rootfs `layers` à l'unique
     /// `diff_id` `sha256:`+64 hex, `working_dir` `/`, history UNE entrée `vynil`).
     fn config_body_locks_the_push_contract(req: &HttpMockRequest) -> bool {
         let Some(v) = json_body_of(req) else {

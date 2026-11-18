@@ -471,7 +471,7 @@ Scenario: push construit la couche unique et rend le sha256 tronqué
   Given un faux registre OCI de test (seam des `Tasks`) et un dossier à deux fichiers
   When push_image réussit avec une Map d'annotations vide
   Then une unique couche gzip a été poussée, `diff_id` = sha256 du tar BRUT, config os
-    Linux/arch None/working_dir `/`, history created_by `vynil` — et Some(annotations vides)
+    Linux/arch Other vide (`""`)/working_dir `/`, history created_by `vynil` — et Some(annotations vides)
     passé, jamais None
   And la sortie est la tranche `sha256:...` depuis le DERNIER porteur de `sha256:` dans la
     manifest_url
