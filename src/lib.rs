@@ -437,6 +437,18 @@ pub mod rt;
 /// auto step and typed errors. INTERNAL feature — consumers enable `prometheus` or `loki`.
 pub mod query_client;
 
+#[cfg(feature = "prometheus")]
+#[cfg_attr(docsrs, doc(cfg(feature = "prometheus")))]
+/// Read connector for Prometheus-compatible APIs ([`prometheus::prometheus_module`]): a HOST
+/// module over the [`query_client`] kernel — the host configures the client and registers the
+/// module under the name it chooses; scripts only pass the query and the time range.
+pub mod prometheus;
+#[cfg(feature = "prometheus")]
+#[cfg_attr(docsrs, doc(cfg(feature = "prometheus")))]
+/// Fixture-driven double of the `prometheus` host module ([`prometheus_mock::prometheus_mock_module`]):
+/// same function names and same output shape, no network.
+pub mod prometheus_mock;
+
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 /// HTTP client ([`http::RestClient`]).

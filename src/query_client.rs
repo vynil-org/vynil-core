@@ -327,10 +327,11 @@ impl QueryClient {
     /// GETs `path` (relative to `base_url` + `path_prefix`) and reads the response envelope
     /// (`status` / `data.resultType` / `data.result`) as a STREAM: each result element is decoded
     /// by `decode` and collected; the read stops as soon as a ceiling is hit — the element ceiling
-    /// (`element_limit`, `limits.max_series` or `limits.max_lines` per connector) or
-    /// `limits.max_bytes`. Everything FULLY read before the ceiling is returned with
-    /// `truncated: true`; a partially read element is never returned. The memory stays bounded by
-    /// the ceilings: the body is never loaded whole.
+    /// (`limits.max_series`, applied by the kernel at its own gate, never brought by the caller —
+    /// `query_client.sdd`, `Must` plafonds, amendment 2026-11-19) or `limits.max_bytes`.
+    /// Everything FULLY read before the ceiling is returned with `truncated: true`; a partially
+    /// read element is never returned. The memory stays bounded by the ceilings: the body is
+    /// never loaded whole.
     ///
     /// This is the generic hook the `prometheus` and `loki` connectors branch their shapes onto:
     /// `decode` is their per-element form mapper, free to fail with
@@ -344,7 +345,6 @@ impl QueryClient {
     pub fn stream_query<T>(
         &self,
         path: &str,
-        element_limit: usize,
         mut decode: impl FnMut(&serde_json::Value) -> crate::Result<T>,
     ) -> crate::Result<QueryOutcome<T>> {
         let full = self.request_path(path);
@@ -377,7 +377,7 @@ impl QueryClient {
                 resp: &mut response,
             };
             let de_result = serde_json::Deserializer::from_reader(&mut reader)
-                .deserialize_any(EnvelopeSeed(state.clone(), element_limit));
+                .deserialize_any(EnvelopeSeed(state.clone(), self.config.limits.max_series));
             // Un échec de parsing qui n'est signalé par aucun plafond ni aucune erreur marquée
             // est une réponse de forme inattendue, jamais une panique (Handles de la spec).
             if de_result.is_err() && !state.with(|s| s.signalled()) {
@@ -767,7 +767,7 @@ impl<'de> Visitor<'de> for DataSeed {
                 }
                 "result" => map.next_value_seed(ResultSeed {
                     state: self.0.clone(),
-                    element_limit: self.1,
+                    max_series: self.1,
                 })?,
                 _ => {
                     map.next_value::<IgnoredAny>()?;
@@ -790,11 +790,13 @@ impl<'de> Visitor<'de> for DataSeed {
     }
 }
 
-/// Visitor over `data.result`: elements are collected one by one, and the element ceiling stops
-/// the walk — never mid-element, since the check happens before each element is read.
+/// Visitor over `data.result`: elements are collected one by one, and the element ceiling
+/// (`limits.max_series`, brought down from the host config by [`QueryClient::stream_query`], not
+/// by the caller) stops the walk — never mid-element, since the check happens before each element
+/// is read.
 struct ResultSeed {
     state: StreamState,
-    element_limit: usize,
+    max_series: usize,
 }
 
 impl<'de> DeserializeSeed<'de> for ResultSeed {
@@ -815,7 +817,7 @@ impl<'de> Visitor<'de> for ResultSeed {
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
         self.state.with(|s| s.result_seen = true);
         loop {
-            if self.state.with(|s| s.items.len() >= self.element_limit) {
+            if self.state.with(|s| s.items.len() >= self.max_series) {
                 self.state.with(|s| {
                     s.stop.get_or_insert(StopReason::ElementCeiling);
                 });
@@ -995,9 +997,13 @@ mod tests {
         let mut cfg = base_config(server.port());
         cfg.timeout = Duration::from_secs(30);
         cfg.limits.max_bytes = MAX_BYTES;
+        // Le verrou porte sur le plafond d'octets : max_series est posé au-dessus du nombre servi
+        // pour que la troncature vienne des octets, pas d'éléments (amendement 2026-11-19 : le
+        // plafond de séries est désormais appliqué par le noyau).
+        cfg.limits.max_series = total;
         let client = QueryClient::new(cfg).expect("config valide");
         let out = client
-            .stream_query("api/v1/query", 1_000_000, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect("un plafond atteint en éléments complets est une troncature, pas une erreur");
         assert!(out.truncated, "au-dessus du plafond d'octets, truncated: true");
         assert!(
@@ -1041,7 +1047,7 @@ mod tests {
         cfg.limits.max_bytes = 1024 * 1024;
         let client = QueryClient::new(cfg).expect("config valide");
         let err = client
-            .stream_query("api/v1/query", 1_000_000, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect_err("un premier élément au-dessus du plafond ne se troncature pas");
         assert!(
             matches!(err, crate::Error::Query(QueryError::TooLarge)),
@@ -1104,7 +1110,7 @@ mod tests {
         cfg.auth = QueryAuth::None;
         let client = QueryClient::new(cfg).expect("config valide");
         let out = client
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect("requête nominale tenant-seul");
         assert_eq!(out.items.len(), 2);
         assert_eq!(
@@ -1146,7 +1152,7 @@ mod tests {
             "le Debug du client masque le jeton"
         );
         let out = client
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect("succès avec jeton");
         assert_eq!(out.items.len(), 1);
         // Échec : l'erreur typée rendue par une requête authentifiée.
@@ -1154,7 +1160,7 @@ mod tests {
         bad.auth = QueryAuth::Bearer(SECRET.to_string());
         let bad = QueryClient::new(bad).expect("config valide");
         let err = bad
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect_err("401 → Unauthorized");
         assert!(
             !err.to_string().contains(SECRET),
@@ -1228,7 +1234,7 @@ mod tests {
         });
         let client = QueryClient::new(base_config(server.port())).expect("config valide");
         let err = client
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect_err("400 typé");
         match err {
             crate::Error::Query(QueryError::Syntax(msg)) => {
@@ -1251,7 +1257,7 @@ mod tests {
         });
         let client = QueryClient::new(base_config(server.port())).expect("config valide");
         let err = client
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect_err("429 typé");
         match err {
             crate::Error::Query(QueryError::RateLimited { retry_after }) => {
@@ -1271,7 +1277,7 @@ mod tests {
         });
         let client = QueryClient::new(base_config(server.port())).expect("config valide");
         let err = client
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect_err("401 typé");
         assert!(
             matches!(err, crate::Error::Query(QueryError::Unauthorized)),
@@ -1294,7 +1300,7 @@ mod tests {
         cfg.timeout = Duration::from_millis(400);
         let client = QueryClient::new(cfg).expect("config valide");
         let err = client
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect_err("le délai couvre la requête");
         assert!(
             matches!(err, crate::Error::Query(QueryError::Timeout { .. })),
@@ -1307,7 +1313,7 @@ mod tests {
         crate::set_client_name(|| "query-client.tests".to_string());
         let client = no_network_client();
         let err = client
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect_err("source injoignable");
         assert!(
             matches!(err, crate::Error::Query(QueryError::Unreachable { .. })),
@@ -1335,11 +1341,11 @@ mod tests {
         cfg.path_prefix = "/prometheus".to_string();
         QueryClient::new(cfg)
             .expect("config valide")
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect("préfixe Mimir");
         QueryClient::new(base_config(server.port()))
             .expect("config valide")
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect("préfixe vide");
         mimir.assert_calls(1);
         bare.assert_calls(1);
@@ -1368,7 +1374,7 @@ mod tests {
         });
         let err = QueryClient::new(base_config(junk.port()))
             .expect("config valide")
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect_err("JSON non conforme typé");
         assert!(
             matches!(err, crate::Error::Query(QueryError::BadResponse(_))),
@@ -1383,7 +1389,7 @@ mod tests {
         });
         let err = QueryClient::new(base_config(unknown.port()))
             .expect("config valide")
-            .stream_query("api/v1/query", 100, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect_err("errorType inconnu typé");
         assert!(
             matches!(err, crate::Error::Query(QueryError::BadResponse(_))),
@@ -1392,23 +1398,27 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn element_ceiling_truncates_exactly_at_limit() {
-        // Sous le plafond d'octets, le plafond d'éléments borne la lecture : `element_limit`
-        // éléments complets rendus, truncated: true (contrat du hook générique).
+    async fn max_series_from_config_truncates_at_the_kernel_gate() {
+        // Must « Tenir les plafonds » (amendement 2026-11-19) : le plafond de séries est appliqué
+        // par le NOYAU à sa propre porte de flux, plus un `element_limit` apporté par l'appelant.
+        // Sous le plafond d'octets : max_series éléments COMPLÈTS rendus sur les 50 servis,
+        // truncated: true, pas un de plus.
         crate::set_client_name(|| "query-client.tests".to_string());
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/api/v1/query");
             then.status(200).json_body(envelope(&ok_elements(50)));
         });
-        let client = QueryClient::new(base_config(server.port())).expect("config valide");
+        let mut cfg = base_config(server.port());
+        cfg.limits.max_series = 10;
+        let client = QueryClient::new(cfg).expect("config valide");
         let out = client
-            .stream_query("api/v1/query", 10, complete_matrix_element)
+            .stream_query("api/v1/query", complete_matrix_element)
             .expect("le plafond d'éléments est une troncature, pas une erreur");
         assert_eq!(
             out.items.len(),
             10,
-            "element_limit éléments COMPLÈTS, pas un de plus"
+            "max_series éléments COMPLÈTS, pas un de plus"
         );
         assert!(out.truncated);
     }

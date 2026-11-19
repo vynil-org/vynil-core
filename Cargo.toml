@@ -111,6 +111,10 @@ rt = ["dep:tokio"]
 # imply it. Like k8s/oci/s3/http it implies `rhai`; it also implies `http` (it builds an
 # `http::RestClient` host-side) and `rt` (the streaming reads bridge through `rt::block_on`).
 query_client = ["http", "rt", "rhai"]
+# Read connector for Prometheus-compatible APIs (src/prometheus.rs + its mock, issue
+# vynil-org/vynil-core#57): a host module over the `query_client` kernel — the host configures
+# the client, the script only queries. Implies `rhai` through the kernel; off `default`.
+prometheus = ["query_client"]
 
 [dependencies]
 # Features par défaut de rhai CONSERVÉES (dont `ahash/runtime-rng`, seed de hachage tiré à l'exécution) :
