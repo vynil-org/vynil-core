@@ -115,6 +115,10 @@ query_client = ["http", "rt", "rhai"]
 # vynil-org/vynil-core#57): a host module over the `query_client` kernel — the host configures
 # the client, the script only queries. Implies `rhai` through the kernel; off `default`.
 prometheus = ["query_client"]
+# Read connector for Loki (src/loki.rs + its mock, issue vynil-org/vynil-core#57): a host module
+# over the `query_client` kernel, same principle as `prometheus` and no shared code with it (the
+# two features stay independent). Implies `rhai` through the kernel; off `default`.
+loki = ["query_client"]
 
 [dependencies]
 # Features par défaut de rhai CONSERVÉES (dont `ahash/runtime-rng`, seed de hachage tiré à l'exécution) :

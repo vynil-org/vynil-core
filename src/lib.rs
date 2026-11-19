@@ -449,6 +449,18 @@ pub mod prometheus;
 /// same function names and same output shape, no network.
 pub mod prometheus_mock;
 
+#[cfg(feature = "loki")]
+#[cfg_attr(docsrs, doc(cfg(feature = "loki")))]
+/// Read connector for Loki ([`loki::loki_module`]): a HOST module over the [`query_client`]
+/// kernel — the host configures the client and registers the module under the name it chooses;
+/// scripts only pass the LogQL query, the time range, the line limit and the direction.
+pub mod loki;
+#[cfg(feature = "loki")]
+#[cfg_attr(docsrs, doc(cfg(feature = "loki")))]
+/// Fixture-driven double of the `loki` host module ([`loki_mock::loki_mock_module`]): same
+/// function name and same output shape, no network.
+pub mod loki_mock;
+
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
 /// HTTP client ([`http::RestClient`]).

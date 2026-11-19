@@ -96,7 +96,9 @@ Exposes:
   @crate::query_client::QueryLimits — `max_series`, `max_points`, `max_lines`, `max_bytes`.
   @crate::query_client::QueryClient — `Clone`, construit par
     @crate::query_client::QueryClient::new(config) (@crate::Result : URL invalide, CA illisible) ;
-    base des deux connecteurs.
+    base des deux connecteurs. @crate::query_client::QueryClient::limits — vue lecture seule
+    `&QueryLimits` pour l'hôte et les connecteurs (calcul du leur d'un plafond de paramètre de
+    requête, ./loki.sdd) ; sans équivalent côté script.
   @crate::query_client::QueryError — énum typée ci-dessus, avec `Display` à codes stables.
 
 Handles:
@@ -123,6 +125,11 @@ Tasks:
     arbitré pour débloquer le Scenario « dépassement de plafond » de ./prometheus.sdd) : le
     plafond de séries devient une borne du noyau, plus un `element_limit` apporté par l'appelant.
     Débloque le test `#[ignore]` de ./prometheus.rs ; verrou propre ajouté dans ./query_client.rs.
+  [ ] Exposer @crate::query_client::QueryClient::limits (arbitrage du développeur principal
+    2026-11-19, face lecture seule de « l'hôte configure ») : vue `&QueryLimits` pour que les
+    connecteurs calculent le leur des plafonds de paramètres de requête (le `limit` de
+    ./loki.sdd) ; jamais exposée au script. Débloque le Scenario « limite et direction » de
+    ./loki.sdd.
   [ ] Jumelle de ./lib.sdd : déclarer `query_client`, ajouter @variant-Error::Query.
   [x] Décision confirmée (2026-11-18) : délai par @tokio::time::timeout autour du flux, plutôt que
     de rendre `DEFAULT_TIMEOUT` de ./http.rs configurable (ce qui changerait le contrat de ./http.sdd).

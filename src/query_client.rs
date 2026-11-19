@@ -295,6 +295,16 @@ impl QueryClient {
         })
     }
 
+    /// Read-only view of the host-configured volume ceilings (`query_client.sdd`, `Exposes`,
+    /// arbitration 2026-11-19 — the read-only face of « the host configures »). The connectors
+    /// cap their own request parameters against it (Loki's `limit` onto `max_lines`,
+    /// `loki.sdd`); the host may read back what it set. Deliberately no script-side equivalent:
+    /// no Rhai surface of either connector ever exposes the configuration.
+    #[must_use]
+    pub fn limits(&self) -> &QueryLimits {
+        &self.config.limits
+    }
+
     /// Resolves the step of a range query: `"auto"` ( [`None`]) computes
     /// `max(1 s, ceil(duration / max_points))`; an explicit step finer than that is refused with
     /// [`QueryError::StepTooFine`] carrying the minimum accepted step — before any network call.
@@ -1361,6 +1371,27 @@ mod tests {
         let l = QueryLimits::default();
         assert!(l.max_series > 0 && l.max_points > 0 && l.max_lines > 0);
         assert!(l.max_bytes > 0 && l.max_bytes < usize::MAX / 2);
+    }
+
+    #[test]
+    fn limits_view_reflects_the_host_config() {
+        // Exposes (arbitrage 2026-11-19) : `limits()` rend en lecture seule les plafonds posés
+        // par l'hôte dans la config — les connecteurs en calculent le plafonnement de leur
+        // paramètre de requête (le `limit` de ./loki.sdd). Sans équivalent côté script.
+        let mut cfg = base_config(1);
+        cfg.limits = QueryLimits {
+            max_series: 7,
+            max_points: 11,
+            max_lines: 50,
+            max_bytes: 4096,
+        };
+        let client = QueryClient::new(cfg).expect("config valide");
+        let l = client.limits();
+        assert_eq!(
+            (l.max_series, l.max_points, l.max_lines, l.max_bytes),
+            (7, 11, 50, 4096),
+            "la vue reflète la config hôte"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
