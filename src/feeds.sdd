@@ -179,8 +179,10 @@ Scenario: perdre le curseur ne perd rien
 Scenario: flux invalide, réponse non-XML, délai
   Given un serveur répondant `200` et le corps `not xml`
   When `feed_read` l'appelle
-  Then l'échec est @variant-Error::FeedInvalid ; un serveur qui ne répond pas dans le délai donne
-    @variant-Error::ReqwestError ; un `500` donne @variant-Error::MethodFailed
+  Then l'échec est @variant-Error::FeedInvalid ; un serveur qui accepte la connexion et la
+    ferme sans réponse (silence TCP) donne @variant-Error::ReqwestError — même voie que le délai,
+    le plafond de 5 min de @crate::http::RestClient n'étant pas rejouable en test (arbitrage du
+    développeur principal 2026-11-19) ; un `500` donne @variant-Error::MethodFailed
 
 Scenario: sans la feature feeds, rien n'existe
   Given une compilation sans la feature `feeds`

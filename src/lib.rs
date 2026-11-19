@@ -27,6 +27,7 @@
 //! | `password` | ❌ | Auto-wires `gen_password` / `gen_password_alphanum` into `new_bare` and registers the Handlebars helpers; the Rhai glue itself compiles under `rhai` alone (opt-in to avoid name collisions) |
 //! | `metadata` | ❌ | Rhai introspection metadata: `///` comments + parameter names on registered script functions, consumed by `gen_fn_signatures` / `gen_fn_metadata_to_json`. Implies `rhai` |
 //! | `rt` | ❌ | async → sync bridge `rt::block_on` for consumers; pulls `tokio`; does not imply `rhai` |
+//! | `feeds` | ❌ | RSS/Atom feed reading (`feeds::feed_read` / `feeds::feed_poll` + `feeds_mock`, feed-rs based). Implies `http`, `rt` and `rhai` |
 //!
 //! ```toml
 //! # default: Rhai + Handlebars + HTTP + crypto
@@ -129,11 +130,13 @@ use thiserror::Error;
 /// kept out of its [`std::fmt::Display`] — bodies can carry tokens or personal data that
 /// must not leak into logs — and is reachable only through [`Error::http_body`].
 ///
-/// Three Display texts embed a raw searchable code, frozen in the format string and exposed
+/// Several Display texts embed a raw searchable code, frozen in the format string and exposed
 /// with no constant (settled decision): `KEY-ALGO-001` ([`Error::UnsupportedKeyAlgorithm`],
-/// ungated), `KEY-OPENSSL-001` (`Error::OpenSSL`, feature `crypto`) and `CANCEL-001`
-/// ([`Error::Cancelled`], ungated). They are stable identifiers meant to be searched for by
-/// consumers — part of the API contract.
+/// ungated), `KEY-OPENSSL-001` (`Error::OpenSSL`, feature `crypto`), `CANCEL-001`
+/// ([`Error::Cancelled`], ungated), `QUERY-001` to `QUERY-009` (`Error::Query`, feature
+/// `query_client`, carried by `QueryError`'s own Display), `FEED-001` (`Error::FeedInvalid`,
+/// feature `feeds`) and `FEED-002` (`Error::FeedCursor`, feature `feeds`). They are stable
+/// identifiers meant to be searched for by consumers — part of the API contract.
 #[derive(Error, Debug)]
 pub enum Error {
     /// JSON serialization / deserialization failure.
@@ -176,6 +179,22 @@ pub enum Error {
     #[cfg_attr(docsrs, doc(cfg(feature = "query_client")))]
     #[error("{0}")]
     Query(#[from] crate::query_client::QueryError),
+
+    /// An invalid feed, or a response that is not a feed at all (feature `feeds`, see
+    /// `feeds.sdd`). Its Display carries the stable code `FEED-001` — like `KEY-ALGO-001`,
+    /// `CANCEL-001` and the `QUERY-0xx` family, a searchable identifier — and never a
+    /// credential-bearing URL.
+    #[cfg(feature = "feeds")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "feeds")))]
+    #[error("FEED-001 invalid feed: {0}")]
+    FeedInvalid(String),
+
+    /// A feed cursor of unknown version, or carrying a malformed field (feature `feeds`, see
+    /// `feeds.sdd`). Its Display carries the stable code `FEED-002`.
+    #[cfg(feature = "feeds")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "feeds")))]
+    #[error("FEED-002 invalid feed cursor: {0}")]
+    FeedCursor(String),
 
     /// JSON decoding of an HTTP body failed.
     #[error("Json decoding error: {0}")]
@@ -460,6 +479,18 @@ pub mod loki;
 /// Fixture-driven double of the `loki` host module ([`loki_mock::loki_mock_module`]): same
 /// function name and same output shape, no network.
 pub mod loki_mock;
+
+#[cfg(feature = "feeds")]
+#[cfg_attr(docsrs, doc(cfg(feature = "feeds")))]
+/// RSS/Atom feed reader ([`feeds::feed_read`] stateless, [`feeds::feed_poll`] with an opaque
+/// versioned cursor; feature `feeds`, issue #56): a protocol client that knows nothing of the
+/// caller's data model — fetch goes through [`http::RestClient`], parsing through `feed-rs`.
+pub mod feeds;
+#[cfg(feature = "feeds")]
+#[cfg_attr(docsrs, doc(cfg(feature = "feeds")))]
+/// Fixture-driven double of the `feeds` module ([`feeds_mock::feeds_mock_module`]): same function
+/// names, simulated ETag / Last-Modified, no network and no `tokio`.
+pub mod feeds_mock;
 
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
@@ -1066,6 +1097,43 @@ mod tests {
         #[test]
         fn http_body_is_none_for_query_error() {
             assert_eq!(Error::Query(QueryError::Unauthorized).http_body(), None);
+        }
+    }
+
+    // ── Display des deux variantes gated `feeds` (issues #56 : FEED-001 / FEED-002, codes
+    // stables figés dans le format comme KEY-ALGO-001 et CANCEL-001 ; http_body = None) ──
+    #[cfg(feature = "feeds")]
+    mod display_feeds {
+        use super::Error;
+        use std::error::Error as _;
+
+        #[test]
+        fn display_feed_invalid_freezes_feed_001() {
+            let err = Error::FeedInvalid("no root element".to_string());
+            assert_eq!(
+                err.to_string(),
+                "FEED-001 invalid feed: no root element",
+                "FEED-001 est un identifiant stable congelé dans le Display"
+            );
+            assert!(err.source().is_none());
+        }
+
+        #[test]
+        fn display_feed_cursor_freezes_feed_002() {
+            let err = Error::FeedCursor("unknown version 2".to_string());
+            assert_eq!(
+                err.to_string(),
+                "FEED-002 invalid feed cursor: unknown version 2",
+                "FEED-002 est un identifiant stable congelé dans le Display"
+            );
+            assert!(err.source().is_none());
+        }
+
+        // http_body = None sur les deux variantes gated `feeds`.
+        #[test]
+        fn http_body_is_none_for_feeds_variants() {
+            assert_eq!(Error::FeedInvalid("x".to_string()).http_body(), None);
+            assert_eq!(Error::FeedCursor("x".to_string()).http_body(), None);
         }
     }
 

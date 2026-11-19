@@ -29,9 +29,12 @@ Must:
   Exposer une fonction de script `query_range(expr, start, end, limit, direction)` par un module
     d'hôte et lui seul (pas d'enregistreur global, motif de ./prometheus.sdd). `start` et `end` : un
     `i64` en ms UTC ou un @crate::chrono::DateTimeHandler ; `limit` : entier positif, plafonné par le
-    `max_lines` de la config hôte (le plus petit des deux gagne, et `truncated` vaut `true` si le
+    `max_lines` de la config hôte via @crate::query_client::QueryClient::limits (le plus petit des
+    deux gagne, et `truncated` vaut `true` si le
     serveur a eu plus de lignes à rendre que le plafond retenu) ; `direction` : `"forward"` ou
-    `"backward"` (autre valeur : échec de script).
+    `"backward"` (autre valeur : échec de script). La requête part sur `path_prefix` +
+    `loki/api/v1/query_range` (décision du développeur principal 2026-11-19 : le chemin natif de
+    Loki, un Loki nu sous `/`, Mimir sous son préfixe).
   Rendre la sortie normalisée `{ streams: [{ labels, lines: [[t, texte]] }], truncated }` : `labels`
     est une map de chaînes ; `t` est un entier `i64` en ms UTC (le timestamp en nanosecondes de Loki
     est TRONQUÉ à la milliseconde, donc plusieurs lignes d'un flux peuvent partager un `t` ; l'ordre est

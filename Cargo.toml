@@ -119,6 +119,10 @@ prometheus = ["query_client"]
 # over the `query_client` kernel, same principle as `prometheus` and no shared code with it (the
 # two features stay independent). Implies `rhai` through the kernel; off `default`.
 loki = ["query_client"]
+# RSS/Atom feed reader (src/feeds.rs + its mock, issue vynil-org/vynil-core#56): stateless
+# `feed_read` and cursor-based `feed_poll` over feed-rs, fetched through `http::RestClient` and
+# bridged through `rt` (never tokio from a script). Implies `http`, `rt` and `rhai`; off `default`.
+feeds = ["dep:feed-rs", "http", "rt", "rhai"]
 
 [dependencies]
 # Features par défaut de rhai CONSERVÉES (dont `ahash/runtime-rng`, seed de hachage tiré à l'exécution) :
@@ -173,6 +177,9 @@ oci-client = { version = "0.18.0", default-features = false, features = ["rustls
 object_store = { version = "0.14", features = ["aws"], optional = true }
 flate2 = { version = "1.1.4", optional = true }
 tar = { version = "0.4.46", optional = true }
+# Atom / RSS 0.9x–2.0 / JSON Feed parser of the `feeds` module (src/feeds.rs, issue #56). Version
+# retained measured on crates.io at implementation time (2026-11-19, max stable 3.0.0).
+feed-rs = { version = "3.0", optional = true }
 
 [dev-dependencies]
 wiremock = "0.6"
