@@ -35,7 +35,7 @@ Must:
     texte vient des attributs `#[error(...)]`, et @core::error::Error::source est alimenté
     par les seuls `#[from]`/`#[source]`. L'enum compile et reste stable à
     `--no-default-features`.
-  29 variantes (tuple, sauf les unités), champs publics accessibles par déstructuration : 16 non gated, 13
+  32 variantes (tuple, sauf les unités), champs publics accessibles par déstructuration : 16 non gated, 16
     gated chacune avec `#[cfg(feature = ...)]` + `#[cfg_attr(docsrs, doc(cfg(...)))]`.
   Display exacts, contrats caractère par caractère — variantes NON gated (compilées même
     sans aucune feature) :
@@ -70,7 +70,9 @@ Must:
       figé dans le format comme `KEY-ALGO-001` et `KEY-OPENSSL-001` (décision actée, revue de la
       PR #24 ; issue #23) ;
     @variant-Error::Other — @std::string::String — fourre-tout — `Error: {0}`.
-  Display exacts des 13 variantes gated (feature → variantes → texte) :
+  Display exacts des variantes gated de l'historique (feature → variantes → texte) — les trois
+    variantes des clients de protocole sont contractées au paragraphe « Variantes des clients de
+    protocole » ci-dessous :
     `hbs` → @variant-Error::HbsTemplateError `Registering template failed with error: {0}`,
       @variant-Error::HbsRenderError `Renderer error: {0}` ;
     `rhai` → @variant-Error::RhaiError portant @std::boxed::Box de @rhai::EvalAltResult —
@@ -91,8 +93,8 @@ Must:
     faits pour être recherchés par les consommateurs, contrat d'API dit dans la rustdoc de
     @variant-Error, sans constante nécessaire (décision actée).
   Variantes des clients de protocole (issues vynil-org/vynil-core#56 et #57, chacune gated avec
-    `#[cfg(feature = ...)]` + `#[cfg_attr(docsrs, doc(cfg(...)))]`, à joindre au décompte des variantes
-    gated à la clôture — écrit sans chiffre figé, règle de ../vyvil-core.sdd) : `feeds` →
+    `#[cfg(feature = ...)]` + `#[cfg_attr(docsrs, doc(cfg(...)))]`, comprises dans le décompte
+    gated ci-dessus) : `feeds` →
     @variant-Error::FeedInvalid — @std::string::String — `FEED-001 invalid feed: {0}` (flux invalide ou
     réponse non-XML) et @variant-Error::FeedCursor — @std::string::String — `FEED-002 invalid feed
     cursor: {0}` (curseur de version inconnue ou mal formé) ; `query_client` → @variant-Error::Query —
@@ -199,18 +201,18 @@ Must not:
 Depends on:
   @thiserror (non optionnel, version 2 déclarée) ; les dépendances non optionnelles des
     variantes non gated : @serde_json, @semver (features `serde`), @base64, le crate `http`
-    1.1 ; les dépendances gated des 13 variantes gated collent feature par feature au
+    1.1 ; les dépendances gated des variantes gated collent feature par feature au
     manifest (rhai, handlebars, reqwest, openssl/argon2/bcrypt, oci-client, kube et
     @tokio::time par unification — borne partagée avec ./k8s.sdd) ; @std seul pour
     @fn-error_chain.
 
 Exposes:
-  API racine sous features par défaut : @variant-Error (29 variantes, dont 16 sans gate),
+  API racine sous features par défaut : @variant-Error (32 variantes, dont 16 sans gate),
     @type-Result, @type-RhaiRes (rhai), @fn-error_chain, @fn-rhai_err, @fn-rhai_err_str
     (rhai), @fn-client_name_is_set, @fn-get_client_name, @fn-set_client_name,
     @struct-Semver, @struct-Script (rhai), @struct-HandleBars (hbs) ; + @fn-update_cache
     seulement sous `k8s`.
-  20 modules publics (7 sans gate + 13 gated), dont les trois mock http_mock/oci_mock/
+  28 modules publics (7 sans gate + 21 gated), dont les trois mock http_mock/oci_mock/
     k8s_mock publics hors `cfg(test)` ; un seul module privé : @crate::hbs_json.
 
 Accepts:
@@ -234,8 +236,8 @@ Raises:
     contractés chez eux.
 
 Handles:
-  Rien à la racine : pas de catch, pas de conversion implicite au-delà des 20
-    @core::convert::From dérivés par thiserror (7 non gated, 13 gated).
+  Rien à la racine : pas de catch, pas de conversion implicite au-delà des 21
+    @core::convert::From dérivés par thiserror (7 non gated, 14 gated).
 
 Tasks:
   [ ] Déclarer les modules et variantes des clients de protocole (issues #56 et #57) : dans ./lib.rs,
@@ -264,7 +266,7 @@ Tasks:
     @fn-error_chain (chaîne pleine trois niveaux, effondrement du doublon verbatim, feuille
     seule, absence de faux positif sur cause distincte, terminaison cyclique bornée, plafond de
     32 sources avec « … ») qui verrouillent les cinq Scenario de la fonction. Couverts depuis :
-    les 28 Display (assertions de texte des 15 non gated et des 13 gated, dans les modules
+    les 31 Display (assertions de texte des 15 non gated et des 16 gated, dans les modules
     `display_*` gated exécutés sur chaque porte de la batterie), la surface compilable à
     `--no-default-features` (module de test `surface_without_features`, gate `not(rhai)`, avec
     @variant-Error::RawHTTP et @variant-Error::UnsupportedMethod sans la feature `http`), le 3ᵉ champ caché
@@ -439,7 +441,7 @@ Scenario: surface compilable sans aucune feature
   Then @fn-error_chain, @type-Result, @fn-set_client_name, @fn-get_client_name,
     @fn-client_name_is_set, @struct-Semver et les modules chrono/client_name/hashes/
     password/semver/yaml compilent ; @struct-Script, @struct-HandleBars, @type-RhaiRes,
-    @fn-rhai_err, @fn-update_cache et les 13 variantes gated n'existent pas
+    @fn-rhai_err, @fn-update_cache et les 16 variantes gated n'existent pas
   And le versant positif est verrouillé par le module de test `surface_without_features`
     (gate `not(rhai)`), exécuté par `cargo test --no-default-features` de la batterie
   And le versant négatif (symboles absents) n'est pas verrouillé par un test : il est tenu par

@@ -47,7 +47,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn set_name() {
-        crate::set_client_name(|| "loki-mock.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
     }
 
     fn fixture(expr: &str) -> LokiFixture {

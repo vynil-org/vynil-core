@@ -997,7 +997,7 @@ mod tests {
         // éléments complets lus avant le plafond sont rendus avec truncated: true, la lecture
         // s'arrête, et la mémoire reste bornée par le plafond (pas de chargement intégral).
         const MAX_BYTES: usize = 1024 * 1024;
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start();
         let total = 30_000_usize;
         server.mock(|when, then| {
@@ -1043,7 +1043,7 @@ mod tests {
     async fn first_element_above_byte_ceiling_is_too_large() {
         // Si même le PREMIER élément dépasse le plafond, l'erreur est TooLarge (et non une
         // troncature vide).
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start();
         let blob = "a".repeat(2 * 1024 * 1024);
         server.mock(|when, then| {
@@ -1098,7 +1098,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn tenant_only_config_sends_orgid_without_authorization() {
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start();
         // Verrou par matcher : si l'en-tête reçu ne convient pas, le mock ne compte pas.
         let m = server.mock(|when, then| {
@@ -1138,7 +1138,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn bearer_token_never_leaks_into_debug_or_errors() {
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/api/v1/query");
@@ -1232,7 +1232,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn server_400_is_syntax_with_the_server_message_preserved() {
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/api/v1/query");
@@ -1259,7 +1259,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn server_429_is_rate_limited_with_retry_after() {
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/api/v1/query");
@@ -1279,7 +1279,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn server_401_is_unauthorized() {
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/api/v1/query");
@@ -1298,7 +1298,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn silent_server_is_timeout() {
         // « un autre qui ne répond pas » : le serveur diffère sa réponse bien au-delà du délai.
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/api/v1/query");
@@ -1320,7 +1320,7 @@ mod tests {
 
     #[test]
     fn unreachable_address_is_unreachable() {
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let client = no_network_client();
         let err = client
             .stream_query("api/v1/query", complete_matrix_element)
@@ -1337,7 +1337,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn path_prefix_mimir_vs_bare_prometheus() {
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start();
         let mimir = server.mock(|when, then| {
             when.method(GET).path("/prometheus/api/v1/query");
@@ -1397,7 +1397,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn unexpected_response_shape_is_bad_response_never_a_panic() {
         // Handles : « status: "error" sans errorType connu, JSON non conforme → BadResponse ».
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let junk = MockServer::start();
         junk.mock(|when, then| {
             when.method(GET).path("/api/v1/query");
@@ -1434,7 +1434,7 @@ mod tests {
         // par le NOYAU à sa propre porte de flux, plus un `element_limit` apporté par l'appelant.
         // Sous le plafond d'octets : max_series éléments COMPLÈTS rendus sur les 50 servis,
         // truncated: true, pas un de plus.
-        crate::set_client_name(|| "query-client.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(GET).path("/api/v1/query");

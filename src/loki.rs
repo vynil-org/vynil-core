@@ -393,7 +393,7 @@ mod tests {
     const SECRET: &str = "s3cr3t";
 
     fn set_name() {
-        crate::set_client_name(|| "loki.tests".to_string());
+        crate::set_client_name(|| "vynil-core-tests".to_string());
     }
 
     fn client_on(port: u16) -> QueryClient {
