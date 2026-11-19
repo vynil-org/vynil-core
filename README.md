@@ -22,13 +22,16 @@ A plain `vynil-core = "x"` dependency (default features) gets all three, unchang
 releases. Each is independently optional for a consumer that only needs one — see below.
 
 The Rhai functions come in domain modules — `core` (no host authority), `host` (environment, logs,
-and under `fs`/`shell` the disk and processes), `crypto`, `semver`, `password`, `oci`, `http`, `s3`
-and `k8s` — each with a public, additive `X_rhai_register(engine)` registrar that `new_bare` calls
+and under `fs`/`shell` the disk and processes), `crypto`, `semver`, `password`, `oci`, `http`, `s3`,
+`k8s` and `feeds` — each with a public, additive `X_rhai_register(engine)` registrar that `new_bare` calls
 for the always-on modules, so a consumer granting a script only part of them composes those
 registrars onto a plain `rhai::Engine::new` instead. Every registrar also has a `X_module()` twin
 registrable through `Engine::register_static_module` under a namespace of your choosing, and under
 the optional `metadata` feature each registered function carries its
-comment and parameter names for introspection. `cancel::CancelToken` + `cancel::scope` make the
+comment and parameter names for introspection. The `prometheus` and `loki` connectors invert the
+wiring: **the host configures, the script queries** — the host builds a configured `QueryClient`
+and registers a module under a name of its choice, and the script never passes (or can reach) a
+URL, tenant or token. `cancel::CancelToken` + `cancel::scope` make the
 crate's blocking native calls (`sleep`, network waits) interruptable per thread, completing
 `rhai::Engine::on_progress`. See [docs/rhai_helpers.md](docs/rhai_helpers.md).
 
@@ -50,6 +53,14 @@ crate's blocking native calls (`sleep`, network waits) interruptable per thread,
 | `quantity` | off | Kubernetes `Quantity` parser: `cpu_millis_of` / `memory_bytes_of` (exact integer arithmetic). Their Rhai glue is in the `core` module and exists only when `rhai` is on too | — |
 | `metadata` | off | Rhai introspection metadata: `///` comments + parameter names on registered script functions, consumed by `gen_fn_signatures`/`gen_fn_metadata_to_json`. Implies `rhai` — metadata alone has no engine to register on. Pure metadata: registrations behave identically without it | `rhai/metadata` |
 | `rt` | off | Async → sync bridge `rt::block_on` for consumers calling async code from synchronous Rhai natives (public; `http`, `oci`, `s3` and `k8s` depend on it). Does not imply `rhai` | `tokio` |
+| `feeds` | off | RSS/Atom feed reader — stateless `feed_read` and cursor-based `feed_poll`, plus their mock. Implies `http`, `rt` and `rhai` | `feed-rs` |
+| `prometheus` | off | Read connector for Prometheus-compatible APIs (Prometheus, Mimir, Thanos, VictoriaMetrics): a host module — the host configures the client, the script only queries. Implies `rhai` through the internal `query_client` kernel | — |
+| `loki` | off | Read connector for Loki: same host-module principle as `prometheus`, no shared code with it (the two features stay independent). Implies `rhai` through the internal `query_client` kernel | — |
+
+`query_client` is a cargo feature that exists in `Cargo.toml` but is **internal**: it is the shared
+read kernel (host-configured client, bounded streaming reads, typed errors) that `prometheus` and
+`loki` are built on — `query_client = ["http", "rt", "rhai"]`. A consumer activates one of the two
+connectors, which implies it; never it alone.
 
 ```toml
 # default: Rhai + Handlebars + HTTP + crypto helpers, same as previous releases

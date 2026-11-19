@@ -16,17 +16,18 @@ behind the `rhai` Cargo feature. It's on by default, so nothing below changes fo
 
 `vynil_core::engine::Script::new_bare(resolver_paths)` builds an `Engine` and calls, in this order,
 the `core`, `host`, `crypto`, `password` (feature `password`), `semver` and `oci` (feature `oci`)
-registrars, then `add_common`. Not everything is wired in automatically — three tiers:
+registrars, then `add_common`. Not everything is wired in automatically — four tiers:
 
 | Tier | Modules | Wired in by `Script::new_bare` |
 |---|---|---|
 | Always (given `rhai`) | `core` (no host authority), `host` (environment and logs), `crypto` (`sha256`, `crc32_hash`), `semver` | Yes, unconditionally |
 | Cargo-feature-gated, auto-wired | `host` with `fs` / `shell`, `crypto` with `crypto`, `password`, `oci` | Yes, when the matching Cargo feature is enabled |
-| Never auto-wired | `http`, `k8s`, `s3` | **No** — call the `*_rhai_register` function yourself on `script.engine` |
+| Never auto-wired | `http`, `k8s`, `s3`, `feeds` | **No** — call the `*_rhai_register` function yourself on `script.engine` |
+| Host modules — no registrar at all | `prometheus`, `loki` | **No** — the host builds the module from a configured `QueryClient` and registers it under a name of its own |
 
-The third tier is opt-in regardless of Cargo features — `http`/`k8s`/`s3` each pull in `rhai`
-themselves (their core types are built as Rhai-facing APIs, not a plain-Rust API with a Rhai
-wrapper on top), so enabling one of those three features is enough to make the type available;
+The third tier is opt-in regardless of Cargo features — `http`/`k8s`/`s3`/`feeds` each pull in
+`rhai` themselves (their core types are built as Rhai-facing APIs, not a plain-Rust API with a
+Rhai wrapper on top), so enabling one of those four features is enough to make the type available;
 it's registration into a *given* `Engine` that stays a manual call. This crate never assumes a
 consumer wants live network or cluster access baked into every script engine, so those are opt-in
 calls:
@@ -38,6 +39,8 @@ vynil_core::http::http_rhai_register(&mut script.engine);
 vynil_core::k8s::k8s_rhai_register(&mut script.engine);
 #[cfg(feature = "s3")]
 vynil_core::s3::s3_rhai_register(&mut script.engine);
+#[cfg(feature = "feeds")]
+vynil_core::feeds::feeds_rhai_register(&mut script.engine);
 ```
 
 `k8s` additionally needs runtime context before any script can use it — see the "Runtime context"
@@ -45,19 +48,20 @@ subsection of section 13.
 
 ### Why this tier is opt-in
 
-Beyond just avoiding unwanted network/cluster access by default, leaving `http`/`k8s`/`s3` out of
-`new_bare` is what makes them mockable at the call site instead of at the crate level. Mock
-modules ship for `http`, `k8s` and `oci` (`http_mock`, `k8s_mock`, `oci_mock` — see
-[mocking.md](mocking.md)); `s3` is deliberately the one network-facing module without a Rhai mock,
+Beyond just avoiding unwanted network/cluster access by default, leaving `http`/`k8s`/`s3`/`feeds`
+out of `new_bare` is what makes them mockable at the call site instead of at the crate level. Mock
+modules ship for `http`, `k8s`, `oci`, `feeds`, `prometheus` and `loki` (`http_mock`, `k8s_mock`,
+`oci_mock`, `feeds_mock`, `prometheus_mock`, `loki_mock` — see [mocking.md](mocking.md)); `s3` is
+deliberately the one network-facing module without a Rhai mock,
 tested through `object_store`'s in-memory store instead. Each mock registers (mostly) the same
 Rhai type and function names (`RestClient`, `K8sGeneric`, …) against fixture data or fixed canned
 values instead of a live endpoint, and none of them is wired in by `Script::new_bare` — even
 `oci`, whose *real* registration is auto-wired when its feature is on, keeps its mock manual.
 Because registration is an explicit call rather than something baked into `Script::new_bare`, a
 consumer can build two engines from the very same `.rhai` script source — one wired to the real
-`*_rhai_register` for production, one wired to the matching `*_mock_rhai_register` for a unit
-test — and run that script against both without touching a real cluster, registry, or HTTP
-endpoint in the test. If registration were automatic, that swap wouldn't be possible without
+module for production, one wired to the matching test double for a unit
+test — and run that script against both without touching a real cluster, registry, RSS feed, or
+HTTP endpoint in the test. If registration were automatic, that swap wouldn't be possible without
 threading a runtime flag through `Script::new_bare` itself.
 
 ### The module catalogue
@@ -83,12 +87,22 @@ script.engine.register_static_module("core", vynil_core::engine::core_module());
 | `http` | `http::http_rhai_register` → `http::http_module` (`http`) | network | `RestClient`, `http_get_yaml`, headers helpers, `json_subset`, `json_equal` |
 | `s3` | `s3::s3_rhai_register` → `s3::s3_module` (`s3`) | object-store network | `s3_get_yaml`, `s3_list_keys` |
 | `k8s` | `k8s::k8s_rhai_register` → `k8s::k8s_module` (`k8s`) | cluster | `K8sGeneric`, `K8sObject`, `DynamicObject`, `K8sRaw`, workload types |
+| `feeds` | `feeds::feeds_rhai_register` → `feeds::feeds_module` (`feeds`) | network | `feed_read`, `feed_poll` |
+
+`prometheus` and `loki` are deliberately outside this table: they are **host modules** — their
+twin takes a host-configured `vynil_core::query_client::QueryClient` and there is no registrar at
+all (a client is bound to one configured instance, with no handle type script-side; a motivated
+exception to the registrar-and-twin rule). The host registers the module through
+`Engine::register_static_module` under the name it chooses; the script passes only a query and a
+time range and never sees a URL, a tenant or a token — see sections 17 and 18.
 
 The test-double registrars (`httpmock_rhai_register`, `k8s_mock_rhai_register`,
-`oci_mock_rhai_register`) are not part of the catalogue, by decision — they stay out of it as
-registrars. They do have module twins, though: `httpmock_module(mocks)`,
-`k8s_mock_module(mocks, created)` and `oci_mock_module()`, registrable under the real module's
-name in place of its twin — see [mocking.md](mocking.md).
+`oci_mock_rhai_register`, `feeds_mock_rhai_register`) are not part of the catalogue, by decision —
+they stay out of it as registrars. They do have module twins, though: `httpmock_module(mocks)`,
+`k8s_mock_module(mocks, created)`, `oci_mock_module()` and `feeds_mock_module(fixtures)`,
+registrable under the real module's name in place of its twin. The `prometheus` and `loki`
+doubles (`prometheus_mock_module(fixtures)`, `loki_mock_module(fixtures)`) mirror the host-module
+shape: modules only, no registrar — see [mocking.md](mocking.md).
 
 #### Naming rule
 
@@ -106,6 +120,7 @@ name in place of its twin — see [mocking.md](mocking.md).
   | `new_http_client`, `new_client` | `http::new_client` |
   | `http_get_yaml` | `http::get_yaml` |
   | `s3_get_yaml`, `s3_list_keys` | `s3::get_yaml`, `s3::list_keys` |
+  | `feed_read`, `feed_poll` | `feeds::read`, `feeds::poll` |
   | `k8s_resource`, `new_k8s_raw`, `update_k8s_crd_cache` | `k8s::resource`, `k8s::new_raw`, `k8s::update_crd_cache` |
 
   The `core`, `host` and `crypto` twins keep the names as they are (`core::base64_encode`,
@@ -156,6 +171,10 @@ identical: the documentation is pure metadata, with no second copy of the regist
 | `s3` *(implies `rhai`)* | `s3_get_yaml`, `s3_list_keys` | **no** — manual |
 | `metadata` *(implies `rhai`)* | introspection metadata on registered script functions — `///` comments + parameter names (`gen_fn_signatures`, `gen_fn_metadata_to_json`, see above) | n/a — pure metadata, registers nothing of its own |
 | `rt` | public async → sync bridge `rt::block_on` for consumers (see section 15); pulls `tokio` only, does not imply `rhai` | n/a — no Rhai registration |
+| `feeds` *(implies `http`, `rt`, `rhai`)* | the `feeds` module — `feed_read`, `feed_poll` (see section 16) | **no** — manual |
+| `query_client` *(internal; implies `http`, `rt`, `rhai`)* | the shared read kernel the `prometheus` and `loki` connectors are built on (sections 17, 18) — a consumer activates one of those, never this one alone | n/a — Rust API only, registers nothing of its own |
+| `prometheus` *(implies `query_client` → `http`, `rt`, `rhai`)* | the `prometheus` host module — `query`, `query_range` (see section 17) | **no** — the host registers the configured module under its own name |
+| `loki` *(implies `query_client` → `http`, `rt`, `rhai`)* | the `loki` host module — `query_range` (see section 18) | **no** — the host registers the configured module under its own name |
 
 ---
 
@@ -675,3 +694,129 @@ polled) and the same token reading: a token installed on the calling thread by `
 wakes it, with `Error::Cancelled`. The race is a `tokio::select!` between the future and the
 token's cancellation, on the same runtime. The `cancel` module is read without `rhai`, so `rt`
 alone is enough to honour the token.
+
+---
+
+## 16. Feature `feeds` — module `feeds` (call manually)
+
+RSS/Atom feed reading (feature `feeds`, off by default; it implies `http`, `rt` and `rhai`).
+Not auto-wired by `Script::new_bare` — the network is never auto-wired:
+
+```rust
+vynil_core::feeds::feeds_rhai_register(&mut script.engine);
+// or, under a namespace of your choice (free names are then qualified: feeds::read(...)):
+script.engine.register_static_module("feeds", vynil_core::feeds::feeds_module());
+```
+
+| Signature | Returns | Notes |
+|---|---|---|
+| `feed_read(url, since)` | `array` of entry maps | Twin: `feeds::read`. The whole stream is downloaded every call (no conditional fetch). `since` is `()` (everything), an `i64` of UTC milliseconds, or a `DateTimeHandler`; the filter compares `published`, falling back to `updated`, **strictly** greater than `since` — an entry with no date at all is **kept** (a duplicate is better than a lost novelty; final deduplication is the caller's). `feed_read` is `feed_poll` with an empty cursor, without the conditional, plus this filter |
+| `feed_poll(url, cursor)` | `map` `{entries, cursor, status}` | Twin: `feeds::poll`. `cursor` is `()` on the first pass or the map returned by the previous pass; `status` is `"new"` or `"not_modified"`. A `304 Not Modified` answers `entries = []` with the cursor **unchanged**; the request sends `If-None-Match` / `If-Modified-Since` from the cursor when they exist |
+
+Entry maps (`FeedEntry`) carry the same seven fields for Atom and RSS alike — `guid`, `url`,
+`title`, `published`, `updated`, `content`, `source` (the URL of the stream the entry came from) —
+same fields, same types. The dates are `i64` in **MILLISECONDS** since the UTC epoch (the same
+convention as the `prometheus` and `loki` modules), `()` when absent, never an invented date. An
+entry with no guid gets a derived one: `sha256:` + lowercase hex SHA-256 of `url`, one `\n` byte,
+then `title`; an entry with no guid **and** no `url` **and** no `title` is dropped with a
+`tracing::warn`. Duplicate guids within one stream yield a single entry (the first wins). An empty
+stream yields `entries = []` with the cursor updated (`seen` empty).
+
+The cursor is a **map opaque and versioned**, `{ v: 1, etag, last_modified, seen, since }`: the
+caller persists it as-is and replays it, and never interprets it. An entry is held NEW when its
+guid is not in `seen`, whatever its date (this covers streams that republish with old dates);
+each pass `seen` is **pruned** to the guids still present in the current stream, which bounds the
+cursor naturally. A cursor of unknown version (a `v` other than `1`), or one with a
+wrongly-typed field, is refused — never a panic. Treat the cursor as a **transport optimisation,
+not a guarantee**: lost or corrupted (reset to `()`), it costs one full re-download, never an
+error or a loss. Final deduplication belongs to the caller's storage, by `(source, guid)`.
+
+Errors carry stable codes: `FEED-001` (invalid feed or non-XML body), `FEED-002` (invalid feed
+cursor). A timeout or an unreachable source arrives as the crate's transport error (the
+`RestClient`'s own failure path), and any non-2xx status other than the `304` as a method failure.
+The double — `feeds_mock_module(fixtures)` / `feeds_mock_rhai_register(engine, fixtures)` — serves
+fixture streams and simulates ETag / Last-Modified without network: see [mocking.md](mocking.md).
+
+---
+
+## 17. Feature `prometheus` — host module (the host registers it)
+
+Read connector for Prometheus-compatible APIs (Prometheus, Mimir, Thanos, VictoriaMetrics),
+feature `prometheus` (off by default; `prometheus = ["query_client"]`, which implies `http`, `rt`
+and `rhai`). The principle behind it: **the host configures, the script queries.** The host builds
+a `vynil_core::query_client::QueryClient` (base URL and path prefix, tenant, authentication,
+server CA, timeout, volume ceilings), derives a Rhai `Module` from it, and registers that module
+under the name it chooses. The script passes only the query and the time range — it never sees a
+token, a URL or another tenant, and has no way to read or change any of that.
+
+```rust
+let client = vynil_core::query_client::QueryClient::new(config)?;   // host-side, once
+script.engine.register_static_module("metrics", vynil_core::prometheus::prometheus_module(client));
+// script: metrics::query("up", t)
+```
+
+There is deliberately **no** `prometheus_rhai_register` global registrar: a client is bound to one
+configured instance, with no handle type script-side (a motivated exception to the
+registrar-and-twin rule). The two functions therefore exist only qualified under the chosen name
+(`metrics::query(...)`).
+
+| Signature | Returns | Notes |
+|---|---|---|
+| `<host>::query(expr, time)` | `map` `{series, truncated}` | Instant query — one series per vector element, a single point `[t, v]`; a scalar result gives a series without labels; a string result is refused (`BadResponse`) |
+| `<host>::query_range(expr, start, end, step)` | `map` `{series, truncated}` | Range query. `time`, `start`, `end`: an `i64` of **milliseconds** since the UTC epoch or a `DateTimeHandler`; `step`: `"auto"` or a Prometheus duration (`"30s"`, `"5m"`, `"1h"`, `"1d"`, `"500ms"`). An invalid bound, or `end < start`, is a script failure — never a panic. `"auto"` computes a step that fits the points ceiling; an explicit step too fine is refused (`StepTooFine`, carrying the minimum accepted step) |
+
+Output is the normalized form `{ series: [{ labels, points: [[t, v]] }], truncated }` (aligned by
+design with the vanyline widget engine's `timeseries` type): `labels` is a map of strings (empty
+when the server sent none); `t` is an `i64` of **UTC MILLISECONDS, strictly increasing** within a
+series; `v` is a finite `f64` or `()` (null). A server `NaN` becomes `()` — a hole, the series is
+still returned; an infinite value (`+Inf` or `-Inf`) is **never** passed through: it fails the
+call in `NonFinite`. The numeric
+conversion of Prometheus's text values (`"1.5"`, `"NaN"`, `"+Inf"`) happens here, never in the
+script. `truncated` is the **only** read path of a ceiling being hit (series, points, bytes):
+`false` when the result is complete, `true` when it was cut short — never a silent truncation. An
+empty result yields `series: []`; several series keep the server's order.
+
+Errors are typed, carried by the crate's query error with stable codes `QUERY-001` … `QUERY-009`:
+`Timeout` (001), `Syntax` (002 — the server's message is kept, and never carries the token),
+`RateLimited` (003, HTTP 429 with `Retry-After` when present), `Unauthorized` (004, HTTP 401 and
+403), `TooLarge` (005, the first element alone exceeds the byte ceiling), `StepTooFine` (006),
+`NonFinite` (007), `Unreachable` (008), `BadResponse` (009). Invalid script input is a plain
+script failure. The double `prometheus_mock_module(fixtures)` serves the same functions from
+fixtures: see [mocking.md](mocking.md).
+
+---
+
+## 18. Feature `loki` — host module (the host registers it)
+
+Read connector for Loki, feature `loki` (off by default; `loki = ["query_client"]`, implying
+`http`, `rt` and `rhai`) — the same host-module principle as section 17, **no shared code with
+it** (the two features are independent). The host builds the `QueryClient`, derives the module
+and registers it under the name it chooses; the script passes only the LogQL query, the time
+range, the line limit and the direction — never a token, a URL or a tenant.
+
+```rust
+let client = vynil_core::query_client::QueryClient::new(config)?;   // host-side, once
+script.engine.register_static_module("logs", vynil_core::loki::loki_module(client));
+// script: logs::query_range("{app=\"x\"}", s, e, 100, "backward")
+```
+
+There is no global registrar here either (same pattern as `prometheus`), so the function exists
+only qualified under the chosen name. There is no instant `query` and no label exploration —
+range reads only.
+
+| Signature | Returns | Notes |
+|---|---|---|
+| `<host>::query_range(expr, start, end, limit, direction)` | `map` `{streams, truncated}` | `start`, `end`: an `i64` of **milliseconds** since the UTC epoch or a `DateTimeHandler`; `limit`: a positive integer of lines, **capped by the host's `max_lines`** — the smaller of the two wins, and `truncated` is `true` when the server had more lines than the retained cap; `direction`: `"forward"` or `"backward"` — any other value fails as a script error, without a network request. The request goes to the host's `path_prefix` + `loki/api/v1/query_range` (a bare Loki under `/`, Mimir under its prefix) |
+
+Output is the normalized form `{ streams: [{ labels, lines: [[t, text]] }], truncated }`:
+`labels` is a map of strings; `t` is an `i64` of UTC milliseconds — Loki's nanosecond timestamps
+are **truncated** to the millisecond, so several lines of one stream can share a `t` (millisecond
+equalities are tolerated for log lines, unlike metric points in section 17); the order is the
+server's, per `direction`. The line text is exactly what Loki rendered, untransformed and
+unmasked (secret-masking is the caller's). An empty result yields `streams: []`; streams keep the
+server's order. `truncated` is again the **only** read path of a ceiling being hit (streams,
+lines, bytes) — never a silent truncation.
+
+Errors are the same typed `QUERY-001` … `QUERY-009` family as section 17; invalid script input is
+a plain script failure. The double `loki_mock_module(fixtures)` serves the same function from
+fixtures: see [mocking.md](mocking.md).
