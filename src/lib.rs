@@ -168,6 +168,15 @@ pub enum Error {
     #[error("Reqwest error: {0}")]
     ReqwestError(#[from] reqwest::Error),
 
+    /// Failure of a protocol read client of the shared query kernel (feature `query_client`,
+    /// see [`query_client::QueryError`]). Its Display carries a stable code of its own,
+    /// `QUERY-001` to `QUERY-009` — like `KEY-ALGO-001` and `CANCEL-001`, a searchable
+    /// identifier — and never embeds a token or a credential-bearing URL (see `query_client.sdd`).
+    #[cfg(feature = "query_client")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "query_client")))]
+    #[error("{0}")]
+    Query(#[from] crate::query_client::QueryError),
+
     /// JSON decoding of an HTTP body failed.
     #[error("Json decoding error: {0}")]
     JsonError(#[source] serde_json::Error),
@@ -420,6 +429,13 @@ pub mod hbs;
 /// Async → sync bridge ([`rt::block_on`]) for synchronous Rhai callers, shared by the `http`,
 /// `oci`, `s3` and `k8s` modules and public for consumers; only compiled with the `rt` feature.
 pub mod rt;
+
+#[cfg(feature = "query_client")]
+#[cfg_attr(docsrs, doc(cfg(feature = "query_client")))]
+/// Shared read kernel of the Prometheus and Loki protocol clients ([`query_client::QueryClient`]):
+/// host-configured client (the script never sets URL, tenant or token), bounded streaming reads,
+/// auto step and typed errors. INTERNAL feature — consumers enable `prometheus` or `loki`.
+pub mod query_client;
 
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
@@ -986,6 +1002,46 @@ mod tests {
         fn http_body_is_none_for_reqwest_error() {
             let inner = reqwest::Client::new().post("http://:bad").build().unwrap_err();
             assert_eq!(Error::ReqwestError(inner).http_body(), None);
+        }
+    }
+
+    // ── Display de la variante gated `query_client` (Scenario « erreurs typées » de
+    // query_client.sdd côté racine : Error::Query porte le Display de QueryError, codes
+    // QUERY-001..009 ; http_body = None) ──
+    #[cfg(feature = "query_client")]
+    mod display_query_client {
+        use super::Error;
+        use crate::query_client::QueryError;
+        use std::error::Error as _;
+
+        #[test]
+        fn display_query_carries_query_error_display_with_stable_code() {
+            let inner = QueryError::Timeout {
+                host: "mimir.example".to_string(),
+                path: "/prometheus/api/v1/query".to_string(),
+            };
+            let msg = inner.to_string();
+            assert!(
+                msg.starts_with("QUERY-001"),
+                "le Display de QueryError porte son code stable : {msg}"
+            );
+            let err = Error::Query(inner);
+            assert_eq!(
+                err.to_string(),
+                msg,
+                "Error::Query affiche le Display du QueryError brut"
+            );
+            assert_eq!(
+                err.source().map(ToString::to_string),
+                Some(msg),
+                "From alimente source()"
+            );
+        }
+
+        // http_body = None sur la variante gated `query_client`.
+        #[test]
+        fn http_body_is_none_for_query_error() {
+            assert_eq!(Error::Query(QueryError::Unauthorized).http_body(), None);
         }
     }
 

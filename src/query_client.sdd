@@ -46,7 +46,10 @@ Must:
     dépasse à lui seul le plafond d'octets.
   Appliquer le délai de requête par @tokio::time::timeout autour de la lecture entière (le
     @crate::http::RestClient a un délai non configurable, décision actée de ./http.sdd, qui ne
-    change pas) : le délai couvre connexion ET lecture du corps.
+    change pas) : le délai couvre connexion ET lecture du corps — arbitrage du développeur
+    principal (2026-11-18) : la connexion n'est pas préemptée par le timeout configuré mais
+    bornée par le délai de @crate::http::RestClient et reclassée `Timeout` au retour
+    (deadline absolu partagé) ; le reclassement wall-clock satisfait le `Must`.
   Calculer le pas automatique (`step: "auto"`) pour tenir dans le plafond de points :
     `max(1 s, ceil(durée / max_points))` arrondi à la seconde supérieure ; refuser un pas explicite
     trop fin (durée / pas > max_points) par l'erreur typée `StepTooFine`, qui porte le pas minimal
@@ -100,17 +103,25 @@ Handles:
     conforme) rend `BadResponse`, jamais une panique.
 
 Tasks:
-  [ ] Spec approuvée, puis tests depuis les `Scenario`, puis implémentation minimale de
+  [x] Spec approuvée, puis tests depuis les `Scenario`, puis implémentation minimale de
     ./query_client.rs. Pas de porte nommée propre (décision de cette spec : la feature `query_client`
     est interne, sans consommateur seule) : les verrous du noyau tournent sous les portes
     `prometheus` et `loki` de ../tooling.sdd, et `cargo hack --each-feature` la compile et la lint.
   [ ] Jumelle de ../vyvil-core.sdd : features `query_client`, `prometheus`, `loki` dans ../Cargo.toml.
+    Fait en date : seule `query_client` est ajoutée — `prometheus` et `loki` voyagent avec leurs
+    modules (cochage définitif de la face vyvil-core.sdd avec la dernière des specs concernées).
+  [x] Arbitrages du développeur principal (2026-11-18), consignés au contrat : verrous structurels
+    acceptés pour « sans requête réseau » (pureté de @crate::query_client::resolve_step + port
+    invalide) et « mémoire bornée » (lecture chunk par chunk, borne du rendu) ; reclassement
+    wall-clock du délai de connexion accepté ci-dessus (`Must` délai) ; le `Debug` de
+    @crate::query_client::QueryClientConfig affiche `base_url` en clair — une URL à identifiants
+    n'est pas le cas nominal (l'auth passe par @crate::query_client::QueryAuth), hors périmètre.
   [ ] Jumelle de ./lib.sdd : déclarer `query_client`, ajouter @variant-Error::Query.
-  [ ] Décision à confirmer : délai par @tokio::time::timeout autour du flux, plutôt que de rendre
-    `DEFAULT_TIMEOUT` de ./http.rs configurable (ce qui changerait le contrat de ./http.sdd).
-  [ ] Question ouverte : requête à URL très longue (PromQL/LogQL volumineux) — GET seul ici ;
-    la bascule en POST `application/x-www-form-urlencoded` (acceptée par Prometheus et Loki) dépend
-    de l'API du @crate::http::RestClient et n'est pas inscrite.
+  [x] Décision confirmée (2026-11-18) : délai par @tokio::time::timeout autour du flux, plutôt que
+    de rendre `DEFAULT_TIMEOUT` de ./http.rs configurable (ce qui changerait le contrat de ./http.sdd).
+  [-] Question tranchée (2026-11-18) : requête à URL très longue (PromQL/LogQL volumineux) — GET
+    seul ici ; la bascule en POST `application/x-www-form-urlencoded` (acceptée par Prometheus et
+    Loki) dépend de l'API du @crate::http::RestClient et n'est pas inscrite.
 
 Scenario: plage dépassant le plafond de points
   Given `max_points = 1000` et une plage de 7 jours
