@@ -113,7 +113,7 @@ Must:
     sans `rhai`…) soit compilé seul par au moins une commande et que l'invariant d'isolabilité
     de `hbs` (racine `vyvil-core.sdd`) soit vérifié. Les combinaisons explicites qui portent un
     sens (`k8s,oci,s3`, `--all-features`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`,
-    `rhai,fs`, `rhai,password`) restent
+    `rhai,fs`, `rhai,password`, `feeds`, `prometheus`, `loki`) restent
     en plus.
 
 Must not:
