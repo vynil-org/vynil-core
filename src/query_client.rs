@@ -857,6 +857,29 @@ impl<'de> Visitor<'de> for ResultSeed {
     }
 }
 
+/// Runs a synchronous kernel job on the blocking pool, off the async runtime (`query_client.sdd`,
+/// « Pont async des clients Rust »). The kernel keeps its contract, ceilings and locks unchanged;
+/// the job is a clone of the client moved in, so it is `Send` and `'static`.
+///
+/// A panic of the job, or its cancellation, is converted to [`crate::Error::Other`] — it is never
+/// propagated as a panic, and the runtime stays usable.
+///
+/// Limit: under a `current_thread` runtime the kernel's `crate::rt::block_on` refuses explicitly
+/// (`requires a multi-thread tokio runtime`); that error comes back unchanged, without a panic.
+///
+/// # Errors
+///
+/// Whatever the job returns, or [`crate::Error::Other`] when the job panicked or was cancelled.
+#[cfg(any(feature = "prometheus", feature = "loki"))]
+pub(crate) async fn run_blocking<T: Send + 'static>(
+    job: impl FnOnce() -> crate::Result<T> + Send + 'static,
+) -> crate::Result<T> {
+    match tokio::task::spawn_blocking(job).await {
+        Ok(result) => result,
+        Err(join) => Err(crate::Error::Other(format!("query job did not complete: {join}"))),
+    }
+}
+
 /// A 400 body: the server's message is preserved — as the `error` field when the body is a
 /// conforming envelope, as raw text otherwise.
 fn syntax_error_from_body(body: &str) -> crate::Error {
@@ -1472,6 +1495,58 @@ mod tests {
         assert!(
             QueryClient::new(cfg).is_err(),
             "CA illisible refusé à la construction"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Scenario « run_blocking ne propage jamais une panique du job »
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[cfg(any(feature = "prometheus", feature = "loki"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_blocking_rend_le_resultat_du_job() {
+        let out = run_blocking(|| Ok(42_u32))
+            .await
+            .expect("un job qui réussit rend sa valeur");
+        assert_eq!(out, 42);
+    }
+
+    #[cfg(any(feature = "prometheus", feature = "loki"))]
+    #[tokio::test(flavor = "multi_thread")]
+    async fn run_blocking_panique_du_job_devient_error_other() {
+        let err = run_blocking::<u32>(|| panic!("job en panique"))
+            .await
+            .expect_err("une panique du job n'est pas propagée");
+        assert!(
+            matches!(err, crate::Error::Other(_)),
+            "Error::Other attendu pour une panique du job, rendu : {err:?}"
+        );
+        // Le runtime reste utilisable pour un appel suivant.
+        let next = run_blocking(|| Ok(7_u32))
+            .await
+            .expect("le runtime reste utilisable après une panique du job");
+        assert_eq!(next, 7);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Scenario « run_blocking sous current_thread » (limite documentée)
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[cfg(any(feature = "prometheus", feature = "loki"))]
+    #[tokio::test]
+    async fn run_blocking_sous_current_thread_rend_l_erreur_explicite() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/api/v1/query");
+            then.status(200).json_body(envelope(&ok_elements(1)));
+        });
+        let client = QueryClient::new(base_config(server.port())).expect("config valide");
+        let res = run_blocking(move || client.stream_query("api/v1/query", complete_matrix_element)).await;
+        let err = res.expect_err("sous current_thread, le noyau sync rend son erreur explicite");
+        assert!(
+            err.to_string().contains("multi-thread"),
+            "l'erreur explicite du pont est remontée telle quelle, sans panique : {err}"
         );
     }
 

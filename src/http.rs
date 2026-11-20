@@ -1851,7 +1851,7 @@ mod tests {
     // ── Scenario « http_get_async fonctionne là où http_get refuse » (http.sdd) ──
 
     // Multi-thread : `http_get_async` rend le même statut et le même corps que `http_get`
-    // sur un même faux serveur (la face synchrone n'est qu'un enveloppe de la même fonction).
+    // sur un même faux serveur (la face synchrone n'est qu'une enveloppe de la même fonction).
     #[tokio::test(flavor = "multi_thread")]
     async fn http_get_async_matches_http_get_on_multi_thread() {
         crate::set_client_name(|| "vynil-core-tests".to_string());

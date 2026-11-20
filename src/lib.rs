@@ -27,9 +27,9 @@
 //! | `password` | ❌ | Auto-wires `gen_password` / `gen_password_alphanum` into `new_bare` and registers the Handlebars helpers; the Rhai glue itself compiles under `rhai` alone (opt-in to avoid name collisions) |
 //! | `metadata` | ❌ | Rhai introspection metadata: `///` comments + parameter names on registered script functions, consumed by `gen_fn_signatures` / `gen_fn_metadata_to_json`. Implies `rhai` |
 //! | `rt` | ❌ | async → sync bridge `rt::block_on` for consumers; pulls `tokio`; does not imply `rhai` |
-//! | `query_client` | ❌ | **INTERNAL** — shared read kernel of the protocol clients (`query_client::QueryClient`, `QueryClientConfig`, `QueryError`): host-configured client, bounded streaming reads, auto step, typed errors. Enabled by `prometheus` or `loki`, never alone. Implies `http`, `rt` and `rhai` |
-//! | `prometheus` | ❌ | Read connector for Prometheus-compatible APIs (`prometheus::prometheus_module` + `prometheus_mock::prometheus_mock_module`): a host module over the `query_client` kernel — the host configures the client, scripts only query. Implies `query_client` |
-//! | `loki` | ❌ | Read connector for Loki (`loki::loki_module` + `loki_mock::loki_mock_module`): a host module over the `query_client` kernel, same principle as `prometheus`, no shared code with it. Implies `query_client` |
+//! | `query_client` | ❌ | Shared read kernel of the protocol clients (`query_client::QueryClient`, `QueryClientConfig`, `QueryError`, public types): host-configured client, bounded streaming reads, auto step, typed errors. Enabled by `prometheus` or `loki`, which imply it. Implies `http`, `rt` and `rhai` |
+//! | `prometheus` | ❌ | Read connector for Prometheus-compatible APIs (`prometheus::prometheus_module` + `prometheus_mock::prometheus_mock_module`, async Rust client `prometheus::PrometheusClient`): a host module over the `query_client` kernel — the host configures the client, scripts only query. Implies `query_client` |
+//! | `loki` | ❌ | Read connector for Loki (`loki::loki_module` + `loki_mock::loki_mock_module`, async Rust client `loki::LokiClient`): a host module over the `query_client` kernel, same principle as `prometheus`, no shared code with it. Implies `query_client` |
 //! | `feeds` | ❌ | RSS/Atom feed reading (`feeds::feed_read` / `feeds::feed_poll` + `feeds_mock`, feed-rs based). Implies `http`, `rt` and `rhai` |
 //!
 //! ```toml
@@ -460,15 +460,16 @@ pub mod rt;
 #[cfg(feature = "query_client")]
 #[cfg_attr(docsrs, doc(cfg(feature = "query_client")))]
 /// Shared read kernel of the Prometheus and Loki protocol clients ([`query_client::QueryClient`]):
-/// host-configured client (the script never sets URL, tenant or token), bounded streaming reads,
-/// auto step and typed errors. INTERNAL feature — consumers enable `prometheus` or `loki`.
+/// public types, host-configured client (the script never sets URL, tenant or token), bounded
+/// streaming reads, auto step and typed errors. Enabled by `prometheus` or `loki`, which imply it.
 pub mod query_client;
 
 #[cfg(feature = "prometheus")]
 #[cfg_attr(docsrs, doc(cfg(feature = "prometheus")))]
 /// Read connector for Prometheus-compatible APIs ([`prometheus::prometheus_module`]): a HOST
 /// module over the [`query_client`] kernel — the host configures the client and registers the
-/// module under the name it chooses; scripts only pass the query and the time range.
+/// module under the name it chooses; scripts only pass the query and the time range. Rust callers
+/// get the async client [`prometheus::PrometheusClient`] on the same kernel.
 pub mod prometheus;
 #[cfg(feature = "prometheus")]
 #[cfg_attr(docsrs, doc(cfg(feature = "prometheus")))]
@@ -480,7 +481,8 @@ pub mod prometheus_mock;
 #[cfg_attr(docsrs, doc(cfg(feature = "loki")))]
 /// Read connector for Loki ([`loki::loki_module`]): a HOST module over the [`query_client`]
 /// kernel — the host configures the client and registers the module under the name it chooses;
-/// scripts only pass the LogQL query, the time range, the line limit and the direction.
+/// scripts only pass the LogQL query, the time range, the line limit and the direction. Rust
+/// callers get the async client [`loki::LokiClient`] on the same kernel.
 pub mod loki;
 #[cfg(feature = "loki")]
 #[cfg_attr(docsrs, doc(cfg(feature = "loki")))]

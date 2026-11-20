@@ -1458,6 +1458,52 @@ mod tests {
     // Scenarios « FeedClient » (feeds.sdd, lot E)
     // ══════════════════════════════════════════════════════════════════════
 
+    // Scenario « Verrou du défaut corrigé » (feeds.sdd, lot E) : hors runtime tokio, `feed_read` et
+    // `feed_poll` rendent leurs entrées sans panique (un seul `block_on` par appel, dans le chemin du
+    // fetch). Un second `block_on` imbriqué casserait ce test en panique ou en erreur.
+    #[test]
+    fn verrou_defaut_corrige_hors_runtime_rend_les_entrees() {
+        set_name();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/f.xml");
+            then.status(200).body(ATOM_TWO);
+        });
+        let url = url_on(&server, "f.xml");
+        let read = feed_read(&url, None).expect("feed_read hors runtime tokio");
+        assert_eq!(read.len(), 2, "les deux entrées du flux Atom");
+        let polled = feed_poll(&url, &FeedCursor::default()).expect("feed_poll hors runtime tokio");
+        assert_eq!(polled.entries.len(), 2, "premier passage : les deux entrées");
+        assert_eq!(
+            polled.entries, read,
+            "feed_poll rend les mêmes entrées que feed_read"
+        );
+    }
+
+    // Scenario « Verrou du défaut corrigé » (suite) : sous un runtime `current_thread` (défaut de
+    // `#[tokio::test]`), les deux fonctions rendent l'erreur explicite du pont, jamais une panique.
+    #[tokio::test]
+    async fn verrou_defaut_corrige_current_thread_erreur_explicite() {
+        set_name();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/f.xml");
+            then.status(200).body(ATOM_TWO);
+        });
+        let url = url_on(&server, "f.xml");
+        let err = feed_read(&url, None).expect_err("feed_read sous current_thread : erreur explicite");
+        assert!(
+            err.to_string().contains("requires a multi-thread tokio runtime"),
+            "message explicite du pont attendu, obtenu : {err}"
+        );
+        let err = feed_poll(&url, &FeedCursor::default())
+            .expect_err("feed_poll sous current_thread : erreur explicite");
+        assert!(
+            err.to_string().contains("requires a multi-thread tokio runtime"),
+            "message explicite du pont attendu, obtenu : {err}"
+        );
+    }
+
     // Scenario « FeedClient lit sans bloquer le runtime » : sous un runtime `current_thread`,
     // le `read` async rend les entrées que `feed_read` rend sur un runtime multi-thread.
     #[test]

@@ -7,7 +7,8 @@ Purpose:
     bornée, erreurs typées), selon le même principe que ./prometheus.sdd : l'hôte bâtit un
     @crate::query_client::QueryClient, en tire un @rhai::Module (@crate::loki::loki_module) et
     l'enregistre sous le nom de son choix ; le script ne passe que la requête LogQL, la plage de
-    temps, la limite et la direction. Il ne voit ni jeton, ni URL, ni tenant. Le groupe inclut le
+    temps, la limite et la direction. Face Rust (lot E, « Rust first ») : @crate::loki::LokiClient, `async fn`,
+    même noyau, même forme de sortie ; le module de script n'en est qu'une projection synchrone. Il ne voit ni jeton, ni URL, ni tenant. Le groupe inclut le
     double @crate::loki_mock.
 
 Owns:
@@ -56,6 +57,11 @@ Depends on:
   ./chrono.rs — @crate::chrono::DateTimeHandler.
 
 Exposes:
+  @crate::loki::LokiClient — `Clone`, `Debug` sans jeton ; `new(client)` et `async fn query_range(&self, expr,
+    start_ms, end_ms: i64, limit: usize, direction: Direction)` rendant @crate::loki::LogsResult ;
+    @crate::loki::Direction — `Forward` / `Backward`, `as_str` (`"forward"` / `"backward"`) ; `limit` plafonné
+    par `max_lines`, `limit == 0` ou plage inversée → @variant-Error::Other sans requête ; ne tourne pas sous
+    `current_thread` (erreur explicite).
   @crate::loki::loki_module — `#[must_use] pub fn(client: QueryClient) -> @rhai::Module`.
   @crate::loki::LogsResult — `pub struct { streams: Vec<LogStream>, truncated: bool }`
     (`LogStream { labels, lines }`), forme normalisée pour les consommateurs Rust.
@@ -86,7 +92,7 @@ Tasks:
   [x] Décision à confirmer à la relecture : `t` en ms (Loki en ns) conforme à l'issue ; les égalités
     d'une même milliseconde sont tolérées pour les lignes, contrairement aux points de métriques.
 
-  [ ] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first », architecture
+  [x] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first », architecture
     « hybride », jumelle de ./prometheus.sdd) : ajouter @crate::loki::LokiClient, `Clone`, construit par
     `LokiClient::new(client: @crate::query_client::QueryClient)`, avec `pub async fn query_range(&self,
     expr: &str, start_ms: i64, end_ms: i64, limit: usize, direction: Direction) ->
@@ -97,7 +103,8 @@ Tasks:
     async passe par `run_blocking`. `limit == 0` et `end_ms < start_ms` rendent @variant-Error::Other, avant
     tout réseau ; un `limit` supérieur à `max_lines` est ramené à `max_lines` (comme la face Rhai).
     Tests d'abord depuis les Scenario « LokiClient » ci-dessous. Reprendre `Purpose`, `Exposes` et `Must`
-    à la clôture.
+    à la clôture. Clos (synthèse validator verte, 2026-11-20) ; même duplication voulue des contrôles
+    d'entrée que ./prometheus.sdd.
 
 Scenario: requête de plage nominale
   Given un faux Loki servant deux flux de trois lignes

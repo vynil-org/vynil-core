@@ -16,13 +16,13 @@ Purpose:
 Owns:
   ./query_client.rs
   ../tests/query_client_wall_clock.rs — verrou wall-clock du `Must` délai (binaire de test,
-    feature interne `query_client`, précédent d'attribution : `../tests/rt_block_on_public.rs`
+    feature `query_client`, précédent d'attribution : `../tests/rt_block_on_public.rs`
     de ./rt.sdd)
 
 References:
   ./http.sdd — @crate::http::RestClient : le client sait déjà poser bearer, basic, mTLS, CA du
     serveur et en-têtes (`X-Scope-OrgID`) ; le noyau le CONSTRUIT côté hôte et ne l'expose jamais
-    au script. La feature interne `query_client` implique `http`, `rt` et `rhai`.
+    au script. La feature `query_client` (noyau partagé, types publics) implique `http`, `rt` et `rhai`.
   ./rt.sdd — @crate::rt::block_on : pont async → sync de la lecture en flux.
   ./prometheus.sdd, ./loki.sdd — les deux consommateurs.
   ./lib.sdd — déclarant (gate `query_client`) et variante @variant-Error::Query (tâche jumelle).
@@ -104,6 +104,10 @@ Exposes:
     `&QueryLimits` pour l'hôte et les connecteurs (calcul du leur d'un plafond de paramètre de
     requête, ./loki.sdd) ; sans équivalent côté script.
   @crate::query_client::QueryError — énum typée ci-dessus, avec `Display` à codes stables.
+  `run_blocking` (`pub(crate)`, gated `prometheus` ou `loki`) — pont async des clients Rust
+    @crate::prometheus::PrometheusClient et @crate::loki::LokiClient : `spawn_blocking` autour du noyau
+    synchrone, panique ou annulation du job rendue en @variant-Error::Other ; sous runtime
+    `current_thread` l'erreur explicite de `rt::block_on` remonte (dette : noyau en vrai async).
 
 Handles:
   Prometheus et Loki à tenant seul (`X-Scope-OrgID`, aucune authentification) : cas nominal des
@@ -114,11 +118,11 @@ Handles:
 Tasks:
   [x] Spec approuvée, puis tests depuis les `Scenario`, puis implémentation minimale de
     ./query_client.rs. Pas de porte nommée propre (décision de cette spec : la feature `query_client`
-    est interne, sans consommateur seule) : les verrous du noyau tournent sous les portes
+    n'a pas de consommateur seule) : les verrous du noyau tournent sous les portes
     `prometheus` et `loki` de ../tooling.sdd, et `cargo hack --each-feature` la compile et la lint.
   [x] Jumelle de ../vyvil-core.sdd : features `query_client`, `prometheus`, `loki` dans ../Cargo.toml.
     État produit : les trois lignes sont au manifest — `query_client = ["http", "rt", "rhai"]`
-    (interne), `prometheus = ["query_client"]` et `loki = ["query_client"]`.
+    (noyau partagé), `prometheus = ["query_client"]` et `loki = ["query_client"]`.
   [x] Arbitrages du développeur principal (2026-11-18), consignés au contrat : verrous structurels
     acceptés pour « sans requête réseau » (pureté de @crate::query_client::resolve_step + port
     invalide) et « mémoire bornée » (lecture chunk par chunk, borne du rendu) ; reclassement
@@ -141,13 +145,13 @@ Tasks:
     seul ici ; la bascule en POST `application/x-www-form-urlencoded` (acceptée par Prometheus et
     Loki) dépend de l'API du @crate::http::RestClient et n'est pas inscrite.
 
-  [ ] Sortir `query_client` du statut « interne » (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust
+  [x] Sortir `query_client` du statut « interne » (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust
     first ») : reprendre le commentaire de la feature dans ../Cargo.toml (noyau partagé, types
     publics, activé par `prometheus` ou `loki`), la rustdoc du module dans ./lib.rs, et les phrases
     `Purpose`, `References` et `Must` de cette spec qui disent « interne ». Aucun changement de nom ni de
     comportement : la feature garde son nom et reste impliquée par `prometheus` et `loki` (jumelle de
     ./prometheus.sdd, ./loki.sdd et ./lib.sdd).
-  [ ] Pont async des clients Rust (jumelle de ./prometheus.sdd et ./loki.sdd) : ajouter dans ./query_client.rs
+  [x] Pont async des clients Rust (jumelle de ./prometheus.sdd et ./loki.sdd) : ajouter dans ./query_client.rs
     `pub(crate) async fn run_blocking<T: Send + 'static>(job: impl FnOnce() -> crate::Result<T> + Send +
     'static) -> crate::Result<T>` : `tokio::task::spawn_blocking` autour du noyau synchrone, qui garde son
     contrat, ses plafonds et ses verrous inchangés (décision d'architecture « hybride », 2026-11-20 :
@@ -156,7 +160,9 @@ Tasks:
     propagée. Limite documentée dans la rustdoc : sous runtime `current_thread`, le noyau sync appelle
     `rt::block_on` qui rend son erreur explicite ; l'erreur remonte telle quelle, sans panique. Tests d'abord :
     job qui réussit (multi-thread), job qui panique rendu en `Error::Other`, job sous `current_thread`
-    rendu en erreur explicite.
+    rendu en erreur explicite. Clos (synthèse validator verte, 2026-11-20) : `run_blocking` est gated
+    `#[cfg(any(feature = "prometheus", feature = "loki"))]` (le noyau seul n'a aucun appelant, et un `allow`
+    est proscrit par le harnais) ; un troisième client l'étendra.
 
 Scenario: plage dépassant le plafond de points
   Given `max_points = 1000` et une plage de 7 jours

@@ -8,7 +8,9 @@ Purpose:
     Il expose à Rhai un MODULE D'HÔTE nommé : l'hôte bâtit un @crate::query_client::QueryClient,
     en tire un @rhai::Module et l'enregistre sous le nom qu'il choisit
     (@rhai::Engine::register_static_module, accordable par type de contexte côté hôte) ; le script ne
-    passe que la requête et la plage de temps. Il ne voit ni jeton, ni URL, ni autre tenant. La
+    passe que la requête et la plage de temps. Face Rust (lot E, « Rust first ») :
+    @crate::prometheus::PrometheusClient, `async fn`, même noyau, même forme de sortie ; le module de script
+    n'en est qu'une projection synchrone. Il ne voit ni jeton, ni URL, ni autre tenant. La
     sortie est normalisée à la forme du type `timeseries` du moteur de widgets de vanyline, par
     conception et sans dépendance entre les deux. Le groupe inclut le double
     @crate::prometheus_mock, qui sert les mêmes fonctions depuis des fixtures.
@@ -67,6 +69,10 @@ Depends on:
   ./chrono.rs — @crate::chrono::DateTimeHandler.
 
 Exposes:
+  @crate::prometheus::PrometheusClient — `Clone`, `Debug` sans jeton (hérité de @crate::query_client::QueryClient) ;
+    `new(client)`, `async fn query(&self, expr, time_ms: i64)` et `async fn query_range(&self, expr, start_ms,
+    end_ms: i64, step: Option<Duration>)` (`None` = pas automatique) rendant @crate::prometheus::SeriesResult ;
+    plage inversée → @variant-Error::Other sans requête ; ne tourne pas sous `current_thread` (erreur explicite).
   @crate::prometheus::prometheus_module — `#[must_use] pub fn(client: QueryClient) -> @rhai::Module`.
   @crate::prometheus::SeriesResult — `pub struct { series: Vec<Series>, truncated: bool }`
     (`Series { labels, points }`), convertible en @rhai::Map et sérialisable : forme normalisée pour les
@@ -101,7 +107,7 @@ Tasks:
   [x] Fixtures communes : un jeu de fixtures de séries partagé avec vanyline vérifie l'alignement avec son
     type `timeseries` (côté vynil-core : un test sur la forme ; côté vanyline : hors de ce dépôt).
 
-  [ ] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first », architecture
+  [x] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first », architecture
     « hybride » : noyau de lecture synchrone inchangé, façade async par `run_blocking` de
     ./query_client.sdd) : ajouter @crate::prometheus::PrometheusClient, `Clone`, construit par
     `PrometheusClient::new(client: @crate::query_client::QueryClient)`, avec `pub async fn query(&self,
@@ -116,7 +122,9 @@ Tasks:
     sur un clone du client. `end_ms < start_ms` rend @variant-Error::Other `query_range: end is before
     start`, avant tout réseau. Pas de mock Rust ici : hors lot, à ouvrir à la demande d'un consommateur.
     Tests d'abord depuis les Scenario « PrometheusClient » ci-dessous. Reprendre `Purpose`, `Exposes` et
-    `Must` à la clôture.
+    `Must` à la clôture. Clos (synthèse validator verte, 2026-11-20) ; les contrôles d'entrée (plage inversée)
+    existent côté face Rhai (messages sans préfixe, verrouillés par les tests existants) ET dans
+    `query_range_sync` (`Error::Other`) : duplication voulue, un test aligne à terme les deux messages.
 
 Scenario: requête instantanée et requête de plage nominales
   Given un faux serveur Prometheus servant un vecteur puis une matrice à deux séries

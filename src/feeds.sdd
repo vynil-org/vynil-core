@@ -165,11 +165,14 @@ Tasks:
     désormais UN seul `block_on` sur un futur unique (envoi + statut + corps), ce qui corrige de fait un
     panic antérieur de `feed_read` / `feed_poll` hors de tout runtime (deux runtimes temporaires, le timer
     reqwest du premier ne survivait pas) ; verrou ci-dessous.
-  [ ] Verrou du défaut corrigé (lot E, revue du validator) : tests d'abord, hors runtime — un `#[test]`
+  [x] Verrou du défaut corrigé (lot E, revue du validator) : tests d'abord, hors runtime — un `#[test]`
     synchrone appelle `feed_read` ET `feed_poll` sur un faux serveur SANS runtime tokio (entrées rendues,
     aucun panic), et sous `#[tokio::test]` (`current_thread`) les mêmes appels rendent l'erreur explicite
     `requires a multi-thread tokio runtime` sans panique. Le test échoue si un second `block_on` revient
-    dans le chemin du fetch.
+    dans le chemin du fetch. Clos (synthèse validator verte, 2026-11-20) : mesuré par mutation sur le code
+    d'avant (deux `block_on`), le test hors runtime ÉCHOUE sur le panic d'origine « A Tokio 1.x context was
+    found, but it is being shutdown » ; le test `current_thread` verrouille l'erreur explicite, pas l'absence
+    d'un second `block_on`.
 
 Scenario: Atom et RSS 2.0 donnent les mêmes FeedEntry
   Given un flux Atom et un flux RSS 2.0 décrivant les mêmes deux entrées

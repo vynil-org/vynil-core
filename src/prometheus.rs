@@ -25,7 +25,7 @@ use crate::{
     Error, RhaiRes,
     chrono::DateTimeHandler,
     engine::documented,
-    query_client::{QueryClient, QueryError, QueryOutcome},
+    query_client::{QueryClient, QueryError, QueryOutcome, run_blocking},
     rhai_err, rhai_err_str,
 };
 
@@ -93,6 +93,57 @@ impl From<&SeriesResult> for Map {
 impl From<SeriesResult> for Map {
     fn from(value: SeriesResult) -> Self {
         value.to_rhai_map()
+    }
+}
+
+/// Async-first Rust client of the Prometheus connector (`prometheus.sdd`, lot E, « Rust first »):
+/// the same host-configured kernel client as the script module, called from Rust. The times are
+/// `i64` UTC milliseconds, the output is the same [`SeriesResult`] the script receives as a map.
+///
+/// The kernel read stays synchronous; each method runs it on the blocking pool through
+/// [`crate::query_client`]'s bridge, so the caller's runtime is never blocked. Under a
+/// `current_thread` runtime the kernel refuses explicitly (`requires a multi-thread tokio runtime`),
+/// the error comes back as is, without a panic.
+#[derive(Clone, Debug)]
+pub struct PrometheusClient {
+    client: QueryClient,
+}
+
+impl PrometheusClient {
+    /// Wraps a host-configured kernel client.
+    #[must_use]
+    pub fn new(client: QueryClient) -> Self {
+        Self { client }
+    }
+
+    /// Instant query `expr` at `time_ms` (UTC milliseconds).
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::Query`] with the kernel's [`QueryError`] (syntax, rate limit, timeout, …).
+    pub async fn query(&self, expr: &str, time_ms: i64) -> crate::Result<SeriesResult> {
+        let client = self.client.clone();
+        let expr = expr.to_string();
+        run_blocking(move || query_sync(&client, &expr, time_ms)).await
+    }
+
+    /// Range query `expr` from `start_ms` to `end_ms` (UTC milliseconds) at `step`; `None` is the
+    /// kernel's automatic step.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::Other`] when `end_ms < start_ms` (refused before any request), and
+    /// [`crate::Error::Query`] with the kernel's [`QueryError`] (e.g. `StepTooFine`).
+    pub async fn query_range(
+        &self,
+        expr: &str,
+        start_ms: i64,
+        end_ms: i64,
+        step: Option<Duration>,
+    ) -> crate::Result<SeriesResult> {
+        let client = self.client.clone();
+        let expr = expr.to_string();
+        run_blocking(move || query_range_sync(&client, &expr, start_ms, end_ms, step)).await
     }
 }
 
@@ -177,13 +228,7 @@ fn query_impl(backend: &Backend, expr: &str, time: &Dynamic) -> RhaiRes<Map> {
     match backend {
         Backend::Live(client) => {
             let time_ms = time_to_ms("time", time)?;
-            let path = format!(
-                "api/v1/query?query={}&time={}",
-                encode_query(expr),
-                fmt_signed_secs(time_ms)
-            );
-            let outcome = client.stream_query(&path, decode_element).map_err(rhai_err)?;
-            outcome_to_series(outcome)
+            query_sync(client, expr, time_ms)
                 .map(|s| s.to_rhai_map())
                 .map_err(rhai_err)
         }
@@ -203,26 +248,54 @@ fn query_range_impl(
             let start_ms = time_to_ms("start", start)?;
             let end_ms = time_to_ms("end", end)?;
             let step = parse_step(step)?;
+            // Contrôle de la face Rhai conservé tel quel : son message (`rhai_err_str`, sans préfixe
+            // « Error: ») est celui que verrouillent les tests du module de script.
             if end_ms < start_ms {
                 return Err(rhai_err_str("query_range: end is before start".to_string()));
             }
-            let duration =
-                Duration::from_millis(u64::try_from(end_ms.saturating_sub(start_ms)).unwrap_or(u64::MAX));
-            let step = client.resolve_step(duration, step).map_err(rhai_err)?;
-            let path = format!(
-                "api/v1/query_range?query={}&start={}&end={}&step={}",
-                encode_query(expr),
-                fmt_signed_secs(start_ms),
-                fmt_signed_secs(end_ms),
-                fmt_step_secs(step)
-            );
-            let outcome = client.stream_query(&path, decode_element).map_err(rhai_err)?;
-            outcome_to_series(outcome)
+            query_range_sync(client, expr, start_ms, end_ms, step)
                 .map(|s| s.to_rhai_map())
                 .map_err(rhai_err)
         }
         Backend::Fixtures(pairs) => fixture_response(pairs, expr),
     }
+}
+
+/// Instant query on the synchronous kernel: the URL, the streamed read and the normalisation.
+/// Shared by the script face and [`PrometheusClient`]; the kernel's errors come back unchanged.
+fn query_sync(client: &QueryClient, expr: &str, time_ms: i64) -> crate::Result<SeriesResult> {
+    let path = format!(
+        "api/v1/query?query={}&time={}",
+        encode_query(expr),
+        fmt_signed_secs(time_ms)
+    );
+    let outcome = client.stream_query(&path, decode_element)?;
+    outcome_to_series(outcome)
+}
+
+/// Range query on the synchronous kernel: the end-before-start refusal (before any request), the
+/// step resolution (`None` = automatic), the URL, the streamed read and the normalisation.
+fn query_range_sync(
+    client: &QueryClient,
+    expr: &str,
+    start_ms: i64,
+    end_ms: i64,
+    step: Option<Duration>,
+) -> crate::Result<SeriesResult> {
+    if end_ms < start_ms {
+        return Err(Error::Other("query_range: end is before start".to_string()));
+    }
+    let duration = Duration::from_millis(u64::try_from(end_ms.saturating_sub(start_ms)).unwrap_or(u64::MAX));
+    let step = client.resolve_step(duration, step)?;
+    let path = format!(
+        "api/v1/query_range?query={}&start={}&end={}&step={}",
+        encode_query(expr),
+        fmt_signed_secs(start_ms),
+        fmt_signed_secs(end_ms),
+        fmt_step_secs(step)
+    );
+    let outcome = client.stream_query(&path, decode_element)?;
+    outcome_to_series(outcome)
 }
 
 /// Response of the mock backend: the fixture whose expression matches, first entry wins.
@@ -1125,6 +1198,110 @@ mod tests {
         );
         let map: Map = (&r).into();
         assert_eq!(map.len(), 2, "series et truncated");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Scenario « PrometheusClient rend la même forme normalisée que le module de script »
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scenario_prometheus_client_meme_forme_que_le_module_de_script() {
+        set_name();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v1/query_range")
+                .query_param("step", "60");
+            then.status(200).json_body(envelope("matrix", vec![
+                matrix_series(Some(("instance", "a")), [
+                    ("1700000000", "1.0"),
+                    ("1700000060", "2.0"),
+                ]),
+                matrix_series(Some(("instance", "b")), [
+                    ("1700000000", "3.0"),
+                    ("1700000060", "4.0"),
+                ]),
+            ]));
+        });
+        let client = PrometheusClient::new(client_on(server.port()));
+        let rust = client
+            .query_range("rate(x[5m])", T0, T0 + 60_000, Some(Duration::from_secs(60)))
+            .await
+            .expect("PrometheusClient::query_range nominal");
+        let script = metrics_engine(prometheus_module(client_on(server.port())))
+            .eval::<Dynamic>("metrics::query_range(\"rate(x[5m])\", 1700000000000, 1700000060000, \"1m\")")
+            .expect("module de script nominal");
+        assert_eq!(
+            Dynamic::from(Map::from(&rust)).to_string(),
+            script.to_string(),
+            "le SeriesResult Rust égale la conversion en map du résultat de script"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Scenario « PrometheusClient rend les erreurs typées et refuse une plage inversée »
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scenario_prometheus_client_erreurs_typees_et_plage_inversee() {
+        set_name();
+        let server = MockServer::start();
+        let syntax = server.mock(|when, then| {
+            when.method(GET)
+                .path("/api/v1/query")
+                .query_param("query", "sum(");
+            then.status(400).json_body(json!({
+                "status": "error",
+                "errorType": "bad_data",
+                "error": "parse error: unexpected <eof> in aggregation",
+            }));
+        });
+        let range = server.mock(|when, then| {
+            when.method(GET).path("/api/v1/query_range");
+            then.status(200).json_body(envelope("matrix", json!([])));
+        });
+        let client = PrometheusClient::new(client_on(server.port()));
+        let err = client
+            .query("sum(", T0)
+            .await
+            .expect_err("un 400 PromQL est un échec typé");
+        match &err {
+            crate::Error::Query(QueryError::Syntax(msg)) => assert!(
+                msg.contains("parse error"),
+                "le message du serveur est conservé : {msg}"
+            ),
+            other => panic!("Syntax attendu, rendu : {other:?}"),
+        }
+        syntax.assert_calls(1);
+        let err = client
+            .query_range("x", T0 + 60_000, T0, None)
+            .await
+            .expect_err("end < start : refus avant réseau");
+        assert!(
+            matches!(err, crate::Error::Other(_)),
+            "Error::Other attendu pour une plage inversée, rendu : {err:?}"
+        );
+        // Pas explicite trop fin : 1 s sur 1 h avec max_points = 4 → StepTooFine, pas minimal 900 s.
+        let mut cfg = QueryClientConfig {
+            base_url: format!("http://127.0.0.1:{}", server.port()),
+            ..QueryClientConfig::default()
+        };
+        cfg.limits = QueryLimits {
+            max_points: 4,
+            ..QueryLimits::default()
+        };
+        let fine = PrometheusClient::new(QueryClient::new(cfg).expect("config valide"));
+        let err = fine
+            .query_range("x", T0, T0 + 3_600_000, Some(Duration::from_secs(1)))
+            .await
+            .expect_err("1 s sur 1 h avec max_points = 4 : refus");
+        match err {
+            crate::Error::Query(QueryError::StepTooFine { min_step_seconds }) => {
+                assert_eq!(min_step_seconds, 900, "le pas minimal accepté est rendu");
+            }
+            other => panic!("StepTooFine attendu, rendu : {other:?}"),
+        }
+        range.assert_calls(0);
     }
 
     // `Scenario: sans la feature prometheus, rien n'existe` — verrouillé par le `cfg` des

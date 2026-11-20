@@ -27,7 +27,7 @@ use crate::{
     Error, RhaiRes,
     chrono::DateTimeHandler,
     engine::documented,
-    query_client::{QueryClient, QueryError, QueryOutcome},
+    query_client::{QueryClient, QueryError, QueryOutcome, run_blocking},
     rhai_err, rhai_err_str,
 };
 
@@ -92,6 +92,67 @@ impl From<&LogsResult> for Map {
 impl From<LogsResult> for Map {
     fn from(value: LogsResult) -> Self {
         value.to_rhai_map()
+    }
+}
+
+/// Direction of a Loki range query (`loki.sdd`, `Exposes`): the server's order of lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Direction {
+    /// Oldest lines first (`direction=forward`).
+    Forward,
+    /// Newest lines first (`direction=backward`).
+    Backward,
+}
+
+impl Direction {
+    /// The wire form of the direction: `"forward"` or `"backward"`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Forward => "forward",
+            Self::Backward => "backward",
+        }
+    }
+}
+
+/// Async-first Rust client of the Loki connector (`loki.sdd`, lot E, « Rust first »): the same
+/// host-configured kernel client as the script module, called from Rust. The times are `i64` UTC
+/// milliseconds, the output is the same [`LogsResult`] the script receives as a map.
+///
+/// The kernel read stays synchronous; the method runs it on the blocking pool through
+/// [`crate::query_client`]'s bridge. Under a `current_thread` runtime the kernel refuses explicitly
+/// (`requires a multi-thread tokio runtime`), the error comes back as is, without a panic.
+#[derive(Clone, Debug)]
+pub struct LokiClient {
+    client: QueryClient,
+}
+
+impl LokiClient {
+    /// Wraps a host-configured kernel client.
+    #[must_use]
+    pub fn new(client: QueryClient) -> Self {
+        Self { client }
+    }
+
+    /// Range log query `expr` (`LogQL`) from `start_ms` to `end_ms` (UTC milliseconds), at most `limit`
+    /// lines (capped by the host's `max_lines`) in `direction`.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::Other`] when `limit` is zero or `end_ms < start_ms` (refused before any
+    /// request), and [`crate::Error::Query`] with the kernel's [`QueryError`].
+    pub async fn query_range(
+        &self,
+        expr: &str,
+        start_ms: i64,
+        end_ms: i64,
+        limit: usize,
+        direction: Direction,
+    ) -> crate::Result<LogsResult> {
+        let client = self.client.clone();
+        let expr = expr.to_string();
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        run_blocking(move || query_range_sync(&client, &expr, start_ms, end_ms, limit, direction)).await
     }
 }
 
@@ -173,6 +234,8 @@ fn query_range_impl(
         Backend::Live(client) => {
             let start_ms = time_to_ms("start", start)?;
             let end_ms = time_to_ms("end", end)?;
+            // Contrôles de la face Rhai conservés dans leur ordre et leurs messages (`rhai_err_str`,
+            // sans préfixe) : les tests du module de script les verrouillent.
             if end_ms < start_ms {
                 return Err(rhai_err_str("query_range: end is before start".to_string()));
             }
@@ -185,35 +248,58 @@ fn query_range_impl(
                 ));
             }
             let direction = match direction {
-                "forward" | "backward" => direction,
+                "forward" => Direction::Forward,
+                "backward" => Direction::Backward,
                 other => {
                     return Err(rhai_err_str(format!(
                         "query_range: direction {other:?} is not \"forward\" or \"backward\""
                     )));
                 }
             };
-            // Le plafond retenu est le plus petit du `limit` du script et du `max_lines` de la
-            // config hôte (loki.sdd `Must` « plafonné par max_lines » via QueryClient::limits) :
-            // c'est lui qui part au serveur et qui borne le rendu, `truncated` annonçant ce que
-            // le serveur avait de plus (query_client.sdd, tâche « Exposer QueryClient::limits »).
-            let max_lines = i64::try_from(client.limits().max_lines).unwrap_or(i64::MAX);
-            let limit = limit.min(max_lines);
-            let cap = usize::try_from(limit).unwrap_or(usize::MAX);
-            let path = format!(
-                "loki/api/v1/query_range?query={}&start={}&end={}&limit={}&direction={}",
-                encode_query(expr),
-                fmt_signed_secs(start_ms),
-                fmt_signed_secs(end_ms),
-                limit,
-                direction
-            );
-            let outcome = client.stream_query(&path, decode_stream).map_err(rhai_err)?;
-            outcome_to_logs(outcome, cap)
+            query_range_sync(client, expr, start_ms, end_ms, limit, direction)
                 .map(|r| r.to_rhai_map())
                 .map_err(rhai_err)
         }
         Backend::Fixtures(pairs) => fixture_response(pairs, expr),
     }
+}
+
+/// Range query on the synchronous kernel, shared by the script face and [`LokiClient`]: the
+/// refusals (end before start, non-positive limit) before any request, the line limit capped by
+/// the host's `max_lines` (`query_client.sdd`, [`QueryClient::limits`]) — the smaller one is sent
+/// and bounds the rendering — the URL, the streamed read and the normalisation.
+fn query_range_sync(
+    client: &QueryClient,
+    expr: &str,
+    start_ms: i64,
+    end_ms: i64,
+    limit: i64,
+    direction: Direction,
+) -> crate::Result<LogsResult> {
+    if end_ms < start_ms {
+        return Err(Error::Other("query_range: end is before start".to_string()));
+    }
+    if limit < 1 {
+        return Err(Error::Other(
+            "query_range: limit must be a positive integer of lines".to_string(),
+        ));
+    }
+    // Le plafond retenu est le plus petit du `limit` demandé et du `max_lines` de la config hôte
+    // (loki.sdd `Must` « plafonné par max_lines ») : c'est lui qui part au serveur et qui borne le
+    // rendu, `truncated` annonçant ce que le serveur avait de plus.
+    let max_lines = i64::try_from(client.limits().max_lines).unwrap_or(i64::MAX);
+    let limit = limit.min(max_lines);
+    let cap = usize::try_from(limit).unwrap_or(usize::MAX);
+    let path = format!(
+        "loki/api/v1/query_range?query={}&start={}&end={}&limit={}&direction={}",
+        encode_query(expr),
+        fmt_signed_secs(start_ms),
+        fmt_signed_secs(end_ms),
+        limit,
+        direction.as_str()
+    );
+    let outcome = client.stream_query(&path, decode_stream)?;
+    outcome_to_logs(outcome, cap)
 }
 
 /// Response of the mock backend: the fixture whose expression matches, first entry wins.
@@ -1038,6 +1124,98 @@ mod tests {
         );
         let map: Map = (&r).into();
         assert_eq!(map.len(), 2, "streams et truncated");
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Scenario « LokiClient rend la même forme normalisée que le module de script »
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scenario_loki_client_meme_forme_que_le_module_de_script() {
+        set_name();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/loki/api/v1/query_range");
+            then.status(200).json_body(envelope(vec![
+                log_stream(Some(("app", "a")), &[
+                    ("1700000000123456789", "ligne a1"),
+                    ("1700000001000000000", "ligne a2"),
+                ]),
+                log_stream(Some(("app", "b")), &[("1700000000500000000", "ligne b1")]),
+            ]));
+        });
+        let client = LokiClient::new(client_on(server.port()));
+        let rust = client
+            .query_range("{app=\"x\"}", T0, T0 + 60_000, 100, Direction::Backward)
+            .await
+            .expect("LokiClient::query_range nominal");
+        let script = logs_engine(loki_module(client_on(server.port())))
+            .eval::<Dynamic>(
+                "logs::query_range(\"{app=\\\"x\\\"}\", 1700000000000, 1700000060000, 100, \"backward\")",
+            )
+            .expect("module de script nominal");
+        assert_eq!(
+            Dynamic::from(Map::from(&rust)).to_string(),
+            script.to_string(),
+            "le LogsResult Rust égale la conversion en map du résultat de script"
+        );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Scenario « LokiClient plafonne la limite et refuse une entrée invalide »
+    // ══════════════════════════════════════════════════════════════════════
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scenario_loki_client_plafonne_la_limite_et_refuse_l_invalide() {
+        set_name();
+        let server = MockServer::start();
+        let m = server.mock(|when, then| {
+            when.method(GET)
+                .path("/loki/api/v1/query_range")
+                .query_param("limit", "100");
+            then.status(200)
+                .json_body(envelope(vec![log_stream(Some(("app", "x")), &[(
+                    "1700000000000000000",
+                    "ligne",
+                )])]));
+        });
+        let mut cfg = QueryClientConfig {
+            base_url: format!("http://127.0.0.1:{}", server.port()),
+            ..QueryClientConfig::default()
+        };
+        cfg.limits = QueryLimits {
+            max_lines: 100,
+            ..QueryLimits::default()
+        };
+        let client = LokiClient::new(QueryClient::new(cfg).expect("config valide"));
+        client
+            .query_range("x", T0, T0 + 60_000, 10_000, Direction::Forward)
+            .await
+            .expect("la requête part avec limit=100 plafonné par max_lines");
+        m.assert_calls(1);
+        let err = client
+            .query_range("x", T0, T0 + 60_000, 0, Direction::Forward)
+            .await
+            .expect_err("limit = 0 : refus");
+        assert!(
+            matches!(err, crate::Error::Other(_)),
+            "Error::Other attendu : {err:?}"
+        );
+        let err = client
+            .query_range("x", T0 + 60_000, T0, 100, Direction::Forward)
+            .await
+            .expect_err("end < start : refus");
+        assert!(
+            matches!(err, crate::Error::Other(_)),
+            "Error::Other attendu : {err:?}"
+        );
+        m.assert_calls(1);
+    }
+
+    #[test]
+    fn direction_as_str_rend_les_formes_de_loki() {
+        assert_eq!(Direction::Forward.as_str(), "forward");
+        assert_eq!(Direction::Backward.as_str(), "backward");
     }
 
     // `Scenario: sans la feature loki, rien n'existe` — verrouillé par le `cfg` des

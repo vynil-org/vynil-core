@@ -105,11 +105,12 @@ metadata = ["rhai", "rhai/metadata"]
 # it does not imply `rhai`, the bridge never touches Rhai types. `http`, `oci`, `s3` and `k8s`
 # depend on it instead of `tokio` directly.
 rt = ["dep:tokio"]
-# INTERNAL shared read kernel for the Prometheus/Mimir and Loki connectors (src/query_client.rs,
-# issue vynil-org/vynil-core#57): host-configured client, bounded streaming reads, auto step and
-# typed errors. A consumer never activates it alone — it enables `prometheus` or `loki`, which
-# imply it. Like k8s/oci/s3/http it implies `rhai`; it also implies `http` (it builds an
-# `http::RestClient` host-side) and `rt` (the streaming reads bridge through `rt::block_on`).
+# Shared read kernel for the Prometheus/Mimir and Loki connectors (src/query_client.rs, issue
+# vynil-org/vynil-core#57): public types, host-configured client, bounded streaming reads, auto
+# step and typed errors. Enabled by `prometheus` or `loki`, which imply it; the async Rust clients
+# `PrometheusClient` / `LokiClient` sit on top of it. Like k8s/oci/s3/http it implies `rhai`; it
+# also implies `http` (it builds an `http::RestClient` host-side) and `rt` (the streaming reads
+# bridge through `rt::block_on`).
 query_client = ["http", "rt", "rhai"]
 # Read connector for Prometheus-compatible APIs (src/prometheus.rs + its mock, issue
 # vynil-org/vynil-core#57): a host module over the `query_client` kernel — the host configures
