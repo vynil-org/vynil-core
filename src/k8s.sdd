@@ -461,7 +461,7 @@ Tasks:
     qui partage la liste de registrations de @crate::k8s_mock::k8s_mock_rhai_register (une seule
     définition ; le double s'écrit aujourd'hui par macros `register_k8s_*!` sur l'engine : le motif
     « double cible » du réel, `Target`, est à réutiliser plutôt que dupliquer ; le commentaire de
-     ./k8s.rs sur le sort des macros est repris avec). Tests d'abord depuis
+    ./k8s.rs sur le sort des macros est repris avec). Tests d'abord depuis
     les Scenario ci-dessous. Reprendre à la clôture `Purpose` et `Exposes` à l'état produit (« le
     mock le plus fidèle en SURFACE » inclut désormais ses noms qualifiés). Jumelle de ../vyvil-core.sdd
     (tâche « Jumeaux module des trois doubles »), de ./http.sdd, de ./oci.sdd et de ../docs.sdd,
