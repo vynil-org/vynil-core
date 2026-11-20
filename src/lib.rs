@@ -16,11 +16,11 @@
 //! | `rhai` | ✅ | `engine::Script` engine + every other module's Rhai bindings |
 //! | `hbs` | ✅ | `hbs::HandleBars` engine |
 //! | `hbs-scripting` | ✅ | `register_helper_dir` / `rhai_register_helper_dir` (`handlebars/script_helper`). Implies `hbs` + `rhai`. Keep it separate because `script_helper` pulls `smartstring` which breaks `String + &String` in some graphs (see `hbs` docs) |
-//! | `http` | ✅ | `http::RestClient` (reqwest) + `http_mock::RestClientMock`. Implies `rhai` |
+//! | `http` | ✅ | `http::RestClient` (reqwest, async Rust GET `RestClient::http_get_async`) + `http_mock::RestClientMock`. Implies `rhai` |
 //! | `crypto` | ✅ | `argon_hash` / `bcrypt_hash` / `gen_private_key` helpers (Handlebars). In Rhai: the `Argon` type via `new_argon` with its `.hash` method, plus `bcrypt_hash` / `gen_private_key` |
 //! | `k8s` | ❌ | Generic K8s handlers (`k8s::K8sGeneric`, `k8s::K8sObject`, …) + mocks. Implies `rhai` |
 //! | `oci` | ❌ | `oci::Registry` + OCI mock. Implies `rhai` |
-//! | `s3` | ❌ | S3 helpers (`s3::s3_get_yaml`, `s3::s3_list_keys`). Implies `rhai` |
+//! | `s3` | ❌ | S3 helpers (`s3::s3_get_yaml`, `s3::s3_list_keys`) and async Rust client `s3::S3Store` (configured by `s3::S3Config`; re-exports `object_store` and `bytes`). Implies `rhai` |
 //! | `fs` | ❌ | Filesystem access from Rhai (`file_read`, `file_write`, …) |
 //! | `shell` | ❌ | Shell execution (`shell::run` / `shell::get_out` + Rhai `shell_run` / `shell_output`); unix-only, commands are interpreted by a literal `sh -c` |
 //! | `quantity` | ❌ | Kubernetes `Quantity` parser (`quantity::cpu_millis_of`, `quantity::memory_bytes_of`), exact arithmetic; its Rhai glue needs `rhai` too |
@@ -30,7 +30,7 @@
 //! | `query_client` | ❌ | Shared read kernel of the protocol clients (`query_client::QueryClient`, `QueryClientConfig`, `QueryError`, public types): host-configured client, bounded streaming reads, auto step, typed errors. Enabled by `prometheus` or `loki`, which imply it. Implies `http`, `rt` and `rhai` |
 //! | `prometheus` | ❌ | Read connector for Prometheus-compatible APIs (`prometheus::prometheus_module` + `prometheus_mock::prometheus_mock_module`, async Rust client `prometheus::PrometheusClient`): a host module over the `query_client` kernel — the host configures the client, scripts only query. Implies `query_client` |
 //! | `loki` | ❌ | Read connector for Loki (`loki::loki_module` + `loki_mock::loki_mock_module`, async Rust client `loki::LokiClient`): a host module over the `query_client` kernel, same principle as `prometheus`, no shared code with it. Implies `query_client` |
-//! | `feeds` | ❌ | RSS/Atom feed reading (`feeds::feed_read` / `feeds::feed_poll` + `feeds_mock`, feed-rs based). Implies `http`, `rt` and `rhai` |
+//! | `feeds` | ❌ | RSS/Atom feed reading (`feeds::feed_read` / `feeds::feed_poll` + `feeds_mock`, feed-rs based; async Rust client `feeds::FeedClient`). Implies `http`, `rt` and `rhai` |
 //!
 //! ```toml
 //! # default: Rhai + Handlebars + HTTP + crypto
@@ -143,7 +143,8 @@ use thiserror::Error;
 /// ungated), `KEY-OPENSSL-001` (`Error::OpenSSL`, feature `crypto`), `CANCEL-001`
 /// ([`Error::Cancelled`], ungated), `QUERY-001` to `QUERY-009` (`Error::Query`, feature
 /// `query_client`, carried by `QueryError`'s own Display), `FEED-001` (`Error::FeedInvalid`,
-/// feature `feeds`) and `FEED-002` (`Error::FeedCursor`, feature `feeds`). They are stable
+/// feature `feeds`), `FEED-002` (`Error::FeedCursor`, feature `feeds`) and `S3-001` to `S3-004`
+/// (`Error::S3`, feature `s3`, carried by `S3Error`'s own Display). They are stable
 /// identifiers meant to be searched for by consumers — part of the API contract.
 #[derive(Error, Debug)]
 pub enum Error {
@@ -187,6 +188,14 @@ pub enum Error {
     #[cfg_attr(docsrs, doc(cfg(feature = "query_client")))]
     #[error("{0}")]
     Query(#[from] crate::query_client::QueryError),
+
+    /// Failure of the S3 client of the `s3` module (feature `s3`, see [`s3::S3Error`] and
+    /// `s3.sdd`). Its Display carries a stable code of its own, `S3-001` to `S3-004`, and never
+    /// embeds a credential.
+    #[cfg(feature = "s3")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "s3")))]
+    #[error("{0}")]
+    S3(#[from] crate::s3::S3Error),
 
     /// An invalid feed, or a response that is not a feed at all (feature `feeds`, see
     /// `feeds.sdd`). Its Display carries the stable code `FEED-001` — like `KEY-ALGO-001`,
@@ -495,6 +504,7 @@ pub mod loki_mock;
 /// RSS/Atom feed reader ([`feeds::feed_read`] stateless, [`feeds::feed_poll`] with an opaque
 /// versioned cursor; feature `feeds`, issue #56): a protocol client that knows nothing of the
 /// caller's data model — fetch goes through [`http::RestClient`], parsing through `feed-rs`.
+/// Rust callers get the async client [`feeds::FeedClient`] on the same parser.
 pub mod feeds;
 #[cfg(feature = "feeds")]
 #[cfg_attr(docsrs, doc(cfg(feature = "feeds")))]
@@ -504,7 +514,8 @@ pub mod feeds_mock;
 
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-/// HTTP client ([`http::RestClient`]).
+/// HTTP client ([`http::RestClient`]). Rust callers also get the async GET
+/// [`http::RestClient::http_get_async`].
 pub mod http;
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
@@ -522,7 +533,9 @@ pub mod oci_mock;
 
 #[cfg(feature = "s3")]
 #[cfg_attr(docsrs, doc(cfg(feature = "s3")))]
-/// S3 helpers (`s3_get_yaml`, `s3_list_keys`).
+/// S3 helpers (`s3_get_yaml`, `s3_list_keys`) for Rhai, and the async Rust client
+/// [`s3::S3Store`] configured by [`s3::S3Config`]; the `object_store` and `bytes` crates are
+/// re-exported as `s3::object_store` and `s3::bytes`.
 pub mod s3;
 
 #[cfg(feature = "k8s")]
@@ -1107,6 +1120,49 @@ mod tests {
         #[test]
         fn http_body_is_none_for_query_error() {
             assert_eq!(Error::Query(QueryError::Unauthorized).http_body(), None);
+        }
+    }
+
+    // ── Variante gated `s3` (Error::S3 porte S3Error ; code stable porté par S3Error) ──
+    #[cfg(feature = "s3")]
+    mod display_s3 {
+        use super::Error;
+        use crate::s3::S3Error;
+        use std::error::Error as _;
+
+        #[test]
+        fn display_s3_carries_s3_error_display_with_stable_code() {
+            let inner = S3Error::NotFound {
+                key: "index.yaml".to_string(),
+            };
+            let msg = inner.to_string();
+            assert!(
+                msg.starts_with("S3-001"),
+                "le Display de S3Error porte son code stable : {msg}"
+            );
+            let err = Error::S3(inner);
+            assert_eq!(
+                err.to_string(),
+                msg,
+                "Error::S3 affiche le Display du S3Error brut"
+            );
+            assert_eq!(
+                err.source().map(ToString::to_string),
+                Some(msg),
+                "From alimente source()"
+            );
+        }
+
+        #[test]
+        fn from_s3_error_converts_into_error_s3() {
+            let err: Error = S3Error::Backend("boom".to_string()).into();
+            assert!(matches!(err, Error::S3(S3Error::Backend(_))));
+        }
+
+        // http_body = None sur la variante gated `s3`.
+        #[test]
+        fn http_body_is_none_for_s3_variant() {
+            assert_eq!(Error::S3(S3Error::Backend("x".to_string())).http_body(), None);
         }
     }
 

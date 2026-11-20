@@ -10,6 +10,15 @@ Purpose:
     `*_mock.rs` par décision : les mocks de la crate sont `http_mock`, `k8s_mock` et
     `oci_mock` ; s3 se teste par des fonctions internes prenant un
     @object_store::ObjectStore (le @object_store::memory::InMemory), sans mock Rhai.
+    Face RUST d'abord (lot E, décision 2026-11-20 « Rust first », pour le filestore de miryad-core) :
+    @crate::s3::S3Store, client `async` d'un object store S3 (get, get_range, get_stream, put, put_stream,
+    put_if, head, delete, list) configuré par @crate::s3::S3Config, avec ré-exportation d'@object_store et de
+    @bytes. Les deux helpers de script n'en sont PAS une projection (ils reconstruisent un store à chaque
+    appel) et restent STRICTEMENT compatibles avec l'existant : leur construction de clé garde
+    `Path::from` (encodage en pourcentage), décision du développeur principal 2026-11-20 — aucun
+    breaking change sur les deux helpers. Conséquence assumée : `S3Store` stocke les clés BRUTES
+    (`Path::parse`), les helpers de script les clés encodées ; les deux faces ne s'accordent donc que sur
+    les noms ASCII sans caractère spécial, et un bucket partagé entre les deux doit s'en tenir à ceux-là.
 
 Owns:
   ./s3.rs
@@ -124,6 +133,9 @@ Must not:
   Avaler une erreur en repli silencieux ou en @tracing::warn : toute anomalie remonte en
     erreur Rhai via @crate::rhai_err — pas de motif « chaîne vide + warn » des helpers de
     ./hbs.rs ici.
+  Changer la construction de clé des deux helpers de script (`Path::from`, clé encodée) : aucun breaking
+    change sur `s3_get_yaml` / `s3_list_keys` (décision du développeur principal 2026-11-20) ; la
+    fidélité des clés brutes ne vaut que pour @crate::s3::S3Store.
   Laisser passer une clé concaténée sans séparateur (`pk`) ou avec double `/` : la jonction
     de @crate::s3::s3_get_yaml est toujours normalisée.
   Exposer `build_store`, les imports ou le module de tests : la face `pub` du module est
@@ -138,6 +150,8 @@ Depends on:
     `aws` des S3. La sémantique complète du builder (validations, chaîne de credential,
     pagination, ordre de listing) et les textes d'erreur @object_store appartiennent à la
     dépendance et ne sont verrouillés ici que par leurs triggers, pas leurs formes.
+  bytes — `Bytes`, type de retour des lectures de @crate::s3::S3Store ; déjà dans le graphe (via
+    @object_store, reqwest, hyper : zéro crate nouveau), déclarée directe sous `s3` pour être ré-exportée.
   tokio — via `crate::rt::block_on` (voir ./rt.sdd) ; features `macros` et `rt-multi-thread` ;
     1.53.1 en lock.
   futures — @futures::stream::StreamExt::next pour drainer @object_store::ObjectStore::list.
@@ -164,9 +178,19 @@ Exposes:
     décision du 2026-11-06 (règle des noms de ../vyvil-core.sdd) : les deux fonctions libres prennent des noms courts, qualifiés seulement (`s3::get_yaml`
     pour `s3_get_yaml`, `s3::list_keys` pour `s3_list_keys`). L'enregistreur garde les noms
     historiques dans l'espace global, inchangé pour ses appelants.
-  Rien de plus, AVANT le lot E : `build_store` reste privée, aucun type, aucune constante, aucun
-    variant @Error propre ; aucun nom Rhai homophone (`s3_get`, `list_keys`) n'existe. Le lot E
-    ajoute la face Rust (tâches ci-dessous) et reprend cette phrase à la clôture.
+  Face Rust (lot E) : @crate::s3::S3Config (`bucket`, `region`, `endpoint: Option<String>`, `credentials:
+    Option<S3Credentials>`, `prefix`), @crate::s3::S3Credentials, `Debug` masquant access_key et secret_key ;
+    @crate::s3::S3Store (`Clone`, `Debug`) — `new(config) -> Result`, `from_object_store(Arc<dyn ObjectStore>,
+    prefix)`, `object_store()`, `prefix()` (normalisé : segments vides retirés), et les opérations `async`
+    `get`, `get_range`, `get_stream`, `put`, `put_stream`, `put_if`, `head`, `delete`, `list` ; clés
+    RELATIVES au préfixe du store, UTF-8 BRUTES (`Path::parse`, aller-retour à l'identique, `list` trié par
+    octets, sémantique de segment) ; les clés à segment `.`/`..` ou à contrôle ASCII sont REFUSÉES en
+    @variant-Error::Other, jamais encodées. @crate::s3::S3Meta, @crate::s3::S3PutResult,
+    @crate::s3::S3Condition, @crate::s3::S3Error (`S3-001` à `S3-004`, enveloppée par @variant-Error::S3),
+    `pub use object_store;` et `pub use bytes;`. Un préfixe contenant `..` n'échoue qu'à la requête.
+  Rien d'autre : `build_store` reste privée (mince fonction sur `S3Config`), aucun nom Rhai
+    homophone (`s3_get`, `list_keys`) n'existe, aucun nom Rhai nouveau pour la face Rust (mapping Rhai
+    complet du filestore : lot ultérieur).
 
 Accepts:
   6 ou 7 @std::string::String selon la fonction, toutes valeurs acceptées dont la chaîne
@@ -259,7 +283,7 @@ Tasks:
     qualifiées seulement) ; `s3_rhai_register` garde `s3_get_yaml` et `s3_list_keys`. Jumelle de la
     tâche de ../vyvil-core.sdd.
 
-  [ ] Socle Rust d'un filestore (lot E de ../vyvil-core.sdd, décision 2026-11-20 : miryad-core bâtit un
+  [x] Socle Rust d'un filestore (lot E de ../vyvil-core.sdd, décision 2026-11-20 : miryad-core bâtit un
     filestore sur S3 ; la face Rhai ne change pas) — configuration et opérations de base, `async fn` :
     - ré-exporter la dépendance : `pub use object_store;` dans ./s3.rs, pour que le consommateur emploie
       EXACTEMENT la même version que la crate (jamais deux versions d'@object_store dans son graphe) ;
@@ -287,20 +311,41 @@ Tasks:
     - erreurs : @crate::s3::S3Error (variantes décrites par la tâche jumelle de ./lib.sdd) ;
       @object_store::Error::NotFound → `NotFound`, `AlreadyExists` → `AlreadyExists`, `Precondition` →
       `PreconditionFailed`, le reste → `Backend(e.to_string())` ; jamais de panique.
+    Arbitrages de revue (2026-11-20, à confirmer par le développeur principal) sur le socle livré : textes `Display` `S3-001 object not
+    found: {key}`, `S3-002 object already exists: {key}`, `S3-003 precondition failed: {key}`, `S3-004 S3
+    backend error: {0}` (seul le code est contractuel) ; le `Debug` de `S3Config` / `S3Credentials` masque
+    AUSSI l'access_key (prudence) ; la clé portée par `S3Error` est la clé relative passée à l'appel ; `list`
+    suit la sémantique de SEGMENT d'@object_store (`list("doc")` ne rend pas `docs/x`) : c'est la sémantique
+    d'un répertoire, voulue, à documenter dans la rustdoc ; `delete` d'une clé absente réussit (mesuré sur
+    `InMemory`). Le type de retour des lectures est `bytes::Bytes` : `pub use bytes;` est ajouté à côté de
+    `pub use object_store;` (même raison : une seule version dans le graphe du consommateur).
+    DETTE « Rust first » (relevée à la revue du lot E) : les fonctions de script `s3_get_yaml` / `s3_list_keys`
+    ne sont PAS une projection de @crate::s3::S3Store : elles reconstruisent un store à chaque appel par
+    `build_store` et n'en exposent que deux lectures. La présentation Rhai est jugée suffisante pour
+    l'instant (décision du développeur principal 2026-11-20) ; la ramener à une projection de `S3Store`, avec
+    le mapping Rhai complet du filestore, est un lot ultérieur. Les pages de ./docs/ le disent en toutes
+    lettres, au lieu de la phrase « projection synchrone » valable pour `feeds`, `prometheus` et `loki`.
     Dépendance à ajouter à `Depends on` et à ../Cargo.toml sous la feature `s3` : `bytes` (déjà dans le graphe
     via @object_store et reqwest : zéro crate nouveau, mesurer par `cargo tree -i bytes`). Tests d'abord
     depuis les Scenario « S3Store » ci-dessous, tous sur `InMemory`. Jumelle de ./lib.sdd (variante
     d'erreur). Reprendre `Purpose`, `Exposes`, `Must`, `Must not`, `Depends on` à la clôture.
-  [ ] Lecture partielle, flux et gros fichiers du filestore (lot E, suite de la tâche précédente) :
+  [x] Lecture partielle, flux et gros fichiers du filestore (lot E, suite de la tâche précédente) :
     `get_range(&self, key, range: std::ops::Range<u64>) -> Result<Bytes>` (intervalle semi-ouvert d'octets) ;
     `get_stream(&self, key) -> Result<futures::stream::BoxStream<'static, Result<Bytes>>>` (corps non chargé
     en mémoire) ; `put_stream<S>(&self, key, stream: S, chunk_size: usize) -> Result<S3PutResult> where S:
     Stream<Item = Result<Bytes>> + Unpin` par `object_store::WriteMultipart` (backpressure par
     `wait_for_capacity` à 8 parties au plus ; sur erreur du flux d'entrée, l'upload est ABANDONNÉ
-    (`abort`) et l'erreur rendue, aucun objet partiel). Tests d'abord depuis les Scenario « filestore »
+    (`abort`) et l'erreur rendue, aucun objet partiel ; un flux qui ne rend AUCUN octet écrit un objet VIDE par
+    un `put` simple, S3 refusant de compléter un multipart à zéro partie — refus non mesuré ici faute de
+    réseau : l'implémentation protège le vrai S3, le test sur `InMemory`, qui accepte les zéro partie, n'est
+    qu'un verrou ; `chunk_size == 0` est refusé en @variant-Error::Other avant toute écriture ; l'erreur
+    d'abort est avalée, l'erreur du flux d'entrée prime ; au plus 8 parties en vol, garantie structurelle non
+    testée). En tête de cette tâche : ajouter `pub use bytes;` à ./s3.rs (voir l'arbitrage de
+    la tâche précédente) et documenter dans la rustdoc de `list` la sémantique de segment. Tests d'abord
+    depuis les Scenario « filestore »
     ci-dessous (`InMemory` accepte le multipart). Les URL pré-signées sont HORS du lot (décision du
     développeur principal 2026-11-20 : pas leur place dans une bibliothèque « pure »).
-  [ ] Écriture conditionnelle du filestore (lot E, suite) : `put_if(&self, key, data, condition: S3Condition) ->
+  [x] Écriture conditionnelle du filestore (lot E, suite) : `put_if(&self, key, data, condition: S3Condition) ->
     Result<S3PutResult>` avec l'énum @crate::s3::S3Condition `{ IfNotExists, IfMatch(String) }` (`etag`) vers
     `object_store::PutMode::Create` / `PutMode::Update(UpdateVersion { e_tag: Some(..), version: None })` ;
     échec de condition → `S3Error::AlreadyExists` (`IfNotExists`) ou `S3Error::PreconditionFailed` (`IfMatch`).
@@ -308,6 +353,33 @@ Tasks:
     @object_store 0.14.2 (`S3ConditionalPut`, valeur par défaut) ; si elle n'est pas active par défaut, `S3Store::new`
     la pose explicitement et la mesure est consignée au contrat. Un backend qui ne la supporte pas rend
     `S3Error::Backend` (jamais un repli silencieux en écriture non conditionnelle). Tests d'abord sur `InMemory`.
+
+  [x] Fidélité des clés du filestore (lot E, défaut relevé par la revue du validator, 2026-11-20) : les clés et
+    le préfixe de @crate::s3::S3Store sont des chaînes UTF-8 OPAQUES qui font l'aller-retour tel quel. Le défaut :
+    `Path::from` d'@object_store encode en pourcentage les octets non ASCII et `% # ~ [ ] { } ^ ` | < > " \`, et
+    `relative_key` compare la forme encodée au `prefix` brut ; `list` rend donc `%C3%A9.txt` pour `é.txt` (qui,
+    rappelé à `get`, est ré-encodé en `%25C3…` : un AUTRE objet), et un préfixe de store contenant un tel
+    caractère, commençant par `/` ou portant `//` fait échouer `head` et `list` (`Backend("location hors du préfixe…")`).
+    Contrat à tenir pour tout nom UTF-8 sans segment vide : (a) la clé passée à `put`/`get`/`head`/`delete` est
+    celle que `list` et `head` rendent, à l'identique, (b) la clé stockée côté S3 est la clé BRUTE (ce que voit
+    `aws s3 ls`, sans double encodage), (c) le `prefix` du store peut contenir n'importe quel caractère UTF-8 ; un
+    préfixe à `/` initial ou `//` est NORMALISÉ à la construction par la même jonction que les clés, jamais source
+    d'échec. À MESURER avant d'écrire : dans les sources d'@object_store 0.14.2 (`src/path/mod.rs`,
+    `src/path/parts.rs`), ce que font `Path::from`, `Path::parse` et `Path::from_iter` (qui encodent, qui refusent,
+    comment le client S3 construit l'URL et la clé réellement envoyées), et consigner la mesure au contrat ; si
+    aucune API d'@object_store ne permet de stocker la clé brute, REMONTER (ne pas inventer un schéma) — un
+    encodage visible dans le bucket est une décision du développeur principal. Les messages d'erreur d'`S3Store`
+    sont en anglais. Tests d'abord depuis le Scenario « clés UTF-8 et caractères spéciaux » ci-dessous, sur
+    `InMemory`. Même tâche : rustdoc de `put_stream` (les parties intermédiaires de moins de 5 MiB sont refusées par
+    S3 à la complétion, `InMemory` ne les refuse pas ; un `future` abandonné (drop) n'aborte pas le multipart :
+    à documenter, à cadrer par un garde `Drop` seulement s'il est simple et testable, sinon dette consignée).
+    Clos (synthèse validator, 2026-11-20) — mesure, @object_store 0.14.2 : `Path::from` encode TOUJOURS les
+    octets non ASCII et `% # ~ [ ] { } ^ ` | < > " \\ * ?` (`path/parts.rs`), `Path::parse` garde la
+    graphie brute (refuse seulement `.`, `..`, contrôles ASCII et segments vides), le client S3 envoie
+    `Path::as_ref()` en clé brute (`aws/client.rs` : seul s'applique l'encodage de transport d'URL de S3, `encode_path`, que le serveur décode), donc `Path::parse` donne la clé brute côté bucket et
+    l'aller-retour à l'identique ; décision : `S3Store` passe par `Path::parse` après retrait des segments
+    vides, refuse `.`/`..`/contrôles en `Error::Other` (anglais). La garde `Drop` du multipart n'est PAS
+    faite : dette consignée (un future abandonné peut laisser un upload incomplet côté S3).
 
 Scenario: s3 reste hors de new_bare même feature activée
   Given la crate compilée avec `s3` (donc `rhai` avec)
@@ -490,3 +562,12 @@ Scenario: filestore : écriture conditionnelle
   Then l'erreur est `S3Error::AlreadyExists` et l'objet est inchangé
   When `put_if(IfMatch("mauvais"))` est attendu
   Then l'erreur est `S3Error::PreconditionFailed` ; avec `IfMatch(e1)`, l'écriture réussit et rend le nouvel etag
+
+Scenario: clés UTF-8 et caractères spéciaux
+  Given un `S3Store` de préfixe `clients/é #1/` sur `InMemory`
+  When `put("é.txt", ..)`, `put("a#b/c%d.txt", ..)` puis `list("")` sont attendus
+  Then `list` rend exactement les clés `a#b/c%d.txt` et `é.txt` (brutes, triées par octets), jamais `%C3%A9.txt`
+  And `get`, `head` et `delete` sur chacune des clés rendues retrouvent le même objet
+  Given un préfixe `/x//y/` passé à `from_object_store`
+  When `put("k", ..)` puis `list("")` sont attendus
+  Then le préfixe est normalisé (`x/y`), la clé rendue est `k` et aucun appel n'échoue

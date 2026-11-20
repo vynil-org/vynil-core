@@ -37,7 +37,7 @@ Must:
     texte vient des attributs `#[error(...)]`, et @core::error::Error::source est alimenté
     par les seuls `#[from]`/`#[source]`. L'enum compile et reste stable à
     `--no-default-features`.
-  32 variantes (tuple, sauf les unités), champs publics accessibles par déstructuration : 16 non gated, 16
+  33 variantes (tuple, sauf les unités), champs publics accessibles par déstructuration : 16 non gated, 17
     gated chacune avec `#[cfg(feature = ...)]` + `#[cfg_attr(docsrs, doc(cfg(...)))]`.
   Display exacts, contrats caractère par caractère — variantes NON gated (compilées même
     sans aucune feature) :
@@ -74,7 +74,7 @@ Must:
     @variant-Error::Other — @std::string::String — fourre-tout — `Error: {0}`.
   Display exacts des variantes gated de l'historique (feature → variantes → texte) — les trois
     variantes des clients de protocole sont contractées au paragraphe « Variantes des clients de
-    protocole » ci-dessous :
+    protocole » ci-dessous, et celle du client S3 au paragraphe de la tâche « Variante d'erreur du client S3 » :
     `hbs` → @variant-Error::HbsTemplateError `Registering template failed with error: {0}`,
       @variant-Error::HbsRenderError `Renderer error: {0}` ;
     `rhai` → @variant-Error::RhaiError portant @std::boxed::Box de @rhai::EvalAltResult —
@@ -90,6 +90,9 @@ Must:
       `K8s wait error: {0}`, @variant-Error::Elapsed `Elapsed wait error: {0}`,
       @variant-Error::FinalizerError `Finalizer error: {0}` — récursive : porte un
       @std::boxed::Box de @kube::runtime::finalizer::Error paramétré par @variant-Error elle-même.
+    `s3` → @variant-Error::S3 — `#[from]` @crate::s3::S3Error — `{0}`, dont le Display porte un code stable :
+      `S3-001 object not found: {key}`, `S3-002 object already exists: {key}`, `S3-003 precondition failed:
+      {key}`, `S3-004 S3 backend error: {0}` (seul le code est contractuel, le texte suit).
   Deux textes embarquent un code brut sans constante : `KEY-ALGO-001` (non gated) et
     `KEY-OPENSSL-001` (crypto) — gelés dans le Display : ce sont des identifiants stables
     faits pour être recherchés par les consommateurs, contrat d'API dit dans la rustdoc de
@@ -210,7 +213,7 @@ Depends on:
     @fn-error_chain.
 
 Exposes:
-  API racine sous features par défaut : @variant-Error (32 variantes, dont 16 sans gate),
+  API racine sous features par défaut : @variant-Error (33 variantes, dont 16 sans gate),
     @type-Result, @type-RhaiRes (rhai), @fn-error_chain, @fn-rhai_err, @fn-rhai_err_str
     (rhai), @fn-client_name_is_set, @fn-get_client_name, @fn-set_client_name,
     @struct-Semver, @struct-Script (rhai), @struct-HandleBars (hbs) ; + @fn-update_cache
@@ -396,14 +399,14 @@ Tasks:
     racine, table des features, `Purpose` (« neuf enregistreurs, neuf jumeaux », catalogue `core`, `host`,
     `crypto`, `password`, `semver`, `http`, `oci`, `s3`, `k8s`). Jumelle de la tâche de ../vyvil-core.sdd.
 
-  [ ] Variante d'erreur du client S3 (lot E de ../vyvil-core.sdd, jumelle de ./s3.sdd) : ajouter
+  [x] Variante d'erreur du client S3 (lot E de ../vyvil-core.sdd, jumelle de ./s3.sdd) : ajouter
     `Error::S3(#[from] crate::s3::S3Error)`, gated `s3` comme `Query` l'est par sa feature, avec
     l'énum @crate::s3::S3Error portée par ./s3.rs : `NotFound { key }` (`S3-001`), `AlreadyExists { key }`
     (`S3-002`), `PreconditionFailed { key }` (`S3-003`) et `Backend(String)` (`S3-004`, message de
     @object_store). Le `Display` de chaque variante porte son code stable `S3-00x`. Reprendre la prose
     de rustdoc des codes stables (`QUERY-001`…, `FEED-00x`) pour y ajouter `S3-001`…`S3-004`, et
     `Must` / `Exposes` à la clôture ; `rhai_err` enrichit la chaîne comme pour les autres variantes.
-  [ ] Reprendre les phrases de rustdoc de ./lib.rs des modules `query_client`, `prometheus`, `loki`,
+  [x] Reprendre les phrases de rustdoc de ./lib.rs des modules `query_client`, `prometheus`, `loki`,
     `feeds`, `s3`, `http` : elles disent « host module / script » ; elles ajoutent « Rust clients
     (`FeedClient`, `PrometheusClient`, `LokiClient`, `S3Store`, `RestClient::http_get_async`) » à l'état
     produit du lot E. Jumelle de ./feeds.sdd, ./prometheus.sdd, ./loki.sdd, ./s3.sdd, ./http.sdd.

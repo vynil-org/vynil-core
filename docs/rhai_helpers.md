@@ -637,6 +637,66 @@ Under the registrar the names are `s3_get_yaml` and `s3_list_keys`; under the tw
 
 All parameters are `string`.
 
+**Rust (async).** The Rust client is `vynil_core::s3::S3Store`, built from an `S3Config`
+(`bucket`, `region`, `endpoint`, `credentials`, `prefix`; `Default` is available) with
+`S3Store::new(config)?`, or wrapped around any `object_store` store with
+`S3Store::from_object_store(store, prefix)`. Tests need no network: an `InMemory` store, reached
+through the re-exports `vynil_core::s3::object_store` and `vynil_core::s3::bytes`, does the job.
+
+```rust,ignore
+use std::sync::Arc;
+use vynil_core::s3::{S3Config, S3Condition, S3Store, bytes::Bytes, object_store::memory::InMemory};
+
+// Production: `credentials: None` uses the default credential chain.
+let store = S3Store::new(S3Config {
+    bucket: "my-bucket".to_string(),
+    region: "eu-west-3".to_string(),
+    prefix: "filestore/".to_string(),
+    ..S3Config::default()
+})?;
+store.put("docs/a.txt", Bytes::from_static(b"hello")).await?;
+let body = store.get("docs/a.txt").await?;
+let head = store.head("docs/a.txt").await?;               // S3Meta, size in bytes
+let part = store.get_range("docs/a.txt", 0..3).await?;    // semi-open byte range
+let names = store.list("docs").await?;                    // Vec<S3Meta>
+
+// Tests: in memory, no network.
+let test_store = S3Store::from_object_store(Arc::new(InMemory::new()), "");
+```
+
+Methods, all `async`:
+
+- reads: `get(key) -> Bytes`, `get_range(key, Range<u64>) -> Bytes`, `get_stream(key)` (a
+  `BoxStream` of `Bytes`, the body is not loaded in memory), `head(key) -> S3Meta`;
+- writes: `put(key, data)`, `put_stream(key, stream, chunk_size)` (multipart upload),
+  `put_if(key, data, S3Condition::IfNotExists | S3Condition::IfMatch(etag))`, all returning
+  `S3PutResult { etag }`; `delete(key)`;
+- listing: `list(prefix) -> Vec<S3Meta>`.
+
+Keys are relative to the store prefix and joined to it with a single `/`. `list` matches its
+prefix by path segment, as a directory would: `list("doc")` returns `doc/y` but not `docs/x`.
+Its keys are relative to the store prefix and sorted in byte order.
+
+Keys are raw UTF-8 strings: what you pass to `put` is what `list` and `head` return, and the key
+stored in the bucket is that same string (`aws s3 ls` shows `é.txt`, not `%C3%A9.txt`). A key with a
+`.` or `..` segment or an ASCII control character is refused with an error. A store prefix is
+normalized (empty segments are dropped), so `/x//y/` stands for `x/y`. Keys are normalized the
+same way: `put("a//b")` and `put("a/b/")` both store `a/b`, and `list` returns `a/b`.
+
+`put_stream` refuses a `chunk_size` of zero before any write. An error of the input stream aborts
+the upload and leaves no object under the key. A stream that yields no byte writes an empty
+object. At most 8 parts are in flight.
+
+Failures are `vynil_core::Error::S3(S3Error)`: `S3-001` (`NotFound`), `S3-002` (`AlreadyExists`),
+`S3-003` (`PreconditionFailed`), `S3-004` (`Backend`).
+
+The Rhai helpers `s3_get_yaml` and `s3_list_keys` share the store-building rules of `S3Config`
+(an empty string stands for `None`, or for the AWS default endpoint). Each call builds its own
+store, and they expose only those two reads: they are not a projection of `S3Store`. They keep
+their historical key handling, which percent-encodes non-ASCII and special characters in keys
+(unchanged, so existing scripts keep working): the two faces agree only on plain ASCII key names,
+so a bucket shared between them should stick to those.
+
 ---
 
 ## 15. Cancellation — `cancel::CancelToken` and `cancel::scope`
@@ -737,6 +797,24 @@ cursor). A timeout or an unreachable source arrives as the crate's transport err
 The double — `feeds_mock_module(fixtures)` / `feeds_mock_rhai_register(engine, fixtures)` — serves
 fixture streams and simulates ETag / Last-Modified without network: see [mocking.md](mocking.md).
 
+**Rust (async).** `vynil_core::feeds::FeedClient` is the async-first client of the same kernel:
+`read(url, since)` and `poll(url, &cursor)` are awaited directly, without the `rt` bridge.
+`FeedClient::new()` uses a default HTTP client; `FeedClient::with_rest_client(template)` builds
+its requests from a configured `RestClient` (headers, CA, mTLS; the template's base URL is
+ignored). The cursor stays with the caller.
+
+```rust,ignore
+use vynil_core::feeds::{FeedClient, FeedCursor};
+
+let client = FeedClient::new();
+let entries = client.read("https://example.com/feed.xml", None).await?; // since: Option<i64>, UTC ms
+let poll = client.poll("https://example.com/feed.xml", &FeedCursor::default()).await?;
+// persist `poll.cursor` as-is and replay it on the next pass
+```
+
+The Rhai face is a synchronous projection of this client: `feed_read` and `feed_poll` run the
+same fetch, parse, filter and cursor logic, bridged to sync.
+
 ---
 
 ## 17. Feature `prometheus` — host module (the host registers it)
@@ -784,6 +862,31 @@ Errors are typed, carried by the crate's query error with stable codes `QUERY-00
 script failure. The double `prometheus_mock_module(fixtures)` serves the same functions from
 fixtures: see [mocking.md](mocking.md).
 
+**Rust (async).** `vynil_core::prometheus::PrometheusClient` wraps a host-configured
+`QueryClient` (built from a `query_client::QueryClientConfig`) and offers `query(expr, time_ms)`
+and `query_range(expr, start_ms, end_ms, step)`, both `async`. Times are UTC milliseconds; `step`
+is an `Option<Duration>`, `None` for the automatic step. They return the same `SeriesResult` as the
+script map, and run the synchronous kernel on the blocking pool. Under a `current_thread` runtime
+the kernel refuses explicitly instead of panicking.
+
+```rust,ignore
+use std::time::Duration;
+use vynil_core::{prometheus::PrometheusClient, query_client::{QueryClient, QueryClientConfig}};
+
+let config = QueryClientConfig {
+    base_url: "https://mimir.example.com".to_string(),
+    path_prefix: "/prometheus".to_string(),
+    ..QueryClientConfig::default()
+};
+let client = PrometheusClient::new(QueryClient::new(config)?);
+let (start_ms, end_ms) = (1_700_000_000_000_i64, 1_700_003_600_000_i64);
+let now = client.query("up", end_ms).await?;
+let range = client.query_range("up", start_ms, end_ms, Some(Duration::from_secs(30))).await?;
+```
+
+The Rhai face is a synchronous projection of this client: `<host>::query` and `<host>::query_range`
+call the same kernel functions.
+
 ---
 
 ## 18. Feature `loki` — host module (the host registers it)
@@ -820,3 +923,27 @@ lines, bytes) — never a silent truncation.
 Errors are the same typed `QUERY-001` … `QUERY-009` family as section 17; invalid script input is
 a plain script failure. The double `loki_mock_module(fixtures)` serves the same function from
 fixtures: see [mocking.md](mocking.md).
+
+**Rust (async).** `vynil_core::loki::LokiClient` wraps a host-configured `QueryClient` (built from
+a `query_client::QueryClientConfig`) and offers `async fn query_range(expr, start_ms, end_ms,
+limit, direction)`. Times are UTC milliseconds; `limit` is a `usize` capped by the host's
+`max_lines`; `direction` is `loki::Direction::Forward` or `Direction::Backward`. It returns the same
+`LogsResult` as the script map. A zero `limit` or `end_ms < start_ms` is refused with
+`Error::Other` before any request. The synchronous kernel runs on the blocking pool, and under a
+`current_thread` runtime it refuses explicitly instead of panicking.
+
+```rust,ignore
+use vynil_core::{loki::{Direction, LokiClient}, query_client::{QueryClient, QueryClientConfig}};
+
+let config = QueryClientConfig {
+    base_url: "https://loki.example.com".to_string(),
+    ..QueryClientConfig::default()
+};
+let client = LokiClient::new(QueryClient::new(config)?);
+let logs = client
+    .query_range("{app=\"x\"}", start_ms, end_ms, 100, Direction::Backward)
+    .await?;
+```
+
+The Rhai face is a synchronous projection of this client: `<host>::query_range` calls the same
+kernel function.

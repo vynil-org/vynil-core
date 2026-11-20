@@ -6,8 +6,9 @@ may break the public API, and every breaking change is listed explicitly.
 ## 0.10.0
 
 The protocol-client release: fixture-driven module twins for the test doubles, three new
-features — `feeds`, `prometheus` and `loki` — and dependency bumps closing a run of RustSec
-advisories.
+features — `feeds`, `prometheus` and `loki` — each designed Rust first (an async Rust client, the
+script module being a thin synchronous projection of it), a Rust client for S3 object stores
+(`S3Store`, for building a file store), and dependency bumps closing a run of RustSec advisories.
 
 ### Added
 
@@ -21,7 +22,7 @@ advisories.
   Fetches go through `http::RestClient`, parsing through `feed-rs`. With the module twin
   `feeds::feeds_module()` and the fixture-driven double `feeds_mock::feeds_mock_module(fixtures)`.
 - **Features `prometheus` and `loki`** (#57, off by default): two independent read connectors,
-  each a HOST module over the internal `query_client` kernel — the host builds a configured
+  each a HOST module over the shared `query_client` kernel — the host builds a configured
   `query_client::QueryClient` and registers `prometheus::prometheus_module(client)` or
   `loki::loki_module(client)` under the name it chooses; the script never sees a URL, a tenant or
   a token. Prometheus exposes `query(expr, time)` and `query_range(expr, start, end, step)`, Loki
@@ -31,6 +32,22 @@ advisories.
   `Error::FeedCursor` (`FEED-002`) under `feeds`, and `Error::Query(QueryError)` under
   `query_client` (pulled in by `prometheus`/`loki`), whose Display carries a stable code
   `QUERY-001`…`QUERY-009` and never a token or a credential-bearing URL.
+- **Rust clients, async-first**: `feeds::FeedClient` (`read`, `poll`; truly async),
+  `prometheus::PrometheusClient` (`query`, `query_range`) and `loki::LokiClient` (`query_range`,
+  with `loki::Direction`) — async facades over the synchronous streaming kernel (they need a
+  multi-thread tokio runtime; a truly async kernel is future work) — and
+  `http::RestClient::http_get_async`, the async `GET` the feed client is built on.
+  The `query_client` kernel (`QueryClient`, `QueryClientConfig`, `QueryError`) is a public,
+  shared type set, not an internal detail.
+- **`s3::S3Store`**, a Rust client for S3-compatible stores built from `s3::S3Config`, meant as a
+  base for file stores: `get`, `get_range`, `get_stream`, `put`, `put_stream` (multipart),
+  `put_if` (conditional write, `S3Condition`), `head`, `delete` and `list`, with keys relative to
+  a store prefix (raw UTF-8 keys, stored as given; empty segments dropped; `.`/`..` segments and
+  ASCII control characters refused) and `S3Store::from_object_store` to test against an in-memory store. The `s3`
+  module re-exports `object_store` and `bytes` so consumers share the crate's versions. The Rhai
+  helpers `s3_get_yaml` and `s3_list_keys` are unchanged and are not a projection of `S3Store`.
+- **Typed S3 errors** (feature `s3`): `Error::S3(S3Error)`, with the stable codes `S3-001`
+  (not found), `S3-002` (already exists), `S3-003` (precondition failed) and `S3-004` (backend).
 
 ### Changed
 

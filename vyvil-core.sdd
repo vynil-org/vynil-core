@@ -481,7 +481,7 @@ Tasks:
     mesure `cargo tree -d` rejouée sur le crate sonde, puis la fermer ou la garder ouverte selon le
     développeur principal. Aucun changement de code ni de spec ailleurs.
 
-  [ ] Lot E — API Rust des clients de protocole et socle S3 pour filestore (décision du développeur principal
+  [x] Lot E — API Rust des clients de protocole et socle S3 pour filestore (décision du développeur principal
     2026-11-20 : « Rust first avec un mapping Rhai », avant la livraison 0.10.0, tout reste sur la branche du
     PR #59, aucune revue externe) : clôt par ses tâches jumelles ./src/http.sdd (GET async), ./src/feeds.sdd
     (`FeedClient`), ./src/query_client.sdd (sortie du statut interne, pont `run_blocking`),

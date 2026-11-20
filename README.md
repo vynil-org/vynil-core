@@ -100,6 +100,21 @@ hbs.engine_mut().register_helper("my_helper", Box::new(my_helper));
 let output = hbs.render(template_str, &data)?;
 ```
 
+## Rust API (async-first)
+
+The protocol clients are also usable from Rust, without going through Rhai. Each one is async.
+For `feeds`, `prometheus` and `loki`, the Rhai face is a synchronous projection of the same
+client; the `s3` Rhai helpers are separate and only read (see `docs/rhai_helpers.md`):
+
+- `feeds::FeedClient` (feature `feeds`): `read`, `poll`;
+- `prometheus::PrometheusClient` and `loki::LokiClient` (features `prometheus`, `loki`);
+- `s3::S3Store`, built from `s3::S3Config` (feature `s3`);
+- `http::RestClient::http_get_async` (feature `http`).
+
+The `object_store` and `bytes` crates are re-exported by the `s3` module
+(`vynil_core::s3::object_store`, `vynil_core::s3::bytes`), so a consumer uses the exact versions
+the crate was built with.
+
 ## What it does NOT include
 
 The vynil-specific layer stays in vynil: CRDs, `VynilContext`, `VynilPackage`, the instance

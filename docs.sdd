@@ -251,12 +251,14 @@ Tasks:
   [ ] ./README.md et les extraits `vynil-core = ...` de ./docs/ passent de `0.9` à `0.10` avec la livraison de
     ./vyvil-core.sdd (tâche « Livrer 0.10.0 », même commit).
 
-  [ ] Documenter l'API Rust des clients (lot E de ../vyvil-core.sdd, jumelle de ./src/feeds.sdd,
+  [x] Documenter l'API Rust des clients (lot E de ../vyvil-core.sdd, jumelle de ./src/feeds.sdd,
     ./src/prometheus.sdd, ./src/loki.sdd, ./src/s3.sdd et ./src/http.sdd, cochée dans le même commit que
     la dernière d'entre elles) : dans ./docs/rhai_helpers.md, chacune des sections `feeds`, `prometheus`,
     `loki`, `s3` gagne un paragraphe « Rust » qui nomme le client (`FeedClient`, `PrometheusClient`,
     `LokiClient`, `S3Store`), sa construction et ses méthodes `async`, avec un extrait `rust,ignore` de
-    quelques lignes et le renvoi explicite « la face Rhai est une projection synchrone de ce client » ;
+    quelques lignes et le renvoi explicite « la face Rhai est une projection synchrone de ce client »
+    (vrai pour `feeds`, `prometheus` et `loki` ; pour `s3` la page dit que les deux helpers de script ne
+    sont pas une projection de `S3Store`, dette de ./src/s3.sdd) ;
     ./README.md ajoute une courte section « Rust API (async-first) » qui liste les cinq clients et la
     ré-exportation de `object_store` (`vynil_core::s3::object_store`) ; la page ne contracte rien, en
     cas d'écart la spec du module fait foi (règle de cette spec).
