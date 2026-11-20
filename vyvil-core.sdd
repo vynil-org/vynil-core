@@ -425,14 +425,14 @@ Tasks:
     catalogue) ; cochée quand les quatre le sont. Pas de `s3_mock` (décision : aucun mock nouveau).
     Critère de clôture de l'issue : un même script écrit en noms qualifiés s'exécute sous
     `X_module` et sous `X_mock_module`, sans modification (scénario porté par chaque spec).
-  [ ] Exposer les features `feeds`, `query_client`, `prometheus` et `loki` dans ./Cargo.toml (issues #56
+  [x] Exposer les features `feeds`, `query_client`, `prometheus` et `loki` dans ./Cargo.toml (issues #56
     et #57), selon le `Must` ci-dessus, ajouter la dépendance `feed-rs` (version stable mesurée à
     l'implémentation) ; vérifier `cargo hack check --each-feature --no-dev-deps` et son pendant clippy,
     plus `cargo test --all-features`. Jumelle de ./src/feeds.sdd, ./src/query_client.sdd,
     ./src/prometheus.sdd, ./src/loki.sdd (une tâche chacune pour son module), de ./src/lib.sdd
     (déclarations, table de doc des features, variantes d'erreur) et de ./tooling.sdd (portes), cochée
     dans le même commit que la dernière de celles-là.
-  [ ] Reprendre la batterie pour les trois portes neuves `--no-default-features --features feeds`,
+  [x] Reprendre la batterie pour les trois portes neuves `--no-default-features --features feeds`,
     `... --features prometheus` et `... --features loki` (test, et clippy `--all-targets -- -D
     warnings`) : ./AGENTS.md (liste de commandes et phrase des combinaisons explicites) et
     ./.opencode/agents/validator.md, sous la main de cette spec seule. Jumelles de la tâche de

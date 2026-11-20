@@ -77,13 +77,13 @@ Handles:
     `labels` est la map vide. Un `limit` supérieur à `max_lines` est ramené à `max_lines`.
 
 Tasks:
-  [ ] Spec approuvée, puis tests depuis les `Scenario`, puis implémentation minimale de ./loki.rs et
+  [x] Spec approuvée, puis tests depuis les `Scenario`, puis implémentation minimale de ./loki.rs et
     ./loki_mock.rs. Portes : `cargo test --no-default-features --features loki` (porte désignée,
     jumelle de ../tooling.sdd) et `--all-features`.
-  [ ] Jumelle de ./query_client.sdd et de ../vyvil-core.sdd : feature `loki` dans ../Cargo.toml.
-  [ ] Jumelle de ./lib.sdd : déclarer `loki` et `loki_mock`.
-  [ ] Jumelle de ../docs.sdd : documenter le module d'hôte `loki` et le mock.
-  [ ] Décision à confirmer à la relecture : `t` en ms (Loki en ns) conforme à l'issue ; les égalités
+  [x] Jumelle de ./query_client.sdd et de ../vyvil-core.sdd : feature `loki` dans ../Cargo.toml.
+  [x] Jumelle de ./lib.sdd : déclarer `loki` et `loki_mock`.
+  [x] Jumelle de ../docs.sdd : documenter le module d'hôte `loki` et le mock.
+  [x] Décision à confirmer à la relecture : `t` en ms (Loki en ns) conforme à l'issue ; les égalités
     d'une même milliseconde sont tolérées pour les lignes, contrairement aux points de métriques.
 
 Scenario: requête de plage nominale

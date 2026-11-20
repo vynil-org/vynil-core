@@ -23,7 +23,9 @@ References:
   ./semver.sdd — @struct-Semver ré-exporté ; ./engine.sdd — @struct-Script ; ./hbs.sdd —
     @struct-HandleBars et le module privé ./hbs_json ; ./k8s.sdd — @fn-update_cache ;
   ./chrono.sdd, ./hashes.sdd, ./password.sdd, ./yaml.sdd, ./key.sdd, ./glob.sdd, ./http.sdd
-    (avec son mock ./http_mock.sdd via ./http.sdd), ./oci.sdd, ./s3.sdd, ./shell.sdd — tous
+    (avec son mock ./http_mock.sdd via ./http.sdd), ./oci.sdd, ./s3.sdd, ./shell.sdd,
+    ./feeds.sdd (avec son mock ./feeds_mock.sdd via ./feeds.sdd), ./query_client.sdd,
+    ./prometheus.sdd et ./loki.sdd (avec leurs mocks via leurs specs) — tous
     déclarés ici ;
   ../Cargo.toml — la table `default` (http/crypto/rhai/hbs/hbs-scripting) ; toutes les
     features du manifest, chacune énumérée dans la table de doc des features de ./lib.rs avec
@@ -241,7 +243,7 @@ Handles:
     @core::convert::From dérivés par thiserror (7 non gated, 14 gated).
 
 Tasks:
-  [ ] Déclarer les modules et variantes des clients de protocole (issues #56 et #57) : dans ./lib.rs,
+  [x] Déclarer les modules et variantes des clients de protocole (issues #56 et #57) : dans ./lib.rs,
     `pub mod feeds;`, `feeds_mock`, `query_client`, `prometheus`, `prometheus_mock`, `loki`, `loki_mock`
     sous leurs gates et `doc(cfg)` ; variantes @variant-Error::FeedInvalid, @variant-Error::FeedCursor
     et @variant-Error::Query avec leurs Display (`FEED-001`, `FEED-002`, `QUERY-xxx`), tests des Display sous

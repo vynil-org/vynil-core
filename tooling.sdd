@@ -76,7 +76,7 @@ Must:
     en lint. C'est aussi, explicitement, ce qui laisse `surface_without_features` hors de tout lint.
   Compter dans les combinaisons testées les huit runs de tests que la matrice explicite ne
     couvrait pas : `--no-default-features` seul (porte où `rhai` est éteinte, donc où le seam de
-    la racine `surface_without_features` de `src/lib.sdd` et les 15 Display non gated sont
+    la racine `surface_without_features` de `src/lib.sdd` et les 16 Display non gated sont
     réellement exécutés — mesuré : ils le sont aussi sous `hbs`, `crypto` et `hbs,crypto`, cette
     porte n'est pas exclusive, elle est la plus étroite) ; `--no-default-features --features hbs` seul (seule porte qui joue
     le graphe `hbs` sans `rhai` et tient donc l'invariant d'isolabilité de l'issue #9 en
@@ -294,7 +294,7 @@ Tasks:
     `quantity` » de ./vyvil-core.sdd et de la tâche de ./.github/workflows/workflows.sdd, cochée dans
     le même commit.
 
-  [ ] Ajouter les portes `--no-default-features --features feeds`, `... --features prometheus` et `... --features
+  [x] Ajouter les portes `--no-default-features --features feeds`, `... --features prometheus` et `... --features
     loki` à la batterie (test et clippy `--all-targets -- -D warnings`) : chacune joue les verrous de son
     module sous sa seule feature (le graphe `http`+`rt`+`rhai` qu'elle implique, sans `default`), et la
     porte `prometheus` comme la porte `loki` jouent ensemble les verrous du noyau `query_client`, qui n'a

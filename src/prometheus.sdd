@@ -91,14 +91,14 @@ Handles:
     Prometheus nu : même sortie (le préfixe est de la config hôte).
 
 Tasks:
-  [ ] Spec approuvée, puis tests depuis les `Scenario`, puis implémentation minimale de ./prometheus.rs
+  [x] Spec approuvée, puis tests depuis les `Scenario`, puis implémentation minimale de ./prometheus.rs
     et ./prometheus_mock.rs. Portes : `cargo test --no-default-features --features prometheus` (porte
     désignée, jumelle de ../tooling.sdd) et `--all-features`.
-  [ ] Jumelle de ./query_client.sdd et de ../vyvil-core.sdd : feature `prometheus` dans ../Cargo.toml.
-  [ ] Jumelle de ./lib.sdd : déclarer `prometheus` et `prometheus_mock`.
-  [ ] Jumelle de ../docs.sdd : documenter le module d'hôte `prometheus` (enregistrement, forme de
+  [x] Jumelle de ./query_client.sdd et de ../vyvil-core.sdd : feature `prometheus` dans ../Cargo.toml.
+  [x] Jumelle de ./lib.sdd : déclarer `prometheus` et `prometheus_mock`.
+  [x] Jumelle de ../docs.sdd : documenter le module d'hôte `prometheus` (enregistrement, forme de
     sortie, erreurs) et le mock.
-  [ ] Fixtures communes : un jeu de fixtures de séries partagé avec vanyline vérifie l'alignement avec son
+  [x] Fixtures communes : un jeu de fixtures de séries partagé avec vanyline vérifie l'alignement avec son
     type `timeseries` (côté vynil-core : un test sur la forme ; côté vanyline : hors de ce dépôt).
 
 Scenario: requête instantanée et requête de plage nominales

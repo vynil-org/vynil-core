@@ -238,7 +238,7 @@ Tasks:
     (`http::get_yaml`, `http::json_subset` et `http::json_equal` absentes du double). Jumelle de
     ./src/http.sdd, ./src/k8s.sdd, ./src/oci.sdd et de ./vyvil-core.sdd (tâche « Jumeaux module des trois
     doubles »), cochée dans le même commit que la dernière d'entre elles.
-  [ ] ./docs/rhai_helpers.md et ./README.md : documenter les features `feeds`, `prometheus` et `loki` (issues
+  [x] ./docs/rhai_helpers.md et ./README.md : documenter les features `feeds`, `prometheus` et `loki` (issues
     #56 et #57) — une section numérotée par module dans la page des helpers (enregistrement, signatures,
     formes de sortie, erreurs à code stable `FEED-00x` / `QUERY-00x`, curseur de `feed_poll` rendu opaque),
     pour `prometheus` et `loki` la phrase de principe « l'hôte configure, le script interroge » et

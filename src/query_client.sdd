@@ -15,6 +15,9 @@ Purpose:
 
 Owns:
   ./query_client.rs
+  ../tests/query_client_wall_clock.rs — verrou wall-clock du `Must` délai (binaire de test,
+    feature interne `query_client`, précédent d'attribution : `../tests/rt_block_on_public.rs`
+    de ./rt.sdd)
 
 References:
   ./http.sdd — @crate::http::RestClient : le client sait déjà poser bearer, basic, mTLS, CA du
@@ -112,25 +115,25 @@ Tasks:
     ./query_client.rs. Pas de porte nommée propre (décision de cette spec : la feature `query_client`
     est interne, sans consommateur seule) : les verrous du noyau tournent sous les portes
     `prometheus` et `loki` de ../tooling.sdd, et `cargo hack --each-feature` la compile et la lint.
-  [ ] Jumelle de ../vyvil-core.sdd : features `query_client`, `prometheus`, `loki` dans ../Cargo.toml.
-    Fait en date : seule `query_client` est ajoutée — `prometheus` et `loki` voyagent avec leurs
-    modules (cochage définitif de la face vyvil-core.sdd avec la dernière des specs concernées).
+  [x] Jumelle de ../vyvil-core.sdd : features `query_client`, `prometheus`, `loki` dans ../Cargo.toml.
+    État produit : les trois lignes sont au manifest — `query_client = ["http", "rt", "rhai"]`
+    (interne), `prometheus = ["query_client"]` et `loki = ["query_client"]`.
   [x] Arbitrages du développeur principal (2026-11-18), consignés au contrat : verrous structurels
     acceptés pour « sans requête réseau » (pureté de @crate::query_client::resolve_step + port
     invalide) et « mémoire bornée » (lecture chunk par chunk, borne du rendu) ; reclassement
     wall-clock du délai de connexion accepté ci-dessus (`Must` délai) ; le `Debug` de
     @crate::query_client::QueryClientConfig affiche `base_url` en clair — une URL à identifiants
     n'est pas le cas nominal (l'auth passe par @crate::query_client::QueryAuth), hors périmètre.
-  [ ] Appliquer `max_series` à la porte du noyau (amendement `Must` plafonds du 2026-11-19,
+  [x] Appliquer `max_series` à la porte du noyau (amendement `Must` plafonds du 2026-11-19,
     arbitré pour débloquer le Scenario « dépassement de plafond » de ./prometheus.sdd) : le
     plafond de séries devient une borne du noyau, plus un `element_limit` apporté par l'appelant.
     Débloque le test `#[ignore]` de ./prometheus.rs ; verrou propre ajouté dans ./query_client.rs.
-  [ ] Exposer @crate::query_client::QueryClient::limits (arbitrage du développeur principal
+  [x] Exposer @crate::query_client::QueryClient::limits (arbitrage du développeur principal
     2026-11-19, face lecture seule de « l'hôte configure ») : vue `&QueryLimits` pour que les
     connecteurs calculent le leur des plafonds de paramètres de requête (le `limit` de
     ./loki.sdd) ; jamais exposée au script. Débloque le Scenario « limite et direction » de
     ./loki.sdd.
-  [ ] Jumelle de ./lib.sdd : déclarer `query_client`, ajouter @variant-Error::Query.
+  [x] Jumelle de ./lib.sdd : déclarer `query_client`, ajouter @variant-Error::Query.
   [x] Décision confirmée (2026-11-18) : délai par @tokio::time::timeout autour du flux, plutôt que
     de rendre `DEFAULT_TIMEOUT` de ./http.rs configurable (ce qui changerait le contrat de ./http.sdd).
   [-] Question tranchée (2026-11-18) : requête à URL très longue (PromQL/LogQL volumineux) — GET
