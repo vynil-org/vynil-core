@@ -57,6 +57,22 @@ script module being a thin synchronous projection of it), a Rust client for S3 o
   by decision: `rhai` 1.27 pulls the crate itself, so it is not fixable from here.
 - The documentation examples `vynil-core = ...` now show `0.10`.
 
+### Breaking changes
+
+- **`Error` gains variants** — and it is not `#[non_exhaustive]`, so a `match` on `Error` without a
+  wildcard arm stops compiling until the arm is added. Each new variant exists only when its feature
+  is enabled: `Error::S3` (feature `s3`, existing), `Error::Query` (feature `query_client`, pulled in
+  by the new `prometheus` and `loki`), `Error::FeedInvalid` and `Error::FeedCursor` (the new
+  feature `feeds`). A consumer that enables none of these features sees no change.
+- Nothing else breaks: no public signature is removed or changed, no item of the test doubles
+  (`http_mock`, `k8s_mock`, `oci_mock`) is removed, and the two Rhai helpers `s3_get_yaml` and
+  `s3_list_keys` keep their exact behaviour, key handling included. The `oci-client` 0.15 → 0.18
+  bump re-exports the same `OciRegistryAuth` (`RegistryAuth` is identical in both versions), and
+  `reqwest` stays on 0.12 for `RestClient`. Error *texts* coming from `object_store` and `oci-client`
+  may differ.
+- **Migrating**: from 0.9.1, no source change is needed unless a `match` on `Error` is exhaustive
+  while `s3` is enabled. From 0.8.x, read the breaking changes of 0.9.0 and 0.9.1 below first.
+
 ## 0.9.1
 
 A consolidation of the 0.9.0 surface: the Rhai registrars are regrouped by domain into a
