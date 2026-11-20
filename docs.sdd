@@ -81,6 +81,17 @@ Scenario: un comportement vu de l'utilisateur n'est nulle part documenté
     taisaient le refus des mots de passe de `72` octets et passent pour incomplètes
 
 Tasks:
+  [ ] Reprendre les six snippets `register_static_module` qui appellent `Vynil::new()` sans
+    `.into()` — les listes `prometheus`/`loki`/`feeds` y sont présentées sur un type qui n'a pas
+    ces méthodes ; remplacer par `Vynil::from(TestEngine::new())` comme dans
+    `examples/rhai_prometheus.rs:30` (désignation du lot de reprise : `docs/rhai_query.md:17`,
+    idem `rhai_helpers.md`, `mocking.md`). Mesure à l'inscription sur CE dépôt : rien de tout cela
+    n'existe ici — pas de `./docs/rhai_query.md` (trois pages seulement), pas de `./examples/`,
+    pas de type `Vynil`, et les douze snippets `register_static_module` des trois pages de
+    `./docs/` passent par `vynil_core::Script::new_bare` puis `script.engine`, API correcte. La
+    dette désignée est donc celle de la face dépôt parent (`vynil`), hors de l'`Owns` de cette
+    spec : inscription conservée pour trace, à close par un arbitrage du développeur principal
+    (transfert vers la spec du parent, ou preuve de snippets fautifs ici).
   [x] ./README.md : les trois extraits de dépendance passent de `0.7` à `0.8` avec la livraison
     de ./vyvil-core.sdd (tâche « Livrer 0.8.0 », même commit).
   [x] ./docs/handlebars_helpers.md : documenter @crate::hbs::HandleBars::new_restricted (issue

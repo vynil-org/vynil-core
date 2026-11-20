@@ -156,6 +156,18 @@ Scenario: exemption en test
   Then aucun warning de la famille stricte n'est émis pour ce module
 
 Tasks:
+  [ ] Reprendre les phrases descriptives des combinaisons de la batterie (ce fichier — énumérations
+    « qui portent un sens » des `Must`/`Accepts` et compteurs de runs —, les commentaires et
+    `name:` de ./.github/workflows/test.yml, la liste de commandes de ./AGENTS.md et la batterie de
+    ./.opencode/agents/validator.md) : là où elles nomment encore `rhai` nu et s'arrêtent à
+    `rhai,password`, `rt` et `rhai,quantity` accompagnent désormais `rhai` dans la batterie jouée
+    (mesure à l'inscription : les deux faces de `rhai,quantity` — test et clippy — et la porte `rt`
+    sont bien jouées par test.yml, AGENTS.md et validator.md, que `--each-feature` ne joue pas en
+    test ; ce sont les phrases descriptives de ce fichier et certains commentaires de test.yml qui
+    restent à jour en retard, plus les compteurs « huit runs »/« quatorze runs » devenus faux).
+    Vérifier au passage si une face `rhai,rt` a un verrou propre à jouer — mesure à l'inscription :
+    aucun `all(test, rhai, rt)` dans ./src (le module `cancel` est sous `any(rhai, rt)`, joué sur
+    les deux portes séparées), la face ne s'inscrit donc que si un verrou naît sous `rhai,rt`.
   [x] Basculer la famille strict `deny` module par module à mesure que la dette est purgée.
   [x] Basculer `pedantic`/`cargo` en `deny` quand la crate est à zéro warning.
   [x] Remettre `cargo clippy --all-features --all-targets -- -D warnings` dans la CI quand

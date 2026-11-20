@@ -84,7 +84,12 @@ assert_eq!(out, "Hello world!");
 //! `shell_*` (feature `shell`), and `Registry` (feature `oci`).
 //! Never injected by `new_bare`, even with every feature enabled: `s3_*`, `RestClient`
 //! and `k8s_*` are registered only on the caller's consent — `s3_rhai_register`,
-//! `http_rhai_register` and the `k8s_rhai_register` registrar.
+//! `http_rhai_register` and the `k8s_rhai_register` registrar. The same holds for the four
+//! `feeds_*` entry points (`feeds_rhai_register`, `feeds_module`, `feeds_mock_rhai_register`,
+//! `feeds_mock_module`, feature `feeds`) and for the `query` / `query_range` family served by
+//! the host modules of features `prometheus` and `loki` (`prometheus_module`, `loki_module`
+//! and their mock twins): the host registers those with `register_static_module`, under the
+//! name it chooses — never `new_bare`.
 //!
 //! Scripts also get `assert` and `import_run` / `import_template` shims for optional imports.
 //!

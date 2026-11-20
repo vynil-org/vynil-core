@@ -155,8 +155,9 @@ Must:
     `[package.metadata.docs.rs]` de ../Cargo.toml ; l'exemption `cfg(test)` (10 lints de la
     famille panic/unwrap/print/arithmétique, l.93-107) — mécanisme contractualisé par
     ./tooling.sdd, référencé ici.
-  La doc de crate est la carte du crate : statut API instable avant 1.0, table des 11
-    features miroir exact du manifest, doctest « Client identity » en fence `rust` NON gate
+  La doc de crate est la carte du crate : statut API instable avant 1.0, table des 18
+    features miroir exact du manifest (dix-huit features nommées hors `default`, mesuré à la
+    reprise du lot B), doctest « Client identity » en fence `rust` NON gate
     (compile sans aucune feature) qui exige les ré-exports @fn-set_client_name et
     @fn-client_name_is_set racine, et doctest « Quick start » gate a la source par
     `#![cfg_attr(all(feature = "rhai", feature = "hbs"), doc = ...)]` : son TITRE et son bloc sont
@@ -266,7 +267,7 @@ Tasks:
     @fn-error_chain (chaîne pleine trois niveaux, effondrement du doublon verbatim, feuille
     seule, absence de faux positif sur cause distincte, terminaison cyclique bornée, plafond de
     32 sources avec « … ») qui verrouillent les cinq Scenario de la fonction. Couverts depuis :
-    les 31 Display (assertions de texte des 15 non gated et des 16 gated, dans les modules
+    les 32 Display (assertions de texte des 16 non gated et des 16 gated, dans les modules
     `display_*` gated exécutés sur chaque porte de la batterie), la surface compilable à
     `--no-default-features` (module de test `surface_without_features`, gate `not(rhai)`, avec
     @variant-Error::RawHTTP et @variant-Error::UnsupportedMethod sans la feature `http`), le 3ᵉ champ caché
