@@ -26,8 +26,13 @@ Must:
   Rester une crate générique sans logique métier d'un consommateur particulier.
   Exiger la configuration explicite de l'identité client par le consommateur via
     @set_client_name, sans aucun fallback embarqué.
-  Garder les features `k8s`, `oci`, `s3`, `http` impliquant `rhai` : leurs types cœur sont des
-    API Rhai directes, pas une API Rust séparée avec wrapper.
+  Garder les features `k8s`, `oci`, `s3`, `http` impliquant `rhai` (décision du développeur
+    principal 2026-11-20 : tous les consommateurs mappent du Rhai, pas de découplage), MAIS
+    concevoir RUST D'ABORD : un module réseau expose un client Rust public, `async fn` d'abord,
+    et sa face Rhai n'en est qu'une projection fine et synchrone par-dessus (`rt::block_on`, ou
+    appel direct d'un noyau sync). Les modules antérieurs à cette règle (`k8s`, `oci`, `http`,
+    `s3`) y sont ramenés lot après lot, jamais en bloc ; les clients neufs (`feeds`,
+    `prometheus`, `loki`, `s3`) le sont dès le lot E.
   Garder `hbs-scripting` isolable de `hbs` : `hbs` seul ne doit jamais réintroduire
     `handlebars/script_helper` (donc `rhai` ni `smartstring`) dans le graphe de dépendances
     (https://github.com/vynil-org/vynil-core/issues/9).
@@ -475,6 +480,20 @@ Tasks:
     (reste `getrandom` 0.2/0.3/0.4 et `syn`, d'origine amont). Poster le commentaire qui le dit, avec la
     mesure `cargo tree -d` rejouée sur le crate sonde, puis la fermer ou la garder ouverte selon le
     développeur principal. Aucun changement de code ni de spec ailleurs.
+
+  [ ] Lot E — API Rust des clients de protocole et socle S3 pour filestore (décision du développeur principal
+    2026-11-20 : « Rust first avec un mapping Rhai », avant la livraison 0.10.0, tout reste sur la branche du
+    PR #59, aucune revue externe) : clôt par ses tâches jumelles ./src/http.sdd (GET async), ./src/feeds.sdd
+    (`FeedClient`), ./src/query_client.sdd (sortie du statut interne, pont `run_blocking`),
+    ./src/prometheus.sdd (`PrometheusClient`), ./src/loki.sdd (`LokiClient`), ./src/s3.sdd (`S3Config`, `S3Store`,
+    flux, multipart, conditionnel, ré-exportation d'@object_store), ./src/lib.sdd (`Error::S3`, rustdoc),
+    ./docs.sdd (documentation). Architecture « hybride » actée : `feeds` en vrai async, `prometheus` /
+    `loki` en façade `spawn_blocking` sur le noyau synchrone (sa réécriture en async est une dette
+    ultérieure, sans casse d'API) ; pas de découplage de `rhai` ; URL pré-signées et doubles Rust des clients
+    HORS lot (à ouvrir à la demande de miryad-core). Aucune nouvelle feature ni porte de CI : les tests
+    tournent sous les portes `feeds`, `prometheus`, `loki`, `s3` et `--all-features` existantes. À la clôture,
+    ./CHANGELOG.md (section 0.10.0, déjà posée) reçoit les clients Rust et `S3Store` sous `Added` et la
+    ligne « `query_client` n'est plus interne » ; la tâche « Livrer `0.10.0` » ci-dessus ne se coche qu'après.
 
 Done when:
   Chaque fichier de `src/` est couvert par une spec revue (`Owns` groupé admis pour les mocks),

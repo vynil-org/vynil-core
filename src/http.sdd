@@ -567,6 +567,19 @@ Tasks:
     « le registre des 31 noms » (compte de l'enregistreur 31, du jumeau moins les alias) et
     « http_module équivaut à http_rhai_register ». Jumelle de la tâche de ../vyvil-core.sdd.
 
+  [ ] GET asynchrone (lot E de ../vyvil-core.sdd, décision du développeur principal 2026-11-20 « Rust
+    first », jumelle de ./feeds.sdd) : ajouter `pub async fn http_get_async(&mut self, path: &str) ->
+    crate::Result<reqwest::Response>` à @crate::http::RestClient. Même construction du client, mêmes
+    en-têtes, mêmes erreurs (@variant-Error::ReqwestError), même `debug!`, SANS `rt::block_on`.
+    `http_get` devient la mince enveloppe synchrone de la même fonction (`rt::block_on` de
+    `http_get_async`, résultat aplati) : son contrat observable (messages, erreur explicite sur runtime
+    `current_thread`, annulation par jeton) ne change pas et ses tests actuels sont le verrou. Seul le
+    GET passe en async : les autres verbes restent synchrones (à ouvrir quand un consommateur le
+    demande). Tests d'abord : sous `#[tokio::test(flavor = "multi_thread")]`, `http_get_async` rend les
+    mêmes statut et corps que `http_get` sur un même faux serveur ; sous `#[tokio::test]`
+    (`current_thread`), `http_get_async` répond alors que `http_get` rend l'erreur contractée.
+    Reprendre `Exposes` et `Purpose` à la clôture.
+
 Scenario: http par défaut mais jamais auto-wired
   Given la crate en default (`http` y est, ./Cargo.toml ligne 50) et un
     @crate::engine::Script::new_bare
@@ -795,3 +808,12 @@ Scenario: fonctions documentées sous metadata (http)
     que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
     une signature sans retour
   And sans la feature, les mêmes tests de comportement passent sans différence
+
+
+
+Scenario: http_get_async fonctionne là où http_get refuse
+  Given un faux serveur répondant 200 et un corps connu
+  When `http_get_async` est attendu sous un runtime tokio `current_thread`
+  Then la réponse porte le statut et le corps du serveur
+  When `http_get` est appelé sous le même runtime
+  Then il rend l'erreur explicite `requires a multi-thread tokio runtime`, sans panique, comme avant

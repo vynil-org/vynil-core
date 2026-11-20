@@ -135,6 +135,23 @@ Tasks:
   [x] Décision à confirmer à la relecture : dates en `i64` ms UTC plutôt qu'un type de date (le
     module `chrono` ne sait ni parser ni construire un instant passé, seulement `date_now`).
 
+  [ ] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first ») : ajouter
+    @crate::feeds::FeedClient, `Clone`, construit par `FeedClient::new()` (client HTTP par défaut) ou
+    `FeedClient::with_rest_client(template: @crate::http::RestClient)` : l'hôte y pose en-têtes
+    d'authentification, CA du serveur, mTLS ; l'URL de base du modèle est IGNORÉE, chaque appel clone
+    le modèle et le pointe sur l'origine du flux demandé. Méthodes `pub async fn read(&self, url: &str,
+    since: Option<i64>) -> crate::Result<Vec<FeedEntry>>` et `pub async fn poll(&self, url: &str,
+    cursor: &FeedCursor) -> crate::Result<FeedPollResult>` : mêmes sémantiques et mêmes erreurs que
+    `feed_read` / `feed_poll`, SANS `rt::block_on` (fetch par `RestClient::http_get_async`, tâche
+    jumelle de ./http.sdd, corps par `Response::bytes().await`). `feed_read`, `feed_poll` et les faces
+    Rhai restent les enveloppes synchrones du même noyau. Découpage imposé : la logique pure après le
+    fetch (parse, filtre `since`, diff `seen`, nouveau curseur) est UNE fonction synchrone partagée ;
+    seul le fetch diffère — `fetch_live` est `async`, la branche `Fixtures` du mock reste une fonction
+    synchrone distincte (un double n'appelle jamais `block_on` : le mock reste sans tokio). Le `Debug` de
+    `FeedClient` n'affiche aucun en-tête du modèle (`<redacted>`, le `Debug` dérivé de `RestClient` les
+    imprimerait). Tests d'abord depuis les Scenario « FeedClient » ci-dessous. Reprendre `Purpose`,
+    `Exposes` et `Must` à la clôture.
+
 Scenario: Atom et RSS 2.0 donnent les mêmes FeedEntry
   Given un flux Atom et un flux RSS 2.0 décrivant les mêmes deux entrées
   When `feed_read(url, ())` lit chacun
@@ -204,6 +221,25 @@ Scenario: fonctions documentées sous metadata (feeds)
   When l'introspection de l'engine liste les fonctions de `feeds`
   Then chacune porte son commentaire `///`, les noms de ses paramètres et son type de retour
     (règle de ../vyvil-core.sdd)
+
+
+Scenario: FeedClient lit sans bloquer le runtime
+  Given un faux serveur servant un flux Atom et un runtime tokio `current_thread`
+  When `FeedClient::new().read(url, None).await` est attendu
+  Then les entrées sont celles que `feed_read` rend sur un runtime multi-thread, sans erreur
+
+Scenario: FeedClient::poll équivaut à feed_poll
+  Given un serveur de fixture servant un flux avec `ETag: "a"`
+  When `FeedClient::poll(url, &FeedCursor::default())` puis `poll(url, &r.cursor)` sont attendus
+  Then le premier rend `PollStatus::New`, le second `PollStatus::NotModified` et un curseur égal ; les
+    mêmes appels via `feed_poll` rendent les mêmes valeurs
+
+Scenario: le modèle de client porte l'authentification et ne la divulgue pas
+  Given un `RestClient` modèle portant `add_header_bearer("s3cr3t")` passé à `with_rest_client`
+  When `read` interroge un faux serveur qui consigne les en-têtes reçus
+  Then la requête porte `Authorization: Bearer s3cr3t`
+  And ni le `Debug` du `FeedClient`, ni aucun message d'erreur (flux invalide, 500, injoignable) ne
+    contient `s3cr3t`
 
 Done when:
   Chaque Scenario est un test vert, la batterie complète de ../tooling.sdd passe (portes `feeds` et

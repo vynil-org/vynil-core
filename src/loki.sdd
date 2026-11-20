@@ -86,6 +86,19 @@ Tasks:
   [x] Décision à confirmer à la relecture : `t` en ms (Loki en ns) conforme à l'issue ; les égalités
     d'une même milliseconde sont tolérées pour les lignes, contrairement aux points de métriques.
 
+  [ ] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first », architecture
+    « hybride », jumelle de ./prometheus.sdd) : ajouter @crate::loki::LokiClient, `Clone`, construit par
+    `LokiClient::new(client: @crate::query_client::QueryClient)`, avec `pub async fn query_range(&self,
+    expr: &str, start_ms: i64, end_ms: i64, limit: usize, direction: Direction) ->
+    crate::Result<LogsResult>` et l'énum publique @crate::loki::Direction (`Forward`, `Backward`,
+    `Debug`/`Clone`/`Copy`/`PartialEq`, `as_str` rendant `"forward"` / `"backward"`). Même refactor que
+    ./prometheus.sdd : une fonction synchrone pure `query_range_sync` porte l'URL, le noyau et la
+    normalisation ; la face Rhai garde la validation de ses `Dynamic` avec les mêmes messages ; la méthode
+    async passe par `run_blocking`. `limit == 0` et `end_ms < start_ms` rendent @variant-Error::Other, avant
+    tout réseau ; un `limit` supérieur à `max_lines` est ramené à `max_lines` (comme la face Rhai).
+    Tests d'abord depuis les Scenario « LokiClient » ci-dessous. Reprendre `Purpose`, `Exposes` et `Must`
+    à la clôture.
+
 Scenario: requête de plage nominale
   Given un faux Loki servant deux flux de trois lignes
   When le script appelle `query_range("{app=\"x\"}", s, e, 100, "backward")`
@@ -127,6 +140,19 @@ Scenario: sans la feature loki, rien n'existe
 Scenario: fonctions documentées sous metadata (loki)
   Given la feature `metadata` active
   Then `query_range` porte commentaire `///`, noms de paramètres et type de retour
+
+
+Scenario: LokiClient rend la même forme normalisée que le module de script
+  Given un faux serveur Loki servant deux flux
+  When `LokiClient::query_range` est attendu puis le script appelle `query_range` sur le même serveur
+  Then le `LogsResult` Rust égale la conversion en map du résultat de script
+
+Scenario: LokiClient plafonne la limite et refuse une entrée invalide
+  Given `max_lines = 100` côté hôte
+  When `query_range` est attendu avec `limit = 10_000`
+  Then la requête reçue par le serveur porte `limit=100`
+  When il est attendu avec `limit = 0`, ou avec `end_ms < start_ms`
+  Then l'erreur est `Error::Other` et aucune requête n'est partie
 
 Done when:
   Chaque Scenario est un test vert, la batterie de ../tooling.sdd passe (porte `loki` et

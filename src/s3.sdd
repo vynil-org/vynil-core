@@ -110,9 +110,11 @@ Must not:
     n'enregistre ni `s3_get_yaml` ni `s3_list_keys`, même crate compilée avec `s3` ; sous
     `s3` sans enregistrement manuel, les deux noms sont inconnus de l'engine (erreur Rhai de
     function-not-found à l'appel).
-  Accepter un store injectable par la face publique : `build_store` est privé, cablé sur S3
-    seul, aucun paramètre @object_store::ObjectStore public, aucun `set_store`, aucun jumeau
-    `s3_mock` (les fonctions internes prenant un store ne servent qu'aux tests).
+  Accepter un store injectable par les DEUX FONCTIONS DE SCRIPT `s3_get_yaml` / `s3_list_keys` :
+    leur `build_store` reste privé et cablé sur S3 seul, aucun jumeau `s3_mock`. Seule la face
+    Rust @crate::s3::S3Store (tâches du lot E ci-dessous, décision 2026-11-20) accepte un
+    @object_store::ObjectStore injecté (`from_object_store`) : c'est la seam de test des
+    consommateurs, avec @object_store::memory::InMemory.
   Remonter @variant-Error::UTF8, @variant-Error::YamlError ou @variant-Error::SerializationError
     depuis @crate::s3::s3_list_keys : le listing ne lit ni ne parse aucun octet ; le contenu
     des objets listés est totalement indifférent (YAML invalide ou binaire non-UTF8 listent
@@ -125,7 +127,9 @@ Must not:
   Laisser passer une clé concaténée sans séparateur (`pk`) ou avec double `/` : la jonction
     de @crate::s3::s3_get_yaml est toujours normalisée.
   Exposer `build_store`, les imports ou le module de tests : la face `pub` du module est
-    exactement les quatre items contractés plus bas.
+    exactement les quatre items de script contractés plus bas, plus la face Rust du lot E
+    (@crate::s3::S3Config, @crate::s3::S3Store et leurs types associés, tâches ci-dessous) et la
+    ré-exportation de @object_store.
 
 Depends on:
   object_store — @object_store::aws::AmazonS3Builder, le trait @object_store::ObjectStore
@@ -160,8 +164,9 @@ Exposes:
     décision du 2026-11-06 (règle des noms de ../vyvil-core.sdd) : les deux fonctions libres prennent des noms courts, qualifiés seulement (`s3::get_yaml`
     pour `s3_get_yaml`, `s3::list_keys` pour `s3_list_keys`). L'enregistreur garde les noms
     historiques dans l'espace global, inchangé pour ses appelants.
-  Rien de plus : `build_store` reste privée, aucun type, aucune constante, aucun variant
-    @Error propre ; aucun nom Rhai homophone (`s3_get`, `list_keys`) n'existe.
+  Rien de plus, AVANT le lot E : `build_store` reste privée, aucun type, aucune constante, aucun
+    variant @Error propre ; aucun nom Rhai homophone (`s3_get`, `list_keys`) n'existe. Le lot E
+    ajoute la face Rust (tâches ci-dessous) et reprend cette phrase à la clôture.
 
 Accepts:
   6 ou 7 @std::string::String selon la fonction, toutes valeurs acceptées dont la chaîne
@@ -253,6 +258,56 @@ Tasks:
   [x] Noms courts du jumeau (décision du 2026-11-06) : `s3_module` pose `get_yaml` et `list_keys` (libres,
     qualifiées seulement) ; `s3_rhai_register` garde `s3_get_yaml` et `s3_list_keys`. Jumelle de la
     tâche de ../vyvil-core.sdd.
+
+  [ ] Socle Rust d'un filestore (lot E de ../vyvil-core.sdd, décision 2026-11-20 : miryad-core bâtit un
+    filestore sur S3 ; la face Rhai ne change pas) — configuration et opérations de base, `async fn` :
+    - ré-exporter la dépendance : `pub use object_store;` dans ./s3.rs, pour que le consommateur emploie
+      EXACTEMENT la même version que la crate (jamais deux versions d'@object_store dans son graphe) ;
+    - @crate::s3::S3Config : `#[derive(Clone, Default)]`, champs publics `bucket: String`, `region: String`,
+      `endpoint: Option<String>` (`Some` = store S3-compatible, `allow_http` posé comme `build_store` le
+      fait aujourd'hui), `credentials: Option<S3Credentials>` (`None` = chaîne de credentials par défaut),
+      `prefix: String` ; @crate::s3::S3Credentials `{ access_key, secret_key }`. Le `Debug` de l'un et
+      de l'autre masque les secrets (`<redacted>`), jamais de secret dans un message d'erreur ;
+    - @crate::s3::S3Store : `Clone`, `Debug`, construit par `S3Store::new(config: S3Config) ->
+      crate::Result<Self>` (construction PARTAGÉE avec `build_store`, qui devient une fine fonction sur
+      la config ; mêmes règles, la sonde « bucket vide → build Ok » est inchangée) ou par
+      `S3Store::from_object_store(store: Arc<dyn ObjectStore>, prefix: impl Into<String>) -> Self`
+      (seam de test des consommateurs avec `InMemory`) ; accesseurs `object_store()` (`&Arc<dyn
+      ObjectStore>`, échappatoire) et `prefix()` ;
+    - clés : toutes les clés passées au store et rendues par lui sont RELATIVES au `prefix` du store,
+      jointes par la jonction normalisée existante (un seul `/`, jamais de double) ; `list` rend les clés
+      relatives (le préfixe du store est retiré), contrairement à `s3_list_keys` qui garde les locations
+      complètes (contrat de script inchangé) ;
+    - opérations : `get(&self, key) -> Result<Bytes>`, `head(&self, key) -> Result<S3Meta>`,
+      `put(&self, key, data: impl Into<PutPayload>) -> Result<S3PutResult>` (écrase), `delete(&self, key) ->
+      Result<()>` (clé absente : succès si le backend le dit, à MESURER sur `InMemory` et consigner),
+      `list(&self, prefix: &str) -> Result<Vec<S3Meta>>` (trié par octets de la clé) ;
+    - @crate::s3::S3Meta `{ key: String, size: u64, last_modified: i64 (ms UTC), etag: Option<String> }` et
+      @crate::s3::S3PutResult `{ etag: Option<String> }`, `Clone`/`Debug`/`PartialEq` ;
+    - erreurs : @crate::s3::S3Error (variantes décrites par la tâche jumelle de ./lib.sdd) ;
+      @object_store::Error::NotFound → `NotFound`, `AlreadyExists` → `AlreadyExists`, `Precondition` →
+      `PreconditionFailed`, le reste → `Backend(e.to_string())` ; jamais de panique.
+    Dépendance à ajouter à `Depends on` et à ../Cargo.toml sous la feature `s3` : `bytes` (déjà dans le graphe
+    via @object_store et reqwest : zéro crate nouveau, mesurer par `cargo tree -i bytes`). Tests d'abord
+    depuis les Scenario « S3Store » ci-dessous, tous sur `InMemory`. Jumelle de ./lib.sdd (variante
+    d'erreur). Reprendre `Purpose`, `Exposes`, `Must`, `Must not`, `Depends on` à la clôture.
+  [ ] Lecture partielle, flux et gros fichiers du filestore (lot E, suite de la tâche précédente) :
+    `get_range(&self, key, range: std::ops::Range<u64>) -> Result<Bytes>` (intervalle semi-ouvert d'octets) ;
+    `get_stream(&self, key) -> Result<futures::stream::BoxStream<'static, Result<Bytes>>>` (corps non chargé
+    en mémoire) ; `put_stream<S>(&self, key, stream: S, chunk_size: usize) -> Result<S3PutResult> where S:
+    Stream<Item = Result<Bytes>> + Unpin` par `object_store::WriteMultipart` (backpressure par
+    `wait_for_capacity` à 8 parties au plus ; sur erreur du flux d'entrée, l'upload est ABANDONNÉ
+    (`abort`) et l'erreur rendue, aucun objet partiel). Tests d'abord depuis les Scenario « filestore »
+    ci-dessous (`InMemory` accepte le multipart). Les URL pré-signées sont HORS du lot (décision du
+    développeur principal 2026-11-20 : pas leur place dans une bibliothèque « pure »).
+  [ ] Écriture conditionnelle du filestore (lot E, suite) : `put_if(&self, key, data, condition: S3Condition) ->
+    Result<S3PutResult>` avec l'énum @crate::s3::S3Condition `{ IfNotExists, IfMatch(String) }` (`etag`) vers
+    `object_store::PutMode::Create` / `PutMode::Update(UpdateVersion { e_tag: Some(..), version: None })` ;
+    échec de condition → `S3Error::AlreadyExists` (`IfNotExists`) ou `S3Error::PreconditionFailed` (`IfMatch`).
+    À MESURER avant d'écrire le test : la prise en charge de l'écriture conditionnelle par le builder S3 de
+    @object_store 0.14.2 (`S3ConditionalPut`, valeur par défaut) ; si elle n'est pas active par défaut, `S3Store::new`
+    la pose explicitement et la mesure est consignée au contrat. Un backend qui ne la supporte pas rend
+    `S3Error::Backend` (jamais un repli silencieux en écriture non conditionnelle). Tests d'abord sur `InMemory`.
 
 Scenario: s3 reste hors de new_bare même feature activée
   Given la crate compilée avec `s3` (donc `rhai` avec)
@@ -394,3 +449,44 @@ Scenario: fonctions documentées sous metadata (s3)
     que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
     une signature sans retour
   And sans la feature, les mêmes tests de comportement passent sans différence
+
+
+
+Scenario: S3Store joint préfixe et clé, relatif de bout en bout
+  Given un `S3Store::from_object_store(InMemory, "tenant/a/")`
+  When `put("docs//x.txt", ..)` puis `list("docs")` sont attendus
+  Then l'objet est stocké sous `tenant/a/docs/x.txt`, et `list` rend la clé relative `docs/x.txt`
+
+Scenario: S3Store typé ses erreurs
+  Given un store vide
+  When `get("absent")` est attendu
+  Then l'erreur est `Error::S3(S3Error::NotFound { key })` de code `S3-001`, sans panique
+  And le `Debug` d'un `S3Config` portant le secret `s3cr3t` ne contient jamais `s3cr3t`
+
+Scenario: head, delete et list sur un jeu connu
+  Given trois objets sous deux sous-préfixes
+  When `head`, `list` puis `delete` sont attendus
+  Then `head` rend taille, `last_modified` en ms et etag ; `list` rend les clés triées par octets ;
+    après `delete`, `get` rend `NotFound`
+
+Scenario: filestore : lecture partielle et flux
+  Given un objet de 10 octets connus
+  When `get_range(2..5)` est attendu
+  Then les trois octets d'indices 2, 3, 4 sont rendus
+  When `get_stream` est consommé jusqu'au bout
+  Then la concaténation des morceaux égale l'objet entier
+
+Scenario: filestore : gros fichier en multipart, abandon propre
+  Given un flux de plusieurs parties totalisant plus d'un `chunk_size`
+  When `put_stream` est attendu
+  Then l'objet relu égale la concaténation du flux
+  Given un flux dont un élément est en erreur
+  When `put_stream` est attendu
+  Then l'erreur est rendue et aucun objet n'existe sous la clé
+
+Scenario: filestore : écriture conditionnelle
+  Given un objet existant d'etag `e1`
+  When `put_if(IfNotExists)` est attendu sur la même clé
+  Then l'erreur est `S3Error::AlreadyExists` et l'objet est inchangé
+  When `put_if(IfMatch("mauvais"))` est attendu
+  Then l'erreur est `S3Error::PreconditionFailed` ; avec `IfMatch(e1)`, l'écriture réussit et rend le nouvel etag

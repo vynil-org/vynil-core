@@ -396,6 +396,18 @@ Tasks:
     racine, table des features, `Purpose` (« neuf enregistreurs, neuf jumeaux », catalogue `core`, `host`,
     `crypto`, `password`, `semver`, `http`, `oci`, `s3`, `k8s`). Jumelle de la tâche de ../vyvil-core.sdd.
 
+  [ ] Variante d'erreur du client S3 (lot E de ../vyvil-core.sdd, jumelle de ./s3.sdd) : ajouter
+    `Error::S3(#[from] crate::s3::S3Error)`, gated `s3` comme `Query` l'est par sa feature, avec
+    l'énum @crate::s3::S3Error portée par ./s3.rs : `NotFound { key }` (`S3-001`), `AlreadyExists { key }`
+    (`S3-002`), `PreconditionFailed { key }` (`S3-003`) et `Backend(String)` (`S3-004`, message de
+    @object_store). Le `Display` de chaque variante porte son code stable `S3-00x`. Reprendre la prose
+    de rustdoc des codes stables (`QUERY-001`…, `FEED-00x`) pour y ajouter `S3-001`…`S3-004`, et
+    `Must` / `Exposes` à la clôture ; `rhai_err` enrichit la chaîne comme pour les autres variantes.
+  [ ] Reprendre les phrases de rustdoc de ./lib.rs des modules `query_client`, `prometheus`, `loki`,
+    `feeds`, `s3`, `http` : elles disent « host module / script » ; elles ajoutent « Rust clients
+    (`FeedClient`, `PrometheusClient`, `LokiClient`, `S3Store`, `RestClient::http_get_async`) » à l'état
+    produit du lot E. Jumelle de ./feeds.sdd, ./prometheus.sdd, ./loki.sdd, ./s3.sdd, ./http.sdd.
+
 Scenario: error_chain remonte la source de l'extérieur vers la racine
   Given une erreur à trois niveaux calquée sur un échec DNS reqwest
   When @fn-error_chain la rend

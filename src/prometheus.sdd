@@ -101,6 +101,23 @@ Tasks:
   [x] Fixtures communes : un jeu de fixtures de séries partagé avec vanyline vérifie l'alignement avec son
     type `timeseries` (côté vynil-core : un test sur la forme ; côté vanyline : hors de ce dépôt).
 
+  [ ] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first », architecture
+    « hybride » : noyau de lecture synchrone inchangé, façade async par `run_blocking` de
+    ./query_client.sdd) : ajouter @crate::prometheus::PrometheusClient, `Clone`, construit par
+    `PrometheusClient::new(client: @crate::query_client::QueryClient)`, avec `pub async fn query(&self,
+    expr: &str, time_ms: i64) -> crate::Result<SeriesResult>` et `pub async fn query_range(&self, expr:
+    &str, start_ms: i64, end_ms: i64, step: Option<std::time::Duration>) -> crate::Result<SeriesResult>`
+    (`None` = pas automatique du noyau). Les temps sont des `i64` en millisecondes UTC, comme la sortie.
+    Refactor imposé : extraire de `query_impl` / `query_range_impl` deux fonctions synchrones pures
+    `query_sync` et `query_range_sync` sur `(&QueryClient, …)` qui portent URL, noyau et normalisation ;
+    la face Rhai ne garde que la conversion `Dynamic` → `i64` / pas et l'appel de ces fonctions, avec
+    EXACTEMENT les mêmes messages d'erreur qu'aujourd'hui (les tests actuels de la face Rhai sont le
+    verrou, ils ne changent pas) ; les méthodes async appellent les mêmes fonctions par `run_blocking`
+    sur un clone du client. `end_ms < start_ms` rend @variant-Error::Other `query_range: end is before
+    start`, avant tout réseau. Pas de mock Rust ici : hors lot, à ouvrir à la demande d'un consommateur.
+    Tests d'abord depuis les Scenario « PrometheusClient » ci-dessous. Reprendre `Purpose`, `Exposes` et
+    `Must` à la clôture.
+
 Scenario: requête instantanée et requête de plage nominales
   Given un faux serveur Prometheus servant un vecteur puis une matrice à deux séries
   When le script appelle `query("up", t)` puis `query_range("rate(x[5m])", s, e, "1m")`
@@ -145,6 +162,19 @@ Scenario: sans la feature prometheus, rien n'existe
 Scenario: fonctions documentées sous metadata (prometheus)
   Given la feature `metadata` active
   Then `query` et `query_range` portent commentaire `///`, noms de paramètres et type de retour
+
+
+Scenario: PrometheusClient rend la même forme normalisée que le module de script
+  Given un faux serveur servant la même matrice à deux séries
+  When `PrometheusClient::query_range` est attendu puis le script appelle `query_range` sur le même serveur
+  Then le `SeriesResult` Rust égale (`PartialEq`) la conversion en map du résultat de script
+
+Scenario: PrometheusClient rend les erreurs typées et refuse une plage inversée
+  Given un faux serveur répondant 400 `parse error`, et une plage dont `end_ms < start_ms`
+  When `query` est attendu sur la syntaxe invalide, puis `query_range` sur la plage inversée
+  Then la première erreur est `Error::Query(QueryError::Syntax(..))` portant le message du serveur
+  And la seconde est `Error::Other` sans qu'aucune requête réseau ne soit partie
+  And un pas explicite trop fin donne `QueryError::StepTooFine` portant le pas minimal
 
 Done when:
   Chaque Scenario est un test vert, la batterie de ../tooling.sdd passe (porte `prometheus` et

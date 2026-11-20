@@ -30,7 +30,8 @@ References:
 
 Must:
   N'exister que sous la feature `query_client` (`query_client = ["http", "rt", "rhai"]`, hors
-    `default`, documentée comme INTERNE : les consommateurs activent `prometheus` ou `loki`, qui
+    `default`, documentée comme noyau PARTAGÉ (et non plus interne, décision 2026-11-20 « Rust
+    first ») : ses types sont publics et stables ; les consommateurs activent `prometheus` ou `loki`, qui
     l'impliquent).
   Construire @crate::query_client::QueryClient depuis une @crate::query_client::QueryClientConfig
     posée par l'hôte, et seulement par lui : URL de base et préfixe de chemin (Mimir sert l'API
@@ -140,6 +141,23 @@ Tasks:
     seul ici ; la bascule en POST `application/x-www-form-urlencoded` (acceptée par Prometheus et
     Loki) dépend de l'API du @crate::http::RestClient et n'est pas inscrite.
 
+  [ ] Sortir `query_client` du statut « interne » (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust
+    first ») : reprendre le commentaire de la feature dans ../Cargo.toml (noyau partagé, types
+    publics, activé par `prometheus` ou `loki`), la rustdoc du module dans ./lib.rs, et les phrases
+    `Purpose`, `References` et `Must` de cette spec qui disent « interne ». Aucun changement de nom ni de
+    comportement : la feature garde son nom et reste impliquée par `prometheus` et `loki` (jumelle de
+    ./prometheus.sdd, ./loki.sdd et ./lib.sdd).
+  [ ] Pont async des clients Rust (jumelle de ./prometheus.sdd et ./loki.sdd) : ajouter dans ./query_client.rs
+    `pub(crate) async fn run_blocking<T: Send + 'static>(job: impl FnOnce() -> crate::Result<T> + Send +
+    'static) -> crate::Result<T>` : `tokio::task::spawn_blocking` autour du noyau synchrone, qui garde son
+    contrat, ses plafonds et ses verrous inchangés (décision d'architecture « hybride », 2026-11-20 :
+    le noyau en flux reste synchrone, sa réécriture en vrai async est une dette ultérieure sans casse d'API).
+    Une `JoinError` (panique du job ou annulation) devient @variant-Error::Other, jamais une panique
+    propagée. Limite documentée dans la rustdoc : sous runtime `current_thread`, le noyau sync appelle
+    `rt::block_on` qui rend son erreur explicite ; l'erreur remonte telle quelle, sans panique. Tests d'abord :
+    job qui réussit (multi-thread), job qui panique rendu en `Error::Other`, job sous `current_thread`
+    rendu en erreur explicite.
+
 Scenario: plage dépassant le plafond de points
   Given `max_points = 1000` et une plage de 7 jours
   When le pas est `"auto"`
@@ -185,6 +203,12 @@ Scenario: préfixe Mimir et Prometheus nu
 Scenario: sans la feature, rien n'existe
   Given une compilation sans `query_client` (donc sans `prometheus` ni `loki`)
   Then @crate::query_client n'existe pas
+
+
+Scenario: run_blocking ne propage jamais une panique du job
+  Given un job qui panique, passé à `run_blocking` sous un runtime multi-thread
+  When il est attendu
+  Then le résultat est `Err(Error::Other(..))` et le runtime reste utilisable pour un appel suivant
 
 Done when:
   Chaque Scenario est un test vert, la batterie de ../tooling.sdd passe, et les tâches jumelles de
