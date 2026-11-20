@@ -3,6 +3,43 @@
 All notable changes to `vynil-core` are documented here. The crate is pre-1.0: minor versions
 may break the public API, and every breaking change is listed explicitly.
 
+## 0.10.0
+
+The protocol-client release: fixture-driven module twins for the test doubles, three new
+features — `feeds`, `prometheus` and `loki` — and dependency bumps closing a run of RustSec
+advisories.
+
+### Added
+
+- **Module twins of the test doubles** (#47): `http_mock::httpmock_module(mocks)`,
+  `k8s_mock::k8s_mock_module(arced_mocks, created)` and `oci_mock::oci_mock_module()`, twins of the
+  three `*_rhai_register`, registrable through `Engine::register_static_module` with the same
+  names and semantics as their registrars.
+- **Feature `feeds`** (#56, off by default): RSS/Atom feed reading. `feeds::feed_read(url, since)`
+  is stateless; `feeds::feed_poll(url, cursor)` reads through an opaque, versioned cursor the
+  caller persists as-is, with conditional fetches (ETag, Last-Modified) and new-entry detection.
+  Fetches go through `http::RestClient`, parsing through `feed-rs`. With the module twin
+  `feeds::feeds_module()` and the fixture-driven double `feeds_mock::feeds_mock_module(fixtures)`.
+- **Features `prometheus` and `loki`** (#57, off by default): two independent read connectors,
+  each a HOST module over the internal `query_client` kernel — the host builds a configured
+  `query_client::QueryClient` and registers `prometheus::prometheus_module(client)` or
+  `loki::loki_module(client)` under the name it chooses; the script never sees a URL, a tenant or
+  a token. Prometheus exposes `query(expr, time)` and `query_range(expr, start, end, step)`, Loki
+  `query_range(expr, start, end, limit, direction)`. Fixture-driven doubles:
+  `prometheus_mock::prometheus_mock_module(fixtures)` and `loki_mock::loki_mock_module(fixtures)`.
+- **New gated error variants**: `Error::FeedInvalid` (Display code `FEED-001`) and
+  `Error::FeedCursor` (`FEED-002`) under `feeds`, and `Error::Query(QueryError)` under
+  `query_client` (pulled in by `prometheus`/`loki`), whose Display carries a stable code
+  `QUERY-001`…`QUERY-009` and never a token or a credential-bearing URL.
+
+### Changed
+
+- Dependencies, closing RustSec advisories: `object_store` 0.11 → 0.14.2 drops `quick-xml` 0.37.5
+  (#50, #51); `oci-client` 0.15 → 0.18.0 drops `jwt` (#53); `httpmock` 0.7 → 0.9.0 (dev-dependency)
+  drops `async-std` and `pin-utils` (#52, #54). RUSTSEC-2026-0249 `smartstring` (#55) stays open
+  by decision: `rhai` 1.27 pulls the crate itself, so it is not fixable from here.
+- The documentation examples `vynil-core = ...` now show `0.10`.
+
 ## 0.9.1
 
 A consolidation of the 0.9.0 surface: the Rhai registrars are regrouped by domain into a

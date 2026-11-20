@@ -64,15 +64,15 @@ connectors, which implies it; never it alone.
 
 ```toml
 # default: Rhai + Handlebars + HTTP + crypto helpers, same as previous releases
-vynil-core = "0.9"
+vynil-core = "0.10"
 
 # Kubernetes project
-vynil-core = { version = "0.9", features = ["k8s"] }
+vynil-core = { version = "0.10", features = ["k8s"] }
 
 # Handlebars only (e.g. rendering MCP tool output), no Rhai engine at all — and no rhai/smartstring
 # in the graph either, since "hbs" alone doesn't pull in "hbs-scripting" (e.g. safe to combine
 # with async-graphql, see the `hbs-scripting` row above)
-vynil-core = { version = "0.9", default-features = false, features = ["hbs", "crypto"] }
+vynil-core = { version = "0.10", default-features = false, features = ["hbs", "crypto"] }
 ```
 
 ## Client identity
