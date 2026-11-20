@@ -3,7 +3,7 @@ Spec: http
 Purpose:
   Contrat groupé de ./http.rs et ./http_mock.rs (règle source+mock d'un seul contrat,
     tâche nommée de ./vyvil-core.sdd) : @crate::http::RestClient, client HTTP sur @reqwest
-    0.12 en blocage-sync, à trois étages par verbe (@crate::http::RestClient::http_*
+    0.12 en blocage-sync (hors `http_get_async`, seule méthode asynchrone, lot E), à trois étages par verbe (@crate::http::RestClient::http_*
     renvoyant @reqwest::Response brut, @crate::http::RestClient::body_* le texte,
     @crate::http::RestClient::json_* un @serde_json::Value), 5 faces @crate::http::RestClient::obj_*
     sur énum de verbes, 8 méthodes Rhai rendant une map figée {code, headers, body, json},
@@ -307,6 +307,9 @@ Exposes:
     @crate::http::RestClient::add_header_json_content/@crate::http::RestClient::add_header_json_accept
     (les deux chaînables, NON enregistrées en script), @crate::http::RestClient::add_header_json,
     @crate::http::RestClient::add_header_bearer, @crate::http::RestClient::add_header_basic.
+  @crate::http::RestClient::http_get_async — `pub async fn(&mut self, path: &str) ->
+    @crate::Result<@reqwest::Response>`, porte `http` : le GET sans `rt::block_on`, base des clients
+    Rust async-first (./feeds.sdd) ; `http_get` en est l'enveloppe synchrone. Seul verbe asynchrone.
   Étages par verbe — `http_get`, `http_head` (@crate::Result de @reqwest::Response, comme les
     autres), `http_patch/http_put/http_post/http_delete` + @crate::http::RestClient::http_post_form
     (@std::primitive::slice de paires) + @crate::http::RestClient::http_delete_with_body ;
@@ -567,7 +570,7 @@ Tasks:
     « le registre des 31 noms » (compte de l'enregistreur 31, du jumeau moins les alias) et
     « http_module équivaut à http_rhai_register ». Jumelle de la tâche de ../vyvil-core.sdd.
 
-  [ ] GET asynchrone (lot E de ../vyvil-core.sdd, décision du développeur principal 2026-11-20 « Rust
+  [x] GET asynchrone (lot E de ../vyvil-core.sdd, décision du développeur principal 2026-11-20 « Rust
     first », jumelle de ./feeds.sdd) : ajouter `pub async fn http_get_async(&mut self, path: &str) ->
     crate::Result<reqwest::Response>` à @crate::http::RestClient. Même construction du client, mêmes
     en-têtes, mêmes erreurs (@variant-Error::ReqwestError), même `debug!`, SANS `rt::block_on`.
@@ -575,7 +578,9 @@ Tasks:
     `http_get_async`, résultat aplati) : son contrat observable (messages, erreur explicite sur runtime
     `current_thread`, annulation par jeton) ne change pas et ses tests actuels sont le verrou. Seul le
     GET passe en async : les autres verbes restent synchrones (à ouvrir quand un consommateur le
-    demande). Tests d'abord : sous `#[tokio::test(flavor = "multi_thread")]`, `http_get_async` rend les
+    demande). Clos (synthèse validator verte, 2026-11-20) : le `block_on` de `http_get` englobe désormais
+    construction du client et envoi (avant : l'envoi seul), l'annulation par jeton reste honorée.
+    Tests d'abord : sous `#[tokio::test(flavor = "multi_thread")]`, `http_get_async` rend les
     mêmes statut et corps que `http_get` sur un même faux serveur ; sous `#[tokio::test]`
     (`current_thread`), `http_get_async` répond alors que `http_get` rend l'erreur contractée.
     Reprendre `Exposes` et `Purpose` à la clôture.

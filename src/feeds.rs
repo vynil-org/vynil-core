@@ -11,8 +11,10 @@
 //!
 //! Entries of any supported syntax (Atom, RSS 0.9x–2.0, JSON Feed) normalize to the same seven
 //! fields, same types. Dates are `i64` MILLISECONDS since the UTC epoch (`()` script-side, `None`
-//! Rust-side when absent — never an invented date). Fetching goes through `crate::rt::block_on`
-//! (no tokio panic towards the host); errors arrive typed, never as a panic: an invalid feed is
+//! Rust-side when absent — never an invented date). The synchronous entry points (`feed_read`,
+//! `feed_poll`, the Rhai faces) bridge their fetch once through `crate::rt::block_on`; the
+//! async-first [`crate::feeds::FeedClient`] awaits the same fetch with no bridge. Either way no
+//! tokio panic reaches the host. Errors arrive typed, never as a panic: an invalid feed is
 //! [`Error::FeedInvalid`] (`FEED-001`), a bad cursor is
 //! [`Error::FeedCursor`] (`FEED-002`), transport failures keep their
 //! [`Error::ReqwestError`] shape and a non-2xx status (other than a
@@ -241,77 +243,109 @@ enum Fetch {
     },
 }
 
-/// One GET of `url`: `If-None-Match` / `If-Modified-Since` from `cursor` when `conditional`,
-/// `304` surfaced as [`Fetch::NotModified`], a non-2xx refusal as [`Error::MethodFailed`],
-/// transport failures kept as [`Error::ReqwestError`], an unparseable URL as
-/// [`Error::FeedInvalid`]. Credentials embedded in `url` are dropped (never logged).
-fn fetch(backend: &Backend, url: &str, cursor: &FeedCursor, conditional: bool) -> crate::Result<Fetch> {
+/// One GET of `url` on the live path, as a future: the whole exchange (request, status, body)
+/// runs in this one future, so the synchronous callers bridge it once with `crate::rt::block_on`
+/// and the [`FeedClient`] awaits it with no bridge at all. `template` (when present) supplies the
+/// headers, CA and mTLS identity of the request; its base URL is ignored and replaced by the origin
+/// of `url`. `If-None-Match` / `If-Modified-Since` from `cursor` when `conditional`, `304` surfaced
+/// as [`Fetch::NotModified`], a non-2xx refusal as [`Error::MethodFailed`], transport failures
+/// kept as [`Error::ReqwestError`], an unparseable URL as [`Error::FeedInvalid`]. Credentials
+/// embedded in `url` are dropped (never logged).
+async fn fetch_live(
+    template: Option<&RestClient>,
+    url: &str,
+    cursor: &FeedCursor,
+    conditional: bool,
+) -> crate::Result<Fetch> {
+    let parsed = url::Url::parse(url).map_err(|e| Error::FeedInvalid(format!("invalid feed url: {e}")))?;
+    let base = base_without_credentials(&parsed)?;
+    let mut path = parsed
+        .path()
+        .strip_prefix('/')
+        .unwrap_or(parsed.path())
+        .to_string();
+    if let Some(query) = parsed.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    let mut client = match template {
+        Some(model) => {
+            let mut client = model.clone();
+            client.baseurl(&base);
+            client
+        }
+        None => RestClient::new(&base),
+    };
+    if conditional {
+        if let Some(etag) = &cursor.etag {
+            client.add_header("If-None-Match", etag);
+        }
+        if let Some(last_modified) = &cursor.last_modified {
+            client.add_header("If-Modified-Since", last_modified);
+        }
+    }
+    let response = client.http_get_async(&path).await?;
+    let status = response.status();
+    if status.as_u16() == 304 {
+        return Ok(Fetch::NotModified);
+    }
+    if !status.is_success() {
+        return Err(Error::MethodFailed(
+            "Get".to_string(),
+            status.as_u16(),
+            format!(
+                "The server returned the error: {} {}",
+                status.as_str(),
+                status.canonical_reason().unwrap_or("unknown")
+            ),
+        ));
+    }
+    let etag = header_value(&response, "etag");
+    let last_modified = header_value(&response, "last-modified");
+    let bytes = response.bytes().await.map_err(Error::ReqwestError)?;
+    Ok(Fetch::Body {
+        bytes: bytes.to_vec(),
+        etag,
+        last_modified,
+    })
+}
+
+/// The fixture twin of [`fetch_live`]: synchronous, answered from the fixture table, no network
+/// and no `tokio` (a double never calls `block_on`).
+fn fetch_fixture(
+    fixtures: &[FixtureBody],
+    url: &str,
+    cursor: &FeedCursor,
+    conditional: bool,
+) -> crate::Result<Fetch> {
+    let fixture = fixtures
+        .iter()
+        .find(|f| f.url == url)
+        .ok_or_else(|| Error::Other(format!("feeds_mock: no fixture for {url:?}")))?;
+    let validator_matches = cursor.etag.is_some() && cursor.etag == fixture.etag;
+    let validator_matches = validator_matches
+        || (cursor.last_modified.is_some() && cursor.last_modified == fixture.last_modified);
+    if conditional && validator_matches {
+        return Ok(Fetch::NotModified);
+    }
+    Ok(Fetch::Body {
+        bytes: fixture.body.clone().into_bytes(),
+        etag: fixture.etag.clone(),
+        last_modified: fixture.last_modified.clone(),
+    })
+}
+
+/// The synchronous fetch of the kernel: the live exchange bridged once by `crate::rt::block_on`,
+/// or the fixture twin. Only this step differs between the live and the mocked kernels.
+fn fetch_blocking(
+    backend: &Backend,
+    url: &str,
+    cursor: &FeedCursor,
+    conditional: bool,
+) -> crate::Result<Fetch> {
     match backend {
-        Backend::Live => {
-            let parsed =
-                url::Url::parse(url).map_err(|e| Error::FeedInvalid(format!("invalid feed url: {e}")))?;
-            let base = base_without_credentials(&parsed)?;
-            let mut path = parsed
-                .path()
-                .strip_prefix('/')
-                .unwrap_or(parsed.path())
-                .to_string();
-            if let Some(query) = parsed.query() {
-                path.push('?');
-                path.push_str(query);
-            }
-            let mut client = RestClient::new(&base);
-            if conditional {
-                if let Some(etag) = &cursor.etag {
-                    client.add_header("If-None-Match", etag);
-                }
-                if let Some(last_modified) = &cursor.last_modified {
-                    client.add_header("If-Modified-Since", last_modified);
-                }
-            }
-            let response = client.http_get(&path)?;
-            let status = response.status();
-            if status.as_u16() == 304 {
-                return Ok(Fetch::NotModified);
-            }
-            if !status.is_success() {
-                return Err(Error::MethodFailed(
-                    "Get".to_string(),
-                    status.as_u16(),
-                    format!(
-                        "The server returned the error: {} {}",
-                        status.as_str(),
-                        status.canonical_reason().unwrap_or("unknown")
-                    ),
-                ));
-            }
-            let etag = header_value(&response, "etag");
-            let last_modified = header_value(&response, "last-modified");
-            let bytes = crate::rt::block_on(async move { response.bytes().await })
-                .and_then(|r| r.map_err(Error::ReqwestError))?;
-            Ok(Fetch::Body {
-                bytes: bytes.to_vec(),
-                etag,
-                last_modified,
-            })
-        }
-        Backend::Fixtures(fixtures) => {
-            let fixture = fixtures
-                .iter()
-                .find(|f| f.url == url)
-                .ok_or_else(|| Error::Other(format!("feeds_mock: no fixture for {url:?}")))?;
-            let validator_matches = cursor.etag.is_some() && cursor.etag == fixture.etag;
-            let validator_matches = validator_matches
-                || (cursor.last_modified.is_some() && cursor.last_modified == fixture.last_modified);
-            if conditional && validator_matches {
-                return Ok(Fetch::NotModified);
-            }
-            Ok(Fetch::Body {
-                bytes: fixture.body.clone().into_bytes(),
-                etag: fixture.etag.clone(),
-                last_modified: fixture.last_modified.clone(),
-            })
-        }
+        Backend::Live => crate::rt::block_on(fetch_live(None, url, cursor, conditional)).and_then(|r| r),
+        Backend::Fixtures(fixtures) => fetch_fixture(fixtures, url, cursor, conditional),
     }
 }
 
@@ -419,18 +453,20 @@ fn filter_since(entries: Vec<FeedEntry>, since: Option<i64>) -> Vec<FeedEntry> {
         .collect()
 }
 
-/// The read kernel, live or mocked: a full unconditional download, normalized and filtered.
-fn read_core(backend: &Backend, url: &str, since: Option<i64>) -> crate::Result<Vec<FeedEntry>> {
-    match fetch(backend, url, &FeedCursor::default(), false)? {
+/// The read logic after the fetch, shared by [`feed_read`] and [`FeedClient::read`]: normalize,
+/// then the `since` filter. Pure: no I/O.
+fn read_after_fetch(fetched: Fetch, url: &str, since: Option<i64>) -> crate::Result<Vec<FeedEntry>> {
+    match fetched {
         // Unconditional requests never earn a 304; kept as the defensive arm, never an error.
         Fetch::NotModified => Ok(Vec::new()),
         Fetch::Body { bytes, .. } => Ok(filter_since(normalize(&bytes, url)?, since)),
     }
 }
 
-/// The poll kernel, live or mocked.
-fn poll_core(backend: &Backend, url: &str, cursor: &FeedCursor) -> crate::Result<FeedPollResult> {
-    match fetch(backend, url, cursor, true)? {
+/// The poll logic after the fetch, shared by [`feed_poll`] and [`FeedClient::poll`]: normalize,
+/// keep the guids not in `cursor.seen`, carry the new validators and prune `seen`. Pure: no I/O.
+fn poll_after_fetch(fetched: Fetch, url: &str, cursor: &FeedCursor) -> crate::Result<FeedPollResult> {
+    match fetched {
         Fetch::NotModified => Ok(FeedPollResult {
             entries: Vec::new(),
             cursor: cursor.clone(),
@@ -463,6 +499,18 @@ fn poll_core(backend: &Backend, url: &str, cursor: &FeedCursor) -> crate::Result
             })
         }
     }
+}
+
+/// The read kernel, live or mocked: a full unconditional download, normalized and filtered.
+fn read_core(backend: &Backend, url: &str, since: Option<i64>) -> crate::Result<Vec<FeedEntry>> {
+    let fetched = fetch_blocking(backend, url, &FeedCursor::default(), false)?;
+    read_after_fetch(fetched, url, since)
+}
+
+/// The poll kernel, live or mocked.
+fn poll_core(backend: &Backend, url: &str, cursor: &FeedCursor) -> crate::Result<FeedPollResult> {
+    let fetched = fetch_blocking(backend, url, cursor, true)?;
+    poll_after_fetch(fetched, url, cursor)
 }
 
 /// Reads the RSS/Atom feed at `url`: every entry, or only those dated strictly after `since`
@@ -606,6 +654,65 @@ pub fn feeds_module() -> Module {
     let mut module = Module::new();
     feeds_fns(&mut Target::Module(&mut module), &Backend::Live);
     module
+}
+
+/// Async-first client of the feeds kernel (`feeds.sdd`, `FeedClient`): the same fetch, parse,
+/// filter and cursor logic as [`feed_read`] / [`feed_poll`], awaited instead of bridged. Cheap to
+/// clone; it holds no state of its own (the cursor stays with the caller).
+#[derive(Clone)]
+pub struct FeedClient {
+    template: Option<RestClient>,
+}
+
+impl std::fmt::Debug for FeedClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FeedClient")
+            .field("template", &self.template.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+impl Default for FeedClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FeedClient {
+    /// A client with the default HTTP client (no host headers, no CA, no mTLS).
+    #[must_use]
+    pub fn new() -> Self {
+        Self { template: None }
+    }
+
+    /// A client whose requests are built from `template` (headers, CA, mTLS); its base URL is
+    /// ignored: each call points a clone of it at the origin of the feed it reads.
+    #[must_use]
+    pub fn with_rest_client(template: RestClient) -> Self {
+        Self {
+            template: Some(template),
+        }
+    }
+
+    /// Reads the feed at `url` (async, no `block_on`): see [`feed_read`].
+    ///
+    /// # Errors
+    ///
+    /// The [`feed_read`] errors.
+    pub async fn read(&self, url: &str, since: Option<i64>) -> crate::Result<Vec<FeedEntry>> {
+        let fetched = fetch_live(self.template.as_ref(), url, &FeedCursor::default(), false).await?;
+        read_after_fetch(fetched, url, since)
+    }
+
+    /// Polls the feed at `url` with `cursor` (async, no `block_on`): see [`feed_poll`].
+    ///
+    /// # Errors
+    ///
+    /// The [`feed_poll`] errors.
+    pub async fn poll(&self, url: &str, cursor: &FeedCursor) -> crate::Result<FeedPollResult> {
+        let fetched = fetch_live(self.template.as_ref(), url, cursor, true).await?;
+        poll_after_fetch(fetched, url, cursor)
+    }
 }
 
 /// One optional string field of a cursor map: absent or `()` is `None`, a string is `Some`,
@@ -1345,6 +1452,132 @@ mod tests {
             1,
             "guid identique = une seule entrée, la première gagne"
         );
+    }
+
+    // ══════════════════════════════════════════════════════════════════════
+    // Scenarios « FeedClient » (feeds.sdd, lot E)
+    // ══════════════════════════════════════════════════════════════════════
+
+    // Scenario « FeedClient lit sans bloquer le runtime » : sous un runtime `current_thread`,
+    // le `read` async rend les entrées que `feed_read` rend sur un runtime multi-thread.
+    #[test]
+    fn scenario_feedclient_lit_sans_bloquer_le_runtime() {
+        set_name();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/f.xml");
+            then.status(200).body(ATOM_TWO);
+        });
+        let url = url_on(&server, "f.xml");
+        let reference = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("runtime multi-thread de référence");
+        let expected = reference
+            .block_on(async { feed_read(&url, None) })
+            .expect("feed_read de référence sur multi-thread");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime current_thread");
+        let got = runtime
+            .block_on(FeedClient::new().read(&url, None))
+            .expect("FeedClient::read sous current_thread");
+        assert_eq!(got.len(), 2, "les deux entrées du flux Atom");
+        assert_eq!(got, expected, "mêmes entrées que feed_read");
+    }
+
+    // Scenario « FeedClient::poll équivaut à feed_poll » : même séquence (premier passage puis
+    // passage conditionnel) par le client async et par le noyau synchrone, mêmes valeurs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scenario_feedclient_poll_equivaut_a_feed_poll() {
+        set_name();
+        let server = MockServer::start();
+        let conditional = server.mock(|when, then| {
+            when.method(GET).path("/f.xml").header("if-none-match", "\"a\"");
+            then.status(304);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/f.xml");
+            then.status(200).header("ETag", "\"a\"").body(ATOM_TWO);
+        });
+        let url = url_on(&server, "f.xml");
+        let client = FeedClient::new();
+        let first = client
+            .poll(&url, &FeedCursor::default())
+            .await
+            .expect("premier passage async");
+        assert_eq!(first.status, PollStatus::New);
+        let second = client
+            .poll(&url, &first.cursor)
+            .await
+            .expect("second passage async");
+        assert_eq!(second.status, PollStatus::NotModified);
+        assert_eq!(second.cursor, first.cursor, "curseur égal à celui passé");
+
+        let sync_first = feed_poll(&url, &FeedCursor::default()).expect("premier passage sync");
+        let sync_second = feed_poll(&url, &sync_first.cursor).expect("second passage sync");
+        assert_eq!(first.status, sync_first.status);
+        assert_eq!(first.entries, sync_first.entries);
+        assert_eq!(first.cursor, sync_first.cursor);
+        assert_eq!(second.status, sync_second.status);
+        assert_eq!(second.cursor, sync_second.cursor);
+        assert!(second.entries.is_empty() && sync_second.entries.is_empty());
+        conditional.assert_calls(2);
+    }
+
+    // Scenario « le modèle de client porte l'authentification et ne la divulgue pas » : le modèle
+    // porte un Bearer et une URL de base INATTEIGNABLE (ignorée) ; la requête part vers l'origine
+    // du flux avec `Authorization`, et ni le Debug ni aucun message d'erreur ne montrent le secret.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn scenario_le_modele_porte_l_authentification_sans_la_divulguer() {
+        const SECRET: &str = "s3cr3t";
+        set_name();
+        let server = MockServer::start();
+        let authed = server.mock(|when, then| {
+            when.method(GET)
+                .path("/f.xml")
+                .header("authorization", "Bearer s3cr3t");
+            then.status(200).body(ATOM_TWO);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/nope");
+            then.status(200).body("not xml");
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/boom");
+            then.status(500).body("oops");
+        });
+        let mut template = RestClient::new("http://127.0.0.1:1");
+        template.add_header_bearer(SECRET);
+        let client = FeedClient::with_rest_client(template.clone());
+
+        let entries = client
+            .read(&url_on(&server, "f.xml"), None)
+            .await
+            .expect("requête authentifiée vers l'origine du flux");
+        assert_eq!(entries.len(), 2);
+        authed.assert_calls(1);
+
+        assert!(
+            !format!("{client:?}").contains(SECRET),
+            "le Debug du FeedClient ne montre aucun en-tête"
+        );
+        let mut messages = Vec::new();
+        if let Err(e) = client.read(&url_on(&server, "nope"), None).await {
+            messages.push(format!("{e} | {e:?}"));
+        }
+        if let Err(e) = client.read(&url_on(&server, "boom"), None).await {
+            messages.push(format!("{e} | {e:?}"));
+        }
+        let dead = FeedClient::with_rest_client(template);
+        if let Err(e) = dead.read("http://127.0.0.1:1/f.xml", None).await {
+            messages.push(format!("{e} | {e:?}"));
+        }
+        assert_eq!(messages.len(), 3, "les trois échecs sont des erreurs typées");
+        for message in &messages {
+            assert!(!message.contains(SECRET), "secret dans un message : {message}");
+        }
     }
 
     #[test]

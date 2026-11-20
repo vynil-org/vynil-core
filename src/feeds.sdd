@@ -7,7 +7,8 @@ Purpose:
     @feed_rs, normalisation en @crate::feeds::FeedEntry). Premier des clients de protocole de la
     crate : il ne connaît rien du modèle de données de l'appelant (stockage, planification,
     embedding : applicatifs). Niveau 1 `feed_read` : sans état, flux téléchargé en entier à chaque
-    appel. Niveau 2 `feed_poll` : avec un curseur opaque et versionné que l'appelant persiste tel
+    appel (face Rust : @crate::feeds::FeedClient, `async fn`, la face Rhai n'en étant qu'une projection
+    synchrone, lot E). Niveau 2 `feed_poll` : avec un curseur opaque et versionné que l'appelant persiste tel
     quel, fetch conditionnel (ETag, Last-Modified) et détection des entrées nouvelles par guid.
     Le groupe inclut @crate::feeds_mock, double sur fixtures (flux servis depuis des fixtures,
     ETag / Last-Modified simulés) : le mock n'a pas de contrat indépendant du contrat mocké.
@@ -69,6 +70,9 @@ Must:
   Offrir le mock : @crate::feeds_mock::feeds_mock_module (voir Exposes) sert des flux de fixtures
     sous les MÊMES noms de fonctions que le réel, simule ETag / Last-Modified (un second passage
     avec le curseur rendu répond `not_modified`), sans réseau ni @tokio.
+  Servir les faces de script et @crate::feeds::FeedClient par UN SEUL noyau : fetch live asynchrone (un
+    seul futur : envoi, statut et corps, donc un seul `block_on` côté synchrone), logique pure après
+    fetch partagée par verbe, branche mock synchrone et sans tokio.
 
 Must not:
   Contacter autre chose que l'URL demandée, ni suivre ou découvrir de flux depuis une page HTML.
@@ -95,6 +99,12 @@ Exposes:
     convertible depuis et vers @rhai::Map.
   @crate::feeds::feed_read, @crate::feeds::feed_poll — noyau Rust, mêmes sémantiques que les
     fonctions de script.
+  @crate::feeds::FeedClient — `Clone`, `Debug` sans en-tête (`<redacted>`) ; `new()` /
+    `with_rest_client(RestClient)` (l'URL de base du modèle est ignorée) ; `async fn read(&self, url,
+    since: Option<i64>)` et `async fn poll(&self, url, &FeedCursor)` : mêmes sémantiques et erreurs que
+    `feed_read` / `feed_poll`, sans `rt::block_on`. Annulation : par abandon (drop) du futur — le jeton de
+    @crate::cancel::scope ne s'y applique PAS (il est lié au fil et sert aux ponts synchrones), seules
+    les faces synchrones l'honorent par `rt::block_on`. Pas de double Rust (hors lot).
   @crate::feeds::feeds_rhai_register(engine) — enregistreur global (`feed_read`, `feed_poll`) ;
     @crate::feeds::feeds_module() — `#[must_use] pub fn() -> @rhai::Module`, jumeau (règle des
     jumeaux de ../vyvil-core.sdd), noms courts qualifiés `feeds::read` et `feeds::poll`.
@@ -135,7 +145,7 @@ Tasks:
   [x] Décision à confirmer à la relecture : dates en `i64` ms UTC plutôt qu'un type de date (le
     module `chrono` ne sait ni parser ni construire un instant passé, seulement `date_now`).
 
-  [ ] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first ») : ajouter
+  [x] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first ») : ajouter
     @crate::feeds::FeedClient, `Clone`, construit par `FeedClient::new()` (client HTTP par défaut) ou
     `FeedClient::with_rest_client(template: @crate::http::RestClient)` : l'hôte y pose en-têtes
     d'authentification, CA du serveur, mTLS ; l'URL de base du modèle est IGNORÉE, chaque appel clone
@@ -145,12 +155,21 @@ Tasks:
     `feed_read` / `feed_poll`, SANS `rt::block_on` (fetch par `RestClient::http_get_async`, tâche
     jumelle de ./http.sdd, corps par `Response::bytes().await`). `feed_read`, `feed_poll` et les faces
     Rhai restent les enveloppes synchrones du même noyau. Découpage imposé : la logique pure après le
-    fetch (parse, filtre `since`, diff `seen`, nouveau curseur) est UNE fonction synchrone partagée ;
+    fetch (parse, filtre `since`, diff `seen`, nouveau curseur) est UNE fonction synchrone partagée PAR
+    VERBE (`read_after_fetch`, `poll_after_fetch` : entrées et sorties différentes, sans énum d'aiguillage) ;
     seul le fetch diffère — `fetch_live` est `async`, la branche `Fixtures` du mock reste une fonction
     synchrone distincte (un double n'appelle jamais `block_on` : le mock reste sans tokio). Le `Debug` de
     `FeedClient` n'affiche aucun en-tête du modèle (`<redacted>`, le `Debug` dérivé de `RestClient` les
     imprimerait). Tests d'abord depuis les Scenario « FeedClient » ci-dessous. Reprendre `Purpose`,
-    `Exposes` et `Must` à la clôture.
+    `Exposes` et `Must` à la clôture. Clos (synthèse validator verte, 2026-11-20) ; mesuré : le live fait
+    désormais UN seul `block_on` sur un futur unique (envoi + statut + corps), ce qui corrige de fait un
+    panic antérieur de `feed_read` / `feed_poll` hors de tout runtime (deux runtimes temporaires, le timer
+    reqwest du premier ne survivait pas) ; verrou ci-dessous.
+  [ ] Verrou du défaut corrigé (lot E, revue du validator) : tests d'abord, hors runtime — un `#[test]`
+    synchrone appelle `feed_read` ET `feed_poll` sur un faux serveur SANS runtime tokio (entrées rendues,
+    aucun panic), et sous `#[tokio::test]` (`current_thread`) les mêmes appels rendent l'erreur explicite
+    `requires a multi-thread tokio runtime` sans panique. Le test échoue si un second `block_on` revient
+    dans le chemin du fetch.
 
 Scenario: Atom et RSS 2.0 donnent les mêmes FeedEntry
   Given un flux Atom et un flux RSS 2.0 décrivant les mêmes deux entrées
