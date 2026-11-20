@@ -475,11 +475,13 @@ Tasks:
     (jumelles de ./src/lib.sdd et ./docs.sdd). Le tag n'est posé qu'APRÈS le merge et la CI verte, le workflow
     `publish.yml` vérifiant tag et manifest. Issues closes par ce lot, à compléter à la livraison :
     #47, #50, #51, #52, #53, #54, #56, #57 ; #55 reste ouverte ; #36 reste ouverte (voir ci-dessous).
-  [ ] Faire le point sur l'issue #36 (doublons de crates), restée ouverte alors que la tâche « Débarrasser le
+  [x] Faire le point sur l'issue #36 (doublons de crates), restée ouverte alors que la tâche « Débarrasser le
     graphe des doublons propres à `vynil-core` » est cochée : ce lot l'a fermée en PARTIEL par décision
     (reste `getrandom` 0.2/0.3/0.4 et `syn`, d'origine amont). Poster le commentaire qui le dit, avec la
     mesure `cargo tree -d` rejouée sur le crate sonde, puis la fermer ou la garder ouverte selon le
     développeur principal. Aucun changement de code ni de spec ailleurs.
+    Clos le 2026-11-20 : mesure rejouée sur la branche du lot 0.10.0 (`getrandom` ×3 et `syn` ×2, amont ;
+    `libc` / `once_cell` en doublons d'arêtes), commentaire posté, issue fermée sur décision du développeur principal.
 
   [x] Lot E — API Rust des clients de protocole et socle S3 pour filestore (décision du développeur principal
     2026-11-20 : « Rust first avec un mapping Rhai », avant la livraison 0.10.0, tout reste sur la branche du
