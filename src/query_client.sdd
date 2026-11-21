@@ -1,0 +1,221 @@
+Spec: query_client
+
+Purpose:
+  Noyau partagé des connecteurs de lecture ./prometheus.sdd et ./loki.sdd (issue
+    vynil-org/vynil-core#57), deuxième famille de clients de protocole de la crate après
+    ./feeds.sdd : ils ne savent rien du domaine de l'appelant. Principe de conception, qui est
+    la raison d'être de ce fichier : L'HÔTE CONFIGURE, LE SCRIPT INTERROGE. Le @crate::http::RestClient
+    est construit par le script (URL, en-têtes) ; ici c'est inacceptable, les jetons ne devant
+    jamais être visibles d'un script ni le tenant modifiable par lui. Le noyau fournit donc un client
+    Rust configuré par l'hôte (@crate::query_client::QueryClient), la lecture en flux bornée de la
+    réponse (plafonds de séries, points, lignes et octets ; jamais de troncature silencieuse), le
+    calcul du pas automatique et les erreurs typées. Les deux connecteurs ne sont que des formes de
+    réponse et de requête posées dessus ; le noyau n'a pas de mock propre (ses deux consommateurs
+    portent les leurs).
+
+Owns:
+  ./query_client.rs
+  ../tests/query_client_wall_clock.rs — verrou wall-clock du `Must` délai (binaire de test,
+    feature `query_client`, précédent d'attribution : `../tests/rt_block_on_public.rs`
+    de ./rt.sdd)
+
+References:
+  ./http.sdd — @crate::http::RestClient : le client sait déjà poser bearer, basic, mTLS, CA du
+    serveur et en-têtes (`X-Scope-OrgID`) ; le noyau le CONSTRUIT côté hôte et ne l'expose jamais
+    au script. La feature `query_client` (noyau partagé, types publics) implique `http`, `rt` et `rhai`.
+  ./rt.sdd — @crate::rt::block_on : pont async → sync de la lecture en flux.
+  ./prometheus.sdd, ./loki.sdd — les deux consommateurs.
+  ./lib.sdd — déclarant (gate `query_client`) et variante @variant-Error::Query (tâche jumelle).
+  ../vyvil-core.sdd — features `query_client`, `prometheus`, `loki` de ../Cargo.toml.
+
+Must:
+  N'exister que sous la feature `query_client` (`query_client = ["http", "rt", "rhai"]`, hors
+    `default`, documentée comme noyau PARTAGÉ (et non plus interne, décision 2026-11-20 « Rust
+    first ») : ses types sont publics et stables ; les consommateurs activent `prometheus` ou `loki`, qui
+    l'impliquent).
+  Construire @crate::query_client::QueryClient depuis une @crate::query_client::QueryClientConfig
+    posée par l'hôte, et seulement par lui : URL de base et préfixe de chemin (Mimir sert l'API
+    Prometheus sous `/prometheus`, un Prometheus nu sous `/`), tenant (`X-Scope-OrgID`, optionnel),
+    authentification OPTIONNELLE et extensible (aucune par défaut ; bearer, basic, mTLS se branchent
+    quand un déploiement les exige, sans changer le contrat côté script), CA du serveur, délai de
+    requête, plafonds de volume.
+  Tenir les plafonds de @crate::query_client::QueryLimits (séries, points, lignes, octets) comme des
+    bornes toujours actives : des valeurs par défaut sûres existent (aucun plafond « illimité »
+    implicite), l'hôte les relève ou les baisse. Le plafond de séries est appliqué par le NOYAU à sa
+    propre porte de flux : les éléments du tableau de résultats (séries ou flux) au-delà de
+    `max_series` sont tronqués (`truncated: true`, décision du développeur principal 2026-11-19) —
+    ce n'est pas une limite que l'appelant apporte à la porte.
+  Lire la réponse EN FLUX, jamais entièrement en mémoire : corps lu par morceaux, désérialisation
+    en flux (visiteur @serde sur le tableau de résultats, ./prometheus.sdd et ./loki.sdd portent
+    leur forme), arrêt de la lecture dès qu'un plafond est atteint. Ce qui a été COMPLÈTEMENT lu
+    avant le plafond est rendu, avec `truncated: true` ; jamais de série ou de flux rendu à moitié
+    sans que `truncated` le dise. L'erreur typée `TooLarge` ne sert que si le premier élément
+    dépasse à lui seul le plafond d'octets.
+  Appliquer le délai de requête par @tokio::time::timeout autour de la lecture entière (le
+    @crate::http::RestClient a un délai non configurable, décision actée de ./http.sdd, qui ne
+    change pas) : le délai couvre connexion ET lecture du corps — arbitrage du développeur
+    principal (2026-11-18) : la connexion n'est pas préemptée par le timeout configuré mais
+    bornée par le délai de @crate::http::RestClient et reclassée `Timeout` au retour
+    (deadline absolu partagé) ; le reclassement wall-clock satisfait le `Must`.
+  Calculer le pas automatique (`step: "auto"`) pour tenir dans le plafond de points :
+    `max(1 s, ceil(durée / max_points))` arrondi à la seconde supérieure ; refuser un pas explicite
+    trop fin (durée / pas > max_points) par l'erreur typée `StepTooFine`, qui porte le pas minimal
+    accepté.
+  Rendre des erreurs typées par @crate::query_client::QueryError, enveloppée dans
+    @variant-Error::Query, discriminables sans comparer de chaîne : `Timeout`, `Syntax` (le
+    message du serveur est CONSERVÉ — utile à qui écrit la requête), `RateLimited` (429, avec
+    `Retry-After` s'il est présent), `Unauthorized` (401 et 403), `TooLarge`, `StepTooFine`,
+    `NonFinite` (valeur `±Inf` rencontrée), `Unreachable` (source injoignable), `BadResponse`
+    (réponse de forme inattendue). Le `Display` de chaque variante porte un code stable
+    `QUERY-001` à `QUERY-009` dans l'ordre ci-dessus.
+  N'inclure AUCUN jeton ni URL à identifiants dans un message, un log ou un `Debug` : le `Debug` de
+    @crate::query_client::QueryClientConfig et de @crate::query_client::QueryClient masque
+    toute valeur d'authentification (`<redacted>`), et les messages d'erreur ne reprennent jamais
+    l'URL complète mais l'hôte et le chemin seuls.
+  Garder le script hors de la configuration : le module Rhai bâti par ./prometheus.sdd et ./loki.sdd
+    n'offre aucun accès à la configuration (ni getter d'URL, de tenant ou de jeton), et la requête
+    et la plage de temps sont les seuls paramètres du script.
+
+Must not:
+  Recevoir l'URL, le tenant ou un en-tête du script, même optionnellement.
+  Rendre un résultat tronqué sans `truncated: true`, ou charger la réponse entière avant de
+    l'inspecter.
+  Écrire (règles d'alerte, push) ni explorer des métadonnées (listes de labels) : à ajouter si un
+    consommateur le demande.
+  Traiter du domaine : masquage de secrets dans les logs, logique de tenant, corrélation d'incident,
+    découpage ou agrégation des séries (le producteur de la requête décide de l'agrégation).
+  Câbler quoi que ce soit dans @crate::engine::Script::new_bare : un module d'hôte est enregistré par
+    l'hôte, sous le nom qu'il choisit.
+
+Depends on:
+  ./http.rs — @crate::http::RestClient (construit côté hôte, GET brut en flux).
+  ./rt.rs — @crate::rt::block_on.
+  tokio — `time::timeout` (feature `time` déjà déclarée).
+  serde, serde_json — désérialisation en flux (`DeserializeSeed` / `Visitor`).
+
+Exposes:
+  @crate::query_client::QueryClientConfig — config hôte (`base_url`, `path_prefix`, `tenant`,
+    `auth`, `server_ca`, `timeout`, `limits`) ; `Debug` masqué.
+  @crate::query_client::QueryAuth — énum `None` (défaut), `Bearer`, `Basic`, `Mtls`.
+  @crate::query_client::QueryLimits — `max_series`, `max_points`, `max_lines`, `max_bytes`.
+  @crate::query_client::QueryClient — `Clone`, construit par
+    @crate::query_client::QueryClient::new(config) (@crate::Result : URL invalide, CA illisible) ;
+    base des deux connecteurs. @crate::query_client::QueryClient::limits — vue lecture seule
+    `&QueryLimits` pour l'hôte et les connecteurs (calcul du leur d'un plafond de paramètre de
+    requête, ./loki.sdd) ; sans équivalent côté script.
+  @crate::query_client::QueryError — énum typée ci-dessus, avec `Display` à codes stables.
+  `run_blocking` (`pub(crate)`, gated `prometheus` ou `loki`) — pont async des clients Rust
+    @crate::prometheus::PrometheusClient et @crate::loki::LokiClient : `spawn_blocking` autour du noyau
+    synchrone, panique ou annulation du job rendue en @variant-Error::Other ; sous runtime
+    `current_thread` l'erreur explicite de `rt::block_on` remonte (dette : noyau en vrai async).
+
+Handles:
+  Prometheus et Loki à tenant seul (`X-Scope-OrgID`, aucune authentification) : cas nominal des
+    déploiements actuels, qui sont multi-tenants par cet en-tête sans authentification — décision du
+    2026-11-18. Une réponse de forme inattendue (`status: "error"` sans `errorType` connu, JSON non
+    conforme) rend `BadResponse`, jamais une panique.
+
+Tasks:
+  [x] Spec approuvée, puis tests depuis les `Scenario`, puis implémentation minimale de
+    ./query_client.rs. Pas de porte nommée propre (décision de cette spec : la feature `query_client`
+    n'a pas de consommateur seule) : les verrous du noyau tournent sous les portes
+    `prometheus` et `loki` de ../tooling.sdd, et `cargo hack --each-feature` la compile et la lint.
+  [x] Jumelle de ../vyvil-core.sdd : features `query_client`, `prometheus`, `loki` dans ../Cargo.toml.
+    État produit : les trois lignes sont au manifest — `query_client = ["http", "rt", "rhai"]`
+    (noyau partagé), `prometheus = ["query_client"]` et `loki = ["query_client"]`.
+  [x] Arbitrages du développeur principal (2026-11-18), consignés au contrat : verrous structurels
+    acceptés pour « sans requête réseau » (pureté de @crate::query_client::resolve_step + port
+    invalide) et « mémoire bornée » (lecture chunk par chunk, borne du rendu) ; reclassement
+    wall-clock du délai de connexion accepté ci-dessus (`Must` délai) ; le `Debug` de
+    @crate::query_client::QueryClientConfig affiche `base_url` en clair — une URL à identifiants
+    n'est pas le cas nominal (l'auth passe par @crate::query_client::QueryAuth), hors périmètre.
+  [x] Appliquer `max_series` à la porte du noyau (amendement `Must` plafonds du 2026-11-19,
+    arbitré pour débloquer le Scenario « dépassement de plafond » de ./prometheus.sdd) : le
+    plafond de séries devient une borne du noyau, plus un `element_limit` apporté par l'appelant.
+    Débloque le test `#[ignore]` de ./prometheus.rs ; verrou propre ajouté dans ./query_client.rs.
+  [x] Exposer @crate::query_client::QueryClient::limits (arbitrage du développeur principal
+    2026-11-19, face lecture seule de « l'hôte configure ») : vue `&QueryLimits` pour que les
+    connecteurs calculent le leur des plafonds de paramètres de requête (le `limit` de
+    ./loki.sdd) ; jamais exposée au script. Débloque le Scenario « limite et direction » de
+    ./loki.sdd.
+  [x] Jumelle de ./lib.sdd : déclarer `query_client`, ajouter @variant-Error::Query.
+  [x] Décision confirmée (2026-11-18) : délai par @tokio::time::timeout autour du flux, plutôt que
+    de rendre `DEFAULT_TIMEOUT` de ./http.rs configurable (ce qui changerait le contrat de ./http.sdd).
+  [-] Question tranchée (2026-11-18) : requête à URL très longue (PromQL/LogQL volumineux) — GET
+    seul ici ; la bascule en POST `application/x-www-form-urlencoded` (acceptée par Prometheus et
+    Loki) dépend de l'API du @crate::http::RestClient et n'est pas inscrite.
+
+  [x] Sortir `query_client` du statut « interne » (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust
+    first ») : reprendre le commentaire de la feature dans ../Cargo.toml (noyau partagé, types
+    publics, activé par `prometheus` ou `loki`), la rustdoc du module dans ./lib.rs, et les phrases
+    `Purpose`, `References` et `Must` de cette spec qui disent « interne ». Aucun changement de nom ni de
+    comportement : la feature garde son nom et reste impliquée par `prometheus` et `loki` (jumelle de
+    ./prometheus.sdd, ./loki.sdd et ./lib.sdd).
+  [x] Pont async des clients Rust (jumelle de ./prometheus.sdd et ./loki.sdd) : ajouter dans ./query_client.rs
+    `pub(crate) async fn run_blocking<T: Send + 'static>(job: impl FnOnce() -> crate::Result<T> + Send +
+    'static) -> crate::Result<T>` : `tokio::task::spawn_blocking` autour du noyau synchrone, qui garde son
+    contrat, ses plafonds et ses verrous inchangés (décision d'architecture « hybride », 2026-11-20 :
+    le noyau en flux reste synchrone, sa réécriture en vrai async est une dette ultérieure sans casse d'API).
+    Une `JoinError` (panique du job ou annulation) devient @variant-Error::Other, jamais une panique
+    propagée. Limite documentée dans la rustdoc : sous runtime `current_thread`, le noyau sync appelle
+    `rt::block_on` qui rend son erreur explicite ; l'erreur remonte telle quelle, sans panique. Tests d'abord :
+    job qui réussit (multi-thread), job qui panique rendu en `Error::Other`, job sous `current_thread`
+    rendu en erreur explicite. Clos (synthèse validator verte, 2026-11-20) : `run_blocking` est gated
+    `#[cfg(any(feature = "prometheus", feature = "loki"))]` (le noyau seul n'a aucun appelant, et un `allow`
+    est proscrit par le harnais) ; un troisième client l'étendra.
+
+Scenario: plage dépassant le plafond de points
+  Given `max_points = 1000` et une plage de 7 jours
+  When le pas est `"auto"`
+  Then le pas calculé tient en 1000 points au plus
+  When le pas est explicite à `15s` sur la même plage
+  Then l'appel échoue en `StepTooFine` portant le pas minimal, sans requête réseau
+
+Scenario: réponse au-dessus du plafond d'octets
+  Given une réponse de plusieurs centaines de mégaoctets et `max_bytes = 1 MiB`
+  When le noyau la lit
+  Then les séries ou flux complets lus avant le plafond sont rendus avec `truncated: true`, la mémoire
+    reste bornée par le plafond (pas de chargement intégral), et la lecture s'arrête
+  And si même le premier élément dépasse le plafond, l'erreur est `TooLarge`
+
+Scenario: tenant et jeton jamais exposés au script
+  Given un client configuré avec un tenant et un jeton, enregistré comme module Rhai
+  When un script liste les fonctions du module et appelle chacune
+  Then aucune ne rend l'URL, le tenant ou le jeton, et aucune ne les accepte en paramètre
+
+Scenario: configuration sans authentification
+  Given une configuration avec tenant seul et `auth = None`
+  When une requête part
+  Then elle porte `X-Scope-OrgID` et aucun en-tête `Authorization`
+
+Scenario: le jeton ne sort dans aucune sortie
+  Given une configuration à jeton porteur `s3cr3t`
+  When le `Debug` de la config, de chaque variante de @crate::query_client::QueryError et de chaque
+    log de la requête sont rendus (succès comme échec)
+  Then la chaîne `s3cr3t` n'apparaît nulle part, ni une URL à identifiants
+
+Scenario: erreurs typées
+  Given un serveur répondant 400 avec un message de syntaxe, un autre 429 avec `Retry-After: 2`, un autre
+    401, un autre qui ne répond pas, et une adresse injoignable
+  When le noyau les interroge
+  Then les erreurs sont respectivement `Syntax` (message du serveur conservé), `RateLimited`
+    (`retry_after = 2 s`), `Unauthorized`, `Timeout` et `Unreachable`
+
+Scenario: préfixe Mimir et Prometheus nu
+  Given une même requête, une config à préfixe `/prometheus` et une à préfixe vide
+  When elles sont envoyées à un faux serveur
+  Then les chemins reçus sont respectivement `/prometheus/api/v1/query` et `/api/v1/query`
+
+Scenario: sans la feature, rien n'existe
+  Given une compilation sans `query_client` (donc sans `prometheus` ni `loki`)
+  Then @crate::query_client n'existe pas
+
+
+Scenario: run_blocking ne propage jamais une panique du job
+  Given un job qui panique, passé à `run_blocking` sous un runtime multi-thread
+  When il est attendu
+  Then le résultat est `Err(Error::Other(..))` et le runtime reste utilisable pour un appel suivant
+
+Done when:
+  Chaque Scenario est un test vert, la batterie de ../tooling.sdd passe, et les tâches jumelles de
+    ./prometheus.sdd et ./loki.sdd sont cochées dans le même commit.

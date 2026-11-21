@@ -82,6 +82,9 @@ cargo test --no-default-features --features rhai,fs            # branche gated `
 cargo test --no-default-features --features rhai,password      # branche gated `password` des enregistrements de `new_bare`, idem
 cargo test --no-default-features --features rhai,quantity      # branche gated `quantity` des enregistrements de `new_bare`, idem
 cargo test --no-default-features --features rt                 # pont public `rt::block_on` sans `rhai` (issue #23), tests d'intégration hors crate
+cargo test --no-default-features --features feeds              # verrous du module `feeds` sous sa seule feature (graphe http+rt+rhai impliqué)
+cargo test --no-default-features --features prometheus         # verrous `prometheus` + noyau `query_client` (pas de porte propre : cargo hack --each-feature)
+cargo test --no-default-features --features loki               # verrous `loki` + noyau `query_client`, idem
 cargo clippy --all-targets -- -D warnings              # harnais default, code de test inclus (zéro warning toléré)
 cargo clippy --no-default-features --features k8s --all-targets -- -D warnings
 cargo clippy --no-default-features --features oci --all-targets -- -D warnings
@@ -95,6 +98,9 @@ cargo clippy --no-default-features --features rhai,fs --all-targets -- -D warnin
 cargo clippy --no-default-features --features rhai,password --all-targets -- -D warnings
 cargo clippy --no-default-features --features rhai,quantity --all-targets -- -D warnings
 cargo clippy --no-default-features --features rt --all-targets -- -D warnings
+cargo clippy --no-default-features --features feeds --all-targets -- -D warnings
+cargo clippy --no-default-features --features prometheus --all-targets -- -D warnings
+cargo clippy --no-default-features --features loki --all-targets -- -D warnings
 cargo clippy --all-features --all-targets -- -D warnings
 cargo hack check --each-feature --no-dev-deps             # matrice chaque feature isolée
 cargo hack clippy --each-feature --no-dev-deps -- -D warnings
@@ -113,7 +119,7 @@ compilent et lintent chaque feature isolée (y compris `fs`, `shell`, `password`
 `http`, `hbs-scripting`…), là où la liste explicite ci-dessus ne nomme que des combinaisons à
 verrou désigné — toute feature qu'aucun verrou nommé ne désigne n'est jouée que par elle.
 Elles **ne remplacent pas** les combinaisons explicites qui portent un sens (`k8s,oci,s3`,
-`--all-features`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`, `rhai,fs`, `rhai,password`, `rhai,quantity`), qui restent en plus (voir `tooling.sdd`) :
+`--all-features`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`, `rhai,fs`, `rhai,password`, `rhai,quantity`, `feeds`, `prometheus`, `loki`), qui restent en plus (voir `tooling.sdd`) :
 une porte qui n'existe que parce qu'un verrou précis n'y tourne pas se nomme dans la liste, elle
 ne se déduit pas de `--each-feature` qui ne fait que compiler.
 

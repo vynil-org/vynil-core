@@ -1813,7 +1813,7 @@ impl K8sJob {
 // constructeurs comme fonctions du namespace global, objet en premier argument.
 // Les macros @crate::register_k8s_object/@crate::register_k8s_generic/
 // @crate::register_k8s_raw restent publiées inchangées : surface stable pour les
-// types custom en aval (vynil) et rejouées par ./k8s_mock.rs ; les enregistreurs ne
+// types custom en aval (vynil) et rejouées en tests par ./k8s_mock.rs ; les enregistreurs ne
 // les emploient plus, leur définition unique est la liste `*_fns`.
 
 /// The `data` getter of `DynamicObject` (cloned, never the live map).

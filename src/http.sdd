@@ -3,7 +3,7 @@ Spec: http
 Purpose:
   Contrat groupé de ./http.rs et ./http_mock.rs (règle source+mock d'un seul contrat,
     tâche nommée de ./vyvil-core.sdd) : @crate::http::RestClient, client HTTP sur @reqwest
-    0.12 en blocage-sync, à trois étages par verbe (@crate::http::RestClient::http_*
+    0.12 en blocage-sync (hors `http_get_async`, seule méthode asynchrone, lot E), à trois étages par verbe (@crate::http::RestClient::http_*
     renvoyant @reqwest::Response brut, @crate::http::RestClient::body_* le texte,
     @crate::http::RestClient::json_* un @serde_json::Value), 5 faces @crate::http::RestClient::obj_*
     sur énum de verbes, 8 méthodes Rhai rendant une map figée {code, headers, body, json},
@@ -59,9 +59,9 @@ References:
   ./engine.sdd, ./s3.sdd, ./oci.sdd — tier : les ponts async→sync des trois modules (28
     occurrences dans ./http.rs) passent par le helper crate-privé `crate::rt::block_on`
     (voir ./rt.sdd) : plus aucune panique tokio depuis un script.
-  ./tooling.sdd — harnais : 25 @allow(clippy::needless_pass_by_value) (17 ./http.rs,
+  ./tooling.sdd — harnais : 27 @allow(clippy::needless_pass_by_value) (19 ./http.rs,
     8 ./http_mock.rs) sous DEUX variantes de commentaire citant ./vyvil-core.sdd (« signature
-    imposée par l'API Rhai » et « signature publique exposée sur crates.io »), 4 @core::marker::must_use.
+    imposée par l'API Rhai » et « signature publique exposée sur crates.io »), 7 @core::marker::must_use.
 
 Must:
   N'exister tous deux que sous la porte `http`, avec @cfg_attr docsrs, `http` inclus dans
@@ -225,13 +225,26 @@ Must:
     `(_arg)` ; @core::default::Default::default jamais ; les corps `_val` sont ignorés.
   Enregistrer dans @crate::httpmock_rhai_register (fixtures @std::vec::Vec capturées par la
     closure de construction, CLONÉES dans chaque nouveau client) : le MÊME nom de type Littéral
-    `"RestClient"` que le vrai, VINGT-SIX noms — même table que le vrai SAUF `new_client`
-    ABSENT, `http_get_yaml` ABSENTE et l'alias `http_head` ABSENT — trois trous assumés et
-    documentés (décision actée : on ne change rien au mock ; les consommateurs redéfinissent
-    `http_get_yaml` en script, comme le fait vynil), avec `headers_get`/`headers_has` réenregistrés depuis le VRAI ./http.rs.
-  Maintenir le harnais : 25 @allow(clippy::needless_pass_by_value) (§References), 4
-    @core::marker::must_use (@crate::http::RestClient::new 76, @crate::http::headers_has 1250,
-    @crate::http_mock::RestClientMock::new 47, @crate::http::http_module) ; aucun `unwrap`/`expect`/`panic!`/`todo!`/`dbg!`/`println!`
+    `"RestClient"` que le vrai, VINGT-SIX noms — même table que le vrai SAUF `new_client` ABSENT,
+    `http_get_yaml` ABSENTE, l'alias `http_head` ABSENT et les libres `json_subset` et
+    `json_equal` ABSENTES — cinq trous au total, assumés et documentés (décision actée : on ne
+    change rien au mock ; les consommateurs redéfinissent `http_get_yaml` en script, comme le
+    fait vynil), avec `headers_get`/`headers_has` réenregistrés depuis le VRAI ./http.rs.
+  Offrir le jumeau module @crate::http_mock::httpmock_module(mocks) de @crate::httpmock_rhai_register
+    (issue vynil-org/vynil-core#47, décision du 2026-11-18, règle des jumeaux et des noms courts de
+    ../vyvil-core.sdd) : MÊME liste de registrations que l'enregistreur, qui reste la seule définition,
+    enregistrable par @rhai::Engine::register_static_module sous le nom `http` À LA PLACE de
+    @crate::http::http_module (« soit le réel, soit le double »). Les méthodes (`get`, `post`, `head`,
+    `set_baseurl`, `add_header`…) restent sur l'espace global comme dans le jumeau réel ; les fonctions
+    libres sont qualifiées seulement : `http::new_client` (de `new_http_client`), `http::headers_get` et
+    `http::headers_has`. Les trous du double ne bougent pas (décision actée) : `http::get_yaml`,
+    `http::json_subset` et `http::json_equal` sont ABSENTES du jumeau comme `http_get_yaml` l'est de
+    l'enregistreur ; les alias `http_*` ne sont pas posés (règle du jumeau réel). Même fixtures clonées
+    dans chaque client que l'enregistreur.
+  Maintenir le harnais : 27 @allow(clippy::needless_pass_by_value) (§References), 7
+    @core::marker::must_use (@crate::http::RestClient::new, @crate::http::headers_has,
+    @crate::http::json_subset, @crate::http::json_equal, @crate::http::http_module,
+    @crate::http_mock::RestClientMock::new, @crate::http_mock::httpmock_module) ; aucun `unwrap`/`expect`/`panic!`/`todo!`/`dbg!`/`println!`
     dans les deux fichiers — les `unwrap_or(0)`/`unwrap_or_default` contractés ci-dessus sont
     des replis, non des panic.
 
@@ -249,10 +262,10 @@ Must not:
     hors runtime là où le vrai panique ; le mock ne peut ni échouer sur transport ni loguer.
   Laisser passer un en-tête d'authentification dans un log, ou un `auth_type` inconnu vers une
     requête anonyme.
-  Promettre au mock la table du vrai au complet : `new_client`, `http_get_yaml` et `http_head`
-    lui manquent, ses setters sont mutes, son matching ignore baseurl/body/ordre de priorité
-    autre que premier-gagné — la substitution ne vaut que pour les 26 noms communs en mode
-    nominal.
+  Promettre au mock la table du vrai au complet : `new_client`, `http_get_yaml`, `http_head`,
+    `http::json_subset` et `http::json_equal` lui manquent, ses setters sont mutes, son matching
+    ignore baseurl/body/ordre de priorité autre que premier-gagné — la substitution ne vaut que
+    pour les 26 noms communs en mode nominal.
 
 Depends on:
   reqwest — @reqwest::Client/@reqwest::ClientBuilder (timeout, user_agent,
@@ -294,6 +307,9 @@ Exposes:
     @crate::http::RestClient::add_header_json_content/@crate::http::RestClient::add_header_json_accept
     (les deux chaînables, NON enregistrées en script), @crate::http::RestClient::add_header_json,
     @crate::http::RestClient::add_header_bearer, @crate::http::RestClient::add_header_basic.
+  @crate::http::RestClient::http_get_async — `pub async fn(&mut self, path: &str) ->
+    @crate::Result<@reqwest::Response>`, porte `http` : le GET sans `rt::block_on`, base des clients
+    Rust async-first (./feeds.sdd) ; `http_get` en est l'enveloppe synchrone. Seul verbe asynchrone.
   Étages par verbe — `http_get`, `http_head` (@crate::Result de @reqwest::Response, comme les
     autres), `http_patch/http_put/http_post/http_delete` + @crate::http::RestClient::http_post_form
     (@std::primitive::slice de paires) + @crate::http::RestClient::http_delete_with_body ;
@@ -319,7 +335,9 @@ Exposes:
   @crate::http_mock::RestClientMock — `#[derive(Clone, Debug)] pub struct` deux champs PRIVÉS ;
     @crate::http_mock::RestClientMock::new (`#[must_use]`), setters/add_* no-op publics, @crate::http_mock::RestClientMock::baseurl
     (stocke), huit verbes miroirs de noms script.
-  @crate::http_mock::httpmock_rhai_register — `pub fn(engine, mocks)` ; seul point d'entrée mock.
+  @crate::http_mock::httpmock_rhai_register — `pub fn(engine, mocks)` ; enregistreur du double.
+  @crate::http_mock::httpmock_module — `#[must_use] pub fn(mocks: @std::vec::Vec de
+    @crate::http_mock::HttpMockItem) -> @rhai::Module`, jumeau du précédent, nom de namespace `http`.
   @crate::http::http_module — `#[must_use] pub fn() -> @rhai::Module`, porte `http`, jumeau de
     @crate::http::http_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
     même comportement, enregistrable par @rhai::Engine::register_static_module sous le nom `http` ;
@@ -404,6 +422,15 @@ Handles:
     lecture.
 
 Tasks:
+  [x] Jumeau module du double (issue #47) : ajouter @crate::http_mock::httpmock_module dans
+    ./http_mock.rs, qui partage la liste de registrations de @crate::httpmock_rhai_register (une seule
+    définition, motif double cible de ../vyvil-core.sdd). Tests d'abord depuis les Scenario ci-dessous.
+    Reprendre à la clôture les sections descriptives (`Exposes`, `Purpose`, le `Must not` « Promettre
+    au mock la table du vrai » qui énumère les trous : y nommer `json_subset` et `json_equal`, absents
+    du double aujourd'hui). Jumelle de ../vyvil-core.sdd (tâche « Jumeaux module des trois doubles »),
+    de ./k8s.sdd, de ./oci.sdd et de ../docs.sdd (page mocking), cochée dans le même commit.
+    # Question à relire : l'issue citait `http::get_yaml` dans le jumeau ; elle reste absente (décision
+    # actée du 2026-11-18 : pas de mock au-delà de l'existant, un script redéfinit `get_yaml`).
   [x] Convertir les Scenario en tests passants. ./http.rs portait 11 tests inline à HEAD
     (215 sous la porte `http` — la baseline que ce fichier annonçait « 8 » et « 199 » était
     fausse, mesuré) ; le lot A-F y a ajouté 22 verrous et le lot G (repli json + CA
@@ -542,6 +569,21 @@ Tasks:
     libres qualifiées seulement ; `http_rhai_register` garde tous ses noms. Reprendre le Scenario
     « le registre des 31 noms » (compte de l'enregistreur 31, du jumeau moins les alias) et
     « http_module équivaut à http_rhai_register ». Jumelle de la tâche de ../vyvil-core.sdd.
+
+  [x] GET asynchrone (lot E de ../vyvil-core.sdd, décision du développeur principal 2026-11-20 « Rust
+    first », jumelle de ./feeds.sdd) : ajouter `pub async fn http_get_async(&mut self, path: &str) ->
+    crate::Result<reqwest::Response>` à @crate::http::RestClient. Même construction du client, mêmes
+    en-têtes, mêmes erreurs (@variant-Error::ReqwestError), même `debug!`, SANS `rt::block_on`.
+    `http_get` devient la mince enveloppe synchrone de la même fonction (`rt::block_on` de
+    `http_get_async`, résultat aplati) : son contrat observable (messages, erreur explicite sur runtime
+    `current_thread`, annulation par jeton) ne change pas et ses tests actuels sont le verrou. Seul le
+    GET passe en async : les autres verbes restent synchrones (à ouvrir quand un consommateur le
+    demande). Clos (synthèse validator verte, 2026-11-20) : le `block_on` de `http_get` englobe désormais
+    construction du client et envoi (avant : l'envoi seul), l'annulation par jeton reste honorée.
+    Tests d'abord : sous `#[tokio::test(flavor = "multi_thread")]`, `http_get_async` rend les
+    mêmes statut et corps que `http_get` sur un même faux serveur ; sous `#[tokio::test]`
+    (`current_thread`), `http_get_async` répond alors que `http_get` rend l'erreur contractée.
+    Reprendre `Exposes` et `Purpose` à la clôture.
 
 Scenario: http par défaut mais jamais auto-wired
   Given la crate en default (`http` y est, ./Cargo.toml ligne 50) et un
@@ -709,6 +751,21 @@ Scenario: le registre des 31 noms
   Then `type_of(c)` est "RestClient" ; `header_head`, `body_get`, `json_get`, `obj_read`,
     `add_header_json_content` sont TOUS inconnus en script
 
+Scenario: httpmock_module équivaut à httpmock_rhai_register
+  Given un @rhai::Engine où httpmock_rhai_register(mocks) est appelé et un second, vierge, où le
+    résultat de httpmock_module(mocks) est enregistré par register_static_module sous le nom `http`
+  When un script écrit en noms qualifiés (`let c = http::new_client("b"); c.get("/a")`) tourne sur le
+    second et son équivalent en noms globaux (`new_http_client`) sur le premier
+  Then les deux rendent la fixture, `http::headers_get` et `http::headers_has` répondent, et les
+    méthodes restent appelables en espace global ; `http::get_yaml`, `http::json_subset` et
+    `http::json_equal` n'existent pas sous le double (fonction inconnue)
+
+Scenario: même script sous le jumeau réel et sous le double
+  Given un script `let c = http::new_client("b"); c.get("/a")`
+  When il tourne sur un engine portant @crate::http::http_module puis sur un engine portant
+    @crate::http_mock::httpmock_module, sous le même nom `http`
+  Then il s'exécute sans modification dans les deux cas (réseau d'un côté, fixture de l'autre)
+
 Scenario: le mock est un serveur dans une liste
   Given des fixtures [GET /a → #{code: 200, body: "ok"}, GET /a → #{code: 200, body: "ok2"}]
     via @crate::httpmock_rhai_register
@@ -720,7 +777,7 @@ Scenario: le mock est un serveur dans une liste
   When `set_server_ca`/`add_header_bearer`/`headers_reset` sont appelés
   Then RIEN ne change (no-op `(_arg)`) et aucun moyen d'échouer
 
-Scenario: co-enregistrement, la substitution à deux trous
+Scenario: co-enregistrement, la substitution à trois trous
   Given un engine, @crate::http::http_rhai_register PUIS @crate::httpmock_rhai_register
   When `new_http_client("http://x")` rend
   Then un @crate::http_mock::RestClientMock — dernier enregistré gagne, type nommé "RestClient"
@@ -756,3 +813,12 @@ Scenario: fonctions documentées sous metadata (http)
     que rhai affiche seul. `gen_fn_signatures` rend par exemple `sha256(text: string) -> string` et jamais
     une signature sans retour
   And sans la feature, les mêmes tests de comportement passent sans différence
+
+
+
+Scenario: http_get_async fonctionne là où http_get refuse
+  Given un faux serveur répondant 200 et un corps connu
+  When `http_get_async` est attendu sous un runtime tokio `current_thread`
+  Then la réponse porte le statut et le corps du serveur
+  When `http_get` est appelé sous le même runtime
+  Then il rend l'erreur explicite `requires a multi-thread tokio runtime`, sans panique, comme avant

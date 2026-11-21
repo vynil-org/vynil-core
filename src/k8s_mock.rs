@@ -3,9 +3,12 @@
 //! Drop-in, in-memory replacements for [`crate::k8s`] types that satisfy the same Rhai bindings
 //! without a live cluster. See `k8s_mock_rhai_register`.
 
-use crate::{RhaiRes, register_k8s_generic, register_k8s_object, register_k8s_raw};
+use crate::{
+    RhaiRes,
+    engine::{Target, register_at, register_free_at, register_get_at, register_type_at},
+};
 use kube::api::DynamicObject;
-use rhai::{Dynamic, Engine, FnPtr, Map, NativeCallContext, serde::to_dynamic};
+use rhai::{Dynamic, Engine, FnPtr, Map, Module, NativeCallContext, serde::to_dynamic};
 use std::sync::{Arc, Mutex, PoisonError};
 
 /// In-memory stand-in for [`crate::k8s::K8sObject`] (Rhai `K8sObject` in mock mode).
@@ -766,114 +769,504 @@ impl K8sGenericMock {
 
 // ── Rhai registration (generic part only) ────────────────────────────────────
 
+/// Module twin of [`k8s_mock_rhai_register`] (issue #47): the same mock types and the
+/// same functions, under the global namespace of a fresh [`Module`], registrable by
+/// [`Engine::register_static_module`] under the name the consumer picks. Free names are
+/// short here (`resource`, `new_raw`, `update_crd_cache`), qualified only; methods keep
+/// their names and stay callable as methods. A twin that drifts from its registrar is a
+/// defect: both share the single `k8s_mock_fns` list.
+#[must_use]
+#[allow(clippy::needless_pass_by_value)] // signature jumelle de k8s_mock_rhai_register (vyvil-core.sdd)
+pub fn k8s_mock_module(arced_mocks: Arc<Mutex<Vec<Dynamic>>>, created: Arc<Mutex<Vec<Dynamic>>>) -> Module {
+    let mut module = Module::new();
+    k8s_mock_fns(&mut Target::Module(&mut module), &arced_mocks, &created);
+    module
+}
+
 /// Registers the mock types under the real Rhai names (`K8sGeneric`, `K8sObject`, `K8sRaw`,
 /// workloads), wires `k8s_resource` to the seeded `arced_mocks` / `created` databases and
-/// replaces `update_k8s_crd_cache` with a no-op (no cluster in mock mode).
+/// registers `update_k8s_crd_cache` as a no-op (no cluster in mock mode).
+///
+/// Module twin: [`k8s_mock_module`] — same single `k8s_mock_fns` list, same semantics.
 #[allow(clippy::needless_pass_by_value)] // signature publique exposée sur crates.io (vyvil-core.sdd)
 pub fn k8s_mock_rhai_register(
     engine: &mut Engine,
     arced_mocks: Arc<Mutex<Vec<Dynamic>>>,
     created: Arc<Mutex<Vec<Dynamic>>>,
 ) {
-    let lmocks = arced_mocks.clone();
-    let lcreated = created.clone();
-    let new_global = move |name: String| -> K8sGenericMock {
-        let mock = lmocks.clone();
-        K8sGenericMock::new_global(mock.clone(), name, lcreated.clone())
-    };
-    let lmocks = arced_mocks.clone();
-    let lcreated = created.clone();
-    let new_ns = move |name: String, ns: String| -> K8sGenericMock {
-        let mock = lmocks.clone();
-        K8sGenericMock::new_ns(mock, name, ns, lcreated.clone())
-    };
-    let lmocks = arced_mocks.clone();
-    let lcreated = created.clone();
-    let new_group_ns = move |apiv: String, name: String, ns: String| -> K8sGenericMock {
-        let mock = lmocks.clone();
-        K8sGenericMock::new_group_ns(mock, apiv, name, ns, lcreated.clone())
-    };
-    engine
-        .register_type_with_name::<DynamicObject>("DynamicObject")
-        .register_get("data", |obj: &mut DynamicObject| -> Dynamic {
-            Dynamic::from(obj.data.clone())
-        });
-    register_k8s_object!(engine, K8sObjectMock);
-    register_k8s_generic!(
-        engine,
-        K8sGenericMock,
-        K8sObjectMock,
-        new_global,
-        new_ns,
-        new_group_ns
+    k8s_mock_fns(&mut Target::Engine(engine), &arced_mocks, &created);
+}
+
+// ── Motif double cible (k8s.sdd, issue #47) — reproduction du pilote de ./engine.rs,
+// ses auxiliaires `Target`/`register_at`/`register_free_at`/`register_get_at`/
+// `register_type_at` étant centralisés dans ./engine.rs (`pub(crate)`) et importés ici.
+// La table du double est définie UNE seule fois dans `k8s_mock_fns` (et ses sous-listes,
+// seuil pedantic `too_many_lines`), appliquée soit directement à un Engine — l'enregistreur,
+// les fonctions tombent dans l'espace de noms global — soit à un Module dans ce même espace
+// — le jumeau, enregistrable par @rhai::Engine::register_static_module sous le nom que
+// choisit le consommateur. Les libres portent les mêmes noms courts que le réel (table
+// « Noms courts » de ./k8s.sdd : `resource`, `new_raw`, `update_crd_cache`). Les macros
+// @crate::register_k8s_object/@crate::register_k8s_generic/@crate::register_k8s_raw
+// restent publiées inchangées (surface stable pour les types custom en aval) ; le double
+// ne les rejoue plus, sa définition unique est cette liste — et `update_k8s_crd_cache` n'y
+// voit jamais le vrai @crate::k8s::update_cache que la macro charriait avant de l'écraser.
+
+/// The mock's whole `k8s` group defined once (motif double cible): the `DynamicObject`
+/// entry, the mock object, generic, raw and workload groups, in that order.
+fn k8s_mock_fns(
+    target: &mut Target<'_>,
+    mocks: &Arc<Mutex<Vec<Dynamic>>>,
+    created: &Arc<Mutex<Vec<Dynamic>>>,
+) {
+    k8s_mock_dynamicobject_fns(target);
+    k8s_mock_object_fns(target);
+    k8s_mock_generic_fns(target, mocks, created);
+    k8s_mock_raw_fns(target);
+    k8s_mock_workload_fns(target, mocks);
+}
+
+/// The mock `DynamicObject` type entry and its `data` getter (cloned, never the live map).
+fn k8s_mock_dynamicobject_fns(target: &mut Target<'_>) {
+    register_type_at::<DynamicObject>(target, "DynamicObject");
+    register_get_at(
+        target,
+        "data",
+        &["/// Cloned `data` map of the dynamic object, as a Rhai value."],
+        &["obj: &mut DynamicObject", "Dynamic"],
+        |obj: &mut DynamicObject| -> Dynamic { Dynamic::from(obj.data.clone()) },
     );
-    // register_k8s_generic! hardcodes the real k8s::update_cache for
-    // update_k8s_crd_cache, which would spin up a real cluster client. In mock
-    // mode (tests / `agent package test`) there is no cluster: override it with
-    // a no-op so install scripts calling update_k8s_crd_cache() don't panic.
-    engine.register_fn("update_k8s_crd_cache", || {});
+}
 
-    register_k8s_raw!(engine, K8sRawMock, K8sRawMock::new);
+/// The mock `K8sObject` group defined once: type entry, three getters, `delete` and the
+/// six waits (every wait succeeds immediately without any watch; `wait_for` evaluates the
+/// predicate exactly once — mock contract).
+fn k8s_mock_object_fns(target: &mut Target<'_>) {
+    register_type_at::<K8sObjectMock>(target, "K8sObject");
+    register_get_at(
+        target,
+        "kind",
+        &["/// Kind recorded on the resource this mock object was fetched from."],
+        &["obj: &mut K8sObject", "string"],
+        K8sObjectMock::get_kind,
+    );
+    register_get_at(
+        target,
+        "original_kind",
+        &["/// Same as `kind` — the mock never remaps kinds."],
+        &["obj: &mut K8sObject", "string"],
+        K8sObjectMock::original_kind,
+    );
+    register_get_at(
+        target,
+        "metadata",
+        &["/// The seeded object's `metadata` as a Rhai value."],
+        &["obj: &mut K8sObject", "Dynamic"],
+        K8sObjectMock::get_metadata,
+    );
+    register_at(
+        target,
+        "delete",
+        &["/// Mock delete: a no-op success."],
+        &["obj: &mut K8sObject"],
+        K8sObjectMock::rhai_delete,
+    );
+    register_at(
+        target,
+        "wait_condition",
+        &["/// Immediate success — no predicate, no watch."],
+        &["obj: &mut K8sObject", "condition: string", "timeout: i64"],
+        K8sObjectMock::wait_condition,
+    );
+    register_at(
+        target,
+        "wait_status",
+        &["/// Immediate success — no predicate, no watch."],
+        &["obj: &mut K8sObject", "prop: string", "timeout: i64"],
+        K8sObjectMock::wait_status,
+    );
+    register_at(
+        target,
+        "wait_status_prop",
+        &["/// Immediate success — no predicate, no watch."],
+        &["obj: &mut K8sObject", "prop: string", "timeout: i64"],
+        K8sObjectMock::wait_status_prop,
+    );
+    register_at(
+        target,
+        "wait_status_string",
+        &["/// Immediate success — no predicate, no watch."],
+        &[
+            "obj: &mut K8sObject",
+            "prop: string",
+            "value: string",
+            "timeout: i64",
+        ],
+        K8sObjectMock::wait_status_string,
+    );
+    register_at(
+        target,
+        "wait_for",
+        &["/// Evaluates `predicate` exactly ONCE against the seeded object; never polls."],
+        &["obj: &mut K8sObject", "predicate: Fn", "timeout: i64"],
+        K8sObjectMock::wait_for,
+    );
+    register_at(
+        target,
+        "wait_deleted",
+        &["/// Immediate success — no watch."],
+        &["obj: &mut K8sObject", "timeout: i64"],
+        K8sObjectMock::rhai_wait_deleted,
+    );
+}
 
-    // K8sDeploy
-    let wl_mocks = arced_mocks.clone();
-    engine
-        .register_type_with_name::<K8sWorkloadMock>("K8sDeploy")
-        .register_fn(
+/// Mock CRD-cache refresher: the no-op the registrar used to install by overriding the
+/// macro's real `update_cache` — here it is the ONLY definition, no cluster is ever touched.
+fn mock_update_crd_cache() {}
+
+/// The mock `K8sGeneric` group defined once: type entry, the three `k8s_resource`
+/// constructors wired to the seeded databases, the CRUD/list/scope face and the no-op
+/// cache refresher. The group is too big for one list (pedantic `too_many_lines`); the
+/// sub-lists below keep it a single definition per entry.
+fn k8s_mock_generic_fns(
+    target: &mut Target<'_>,
+    mocks: &Arc<Mutex<Vec<Dynamic>>>,
+    created: &Arc<Mutex<Vec<Dynamic>>>,
+) {
+    k8s_mock_generic_handle_fns(target, mocks, created);
+    k8s_mock_generic_reads_fns(target);
+    k8s_mock_generic_writes_fns(target);
+}
+
+/// The mock `K8sGeneric` type entry, its three `k8s_resource` constructors and the
+/// no-op cache refresher.
+fn k8s_mock_generic_handle_fns(
+    target: &mut Target<'_>,
+    mocks: &Arc<Mutex<Vec<Dynamic>>>,
+    created: &Arc<Mutex<Vec<Dynamic>>>,
+) {
+    register_type_at::<K8sGenericMock>(target, "K8sGeneric");
+    {
+        let (m, c) = (mocks.clone(), created.clone());
+        register_free_at(
+            target,
+            "k8s_resource",
+            "resource",
+            &[
+                "/// Mock handle for `name` (kind, verbatim) across all namespaces, backed by the seeded databases.",
+            ],
+            &["name: string", "K8sGeneric"],
+            move |name: String| -> K8sGenericMock { K8sGenericMock::new_global(m.clone(), name, c.clone()) },
+        );
+    }
+    {
+        let (m, c) = (mocks.clone(), created.clone());
+        register_free_at(
+            target,
+            "k8s_resource",
+            "resource",
+            &["/// Mock handle for `name` scoped to namespace `ns`."],
+            &["name: string", "ns: string", "K8sGeneric"],
+            move |name: String, ns: String| -> K8sGenericMock {
+                K8sGenericMock::new_ns(m.clone(), name, ns, c.clone())
+            },
+        );
+    }
+    {
+        let (m, c) = (mocks.clone(), created.clone());
+        register_free_at(
+            target,
+            "k8s_resource",
+            "resource",
+            &["/// Mock handle by `api_version` (group/version ignored — the mock keys by kind) in `ns`."],
+            &["api_version: string", "name: string", "ns: string", "K8sGeneric"],
+            move |apiv: String, name: String, ns: String| -> K8sGenericMock {
+                K8sGenericMock::new_group_ns(m.clone(), apiv, name, ns, c.clone())
+            },
+        );
+    }
+    register_free_at(
+        target,
+        "update_k8s_crd_cache",
+        "update_crd_cache",
+        &["/// No-op refresher: no cluster to rediscover in mock mode."],
+        &[],
+        mock_update_crd_cache,
+    );
+}
+
+/// The mock `K8sGeneric` read face: `list`, `list_meta`, `get`, `get_meta`, `get_obj`.
+fn k8s_mock_generic_reads_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "list",
+        &["/// The seeded objects as a list docobject (snapshot taken at construction)."],
+        &["h: &mut K8sGeneric", "Dynamic"],
+        K8sGenericMock::rhai_list,
+    );
+    register_at(
+        target,
+        "list",
+        &["/// Same seeded list — the mock ignores the label selector."],
+        &["h: &mut K8sGeneric", "labels: string", "Dynamic"],
+        K8sGenericMock::rhai_list_labels,
+    );
+    register_at(
+        target,
+        "list_meta",
+        &["/// The seeded objects' meta list (mock: same docobject as `list`)."],
+        &["h: &mut K8sGeneric", "Dynamic"],
+        K8sGenericMock::rhai_list_meta,
+    );
+    register_at(
+        target,
+        "get",
+        &["/// Gets `name` from the seeded database; absence is an error."],
+        &["h: &mut K8sGeneric", "name: string", "Dynamic"],
+        K8sGenericMock::rhai_get,
+    );
+    register_at(
+        target,
+        "get_meta",
+        &["/// Gets the meta of `name` — the mock returns the FULL object (documented difference)."],
+        &["h: &mut K8sGeneric", "name: string", "Dynamic"],
+        K8sGenericMock::rhai_get_meta,
+    );
+    register_at(
+        target,
+        "get_obj",
+        &["/// Gets a `K8sObject` mock handle bound to `name`."],
+        &["h: &mut K8sGeneric", "name: string", "K8sObject"],
+        K8sGenericMock::rhai_get_obj,
+    );
+}
+
+/// The mock `K8sGeneric` write face plus `exist` and the `scope` getter.
+fn k8s_mock_generic_writes_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "delete",
+        &["/// No-op success — the mock database is untouched."],
+        &["h: &mut K8sGeneric", "name: string"],
+        K8sGenericMock::rhai_delete,
+    );
+    register_at(
+        target,
+        "create",
+        &["/// Upserts `data` into the mock database and records the merged view in `created`."],
+        &["h: &mut K8sGeneric", "data: Dynamic", "Dynamic"],
+        K8sGenericMock::rhai_create,
+    );
+    register_at(
+        target,
+        "replace",
+        &["/// Upserts `data` into the mock database only."],
+        &["h: &mut K8sGeneric", "name: string", "data: Dynamic", "Dynamic"],
+        K8sGenericMock::rhai_replace,
+    );
+    register_at(
+        target,
+        "patch",
+        &["/// Deep-merging upsert of `data` into the mock database (does NOT reach `created`)."],
+        &["h: &mut K8sGeneric", "name: string", "data: Dynamic", "Dynamic"],
+        K8sGenericMock::rhai_patch,
+    );
+    register_at(
+        target,
+        "apply",
+        &["/// Upserts `data` into the mock database only."],
+        &["h: &mut K8sGeneric", "name: string", "data: Dynamic", "Dynamic"],
+        K8sGenericMock::rhai_apply,
+    );
+    register_at(
+        target,
+        "exist",
+        &["/// ALWAYS true — mock handles always exist."],
+        &["h: &mut K8sGeneric", "Dynamic"],
+        K8sGenericMock::rhai_exist,
+    );
+    register_get_at(
+        target,
+        "scope",
+        &["/// ALWAYS `\"namespace\"` in the mock."],
+        &["h: &mut K8sGeneric", "string"],
+        K8sGenericMock::rhai_get_scope,
+    );
+}
+
+/// The mock `K8sRaw` group defined once: unit struct constructor and the three
+/// empty-map readers (no cluster).
+fn k8s_mock_raw_fns(target: &mut Target<'_>) {
+    register_type_at::<K8sRawMock>(target, "K8sRaw");
+    register_free_at(
+        target,
+        "new_k8s_raw",
+        "new_raw",
+        &["/// Mock raw client: a unit struct."],
+        &["K8sRaw"],
+        K8sRawMock::new,
+    );
+    register_at(
+        target,
+        "get_url",
+        &["/// Always an empty JSON object (no cluster)."],
+        &["raw: &mut K8sRaw", "url: string", "Dynamic"],
+        K8sRawMock::rhai_get_url,
+    );
+    register_at(
+        target,
+        "get_cluster_version",
+        &["/// Always an empty JSON object (no cluster)."],
+        &["raw: &mut K8sRaw", "Dynamic"],
+        K8sRawMock::rhai_get_api_version,
+    );
+    register_at(
+        target,
+        "get_api_resources",
+        &["/// Always an empty JSON object (no cluster)."],
+        &["raw: &mut K8sRaw", "Dynamic"],
+        K8sRawMock::rhai_get_api_resources,
+    );
+}
+
+/// The mock typed workloads defined once: four type entries on the SAME
+/// `K8sWorkloadMock`, each with its constructor on the seeded database, the three
+/// shared getters and its wait. One sub-list per type (motif of the real
+/// `k8sworkload_fns`); the entries stay a single definition.
+fn k8s_mock_workload_fns(target: &mut Target<'_>, mocks: &Arc<Mutex<Vec<Dynamic>>>) {
+    k8s_mock_workload_deploy_fns(target, mocks);
+    k8s_mock_workload_daemonset_fns(target, mocks);
+    k8s_mock_workload_statefulset_fns(target, mocks);
+    k8s_mock_workload_job_fns(target, mocks);
+}
+
+/// The mock `K8sDeploy` type entry and its surface.
+fn k8s_mock_workload_deploy_fns(target: &mut Target<'_>, mocks: &Arc<Mutex<Vec<Dynamic>>>) {
+    register_type_at::<K8sWorkloadMock>(target, "K8sDeploy");
+    {
+        let wl = mocks.clone();
+        register_free_at(
+            target,
             "get_deployment",
+            "get_deployment",
+            &["/// Fetches the seeded Deployment `name` in `namespace`."],
+            &["namespace: string", "name: string", "K8sDeploy"],
             move |ns: String, name: String| -> RhaiRes<K8sWorkloadMock> {
-                find_workload_mock(&wl_mocks, "Deployment", &ns, &name)
+                find_workload_mock(&wl, "Deployment", &ns, &name)
             },
-        )
-        .register_get("metadata", K8sWorkloadMock::get_metadata)
-        .register_get("spec", K8sWorkloadMock::get_spec)
-        .register_get("status", K8sWorkloadMock::get_status)
-        .register_fn("wait_available", K8sWorkloadMock::wait_available);
+        );
+    }
+    k8s_mock_workload_getters_fns(target);
+    register_at(
+        target,
+        "wait_available",
+        &["/// Immediate success — no watch."],
+        &["d: &mut K8sDeploy", "timeout: i64"],
+        K8sWorkloadMock::wait_available,
+    );
+}
 
-    // K8sDaemonSet
-    let wl_mocks = arced_mocks.clone();
-    engine
-        .register_type_with_name::<K8sWorkloadMock>("K8sDaemonSet")
-        .register_fn(
+/// The mock `K8sDaemonSet` type entry and its surface (constructor under the locked typo).
+fn k8s_mock_workload_daemonset_fns(target: &mut Target<'_>, mocks: &Arc<Mutex<Vec<Dynamic>>>) {
+    register_type_at::<K8sWorkloadMock>(target, "K8sDaemonSet");
+    {
+        let wl = mocks.clone();
+        register_free_at(
+            target,
             "get_deamonset",
+            "get_deamonset",
+            &["/// Fetches the seeded DaemonSet `name` in `namespace` (typo locked)."],
+            &["namespace: string", "name: string", "K8sDaemonSet"],
             move |ns: String, name: String| -> RhaiRes<K8sWorkloadMock> {
-                find_workload_mock(&wl_mocks, "DaemonSet", &ns, &name)
+                find_workload_mock(&wl, "DaemonSet", &ns, &name)
             },
-        )
-        .register_get("metadata", K8sWorkloadMock::get_metadata)
-        .register_get("spec", K8sWorkloadMock::get_spec)
-        .register_get("status", K8sWorkloadMock::get_status)
-        .register_fn("wait_available", K8sWorkloadMock::wait_available);
+        );
+    }
+    k8s_mock_workload_getters_fns(target);
+    register_at(
+        target,
+        "wait_available",
+        &["/// Immediate success — no watch."],
+        &["d: &mut K8sDaemonSet", "timeout: i64"],
+        K8sWorkloadMock::wait_available,
+    );
+}
 
-    // K8sStatefulSet
-    let wl_mocks = arced_mocks.clone();
-    engine
-        .register_type_with_name::<K8sWorkloadMock>("K8sStatefulSet")
-        .register_fn(
+/// The mock `K8sStatefulSet` type entry and its surface.
+fn k8s_mock_workload_statefulset_fns(target: &mut Target<'_>, mocks: &Arc<Mutex<Vec<Dynamic>>>) {
+    register_type_at::<K8sWorkloadMock>(target, "K8sStatefulSet");
+    {
+        let wl = mocks.clone();
+        register_free_at(
+            target,
             "get_statefulset",
+            "get_statefulset",
+            &["/// Fetches the seeded StatefulSet `name` in `namespace`."],
+            &["namespace: string", "name: string", "K8sStatefulSet"],
             move |ns: String, name: String| -> RhaiRes<K8sWorkloadMock> {
-                find_workload_mock(&wl_mocks, "StatefulSet", &ns, &name)
+                find_workload_mock(&wl, "StatefulSet", &ns, &name)
             },
-        )
-        .register_get("metadata", K8sWorkloadMock::get_metadata)
-        .register_get("spec", K8sWorkloadMock::get_spec)
-        .register_get("status", K8sWorkloadMock::get_status)
-        .register_fn("wait_available", K8sWorkloadMock::wait_available);
+        );
+    }
+    k8s_mock_workload_getters_fns(target);
+    register_at(
+        target,
+        "wait_available",
+        &["/// Immediate success — no watch."],
+        &["d: &mut K8sStatefulSet", "timeout: i64"],
+        K8sWorkloadMock::wait_available,
+    );
+}
 
-    // K8sJob
-    let wl_mocks = arced_mocks.clone();
-    engine
-        .register_type_with_name::<K8sWorkloadMock>("K8sJob")
-        .register_fn(
+/// The mock `K8sJob` type entry and its surface.
+fn k8s_mock_workload_job_fns(target: &mut Target<'_>, mocks: &Arc<Mutex<Vec<Dynamic>>>) {
+    register_type_at::<K8sWorkloadMock>(target, "K8sJob");
+    {
+        let wl = mocks.clone();
+        register_free_at(
+            target,
             "get_job",
+            "get_job",
+            &["/// Fetches the seeded Job `name` in `namespace`."],
+            &["namespace: string", "name: string", "K8sJob"],
             move |ns: String, name: String| -> RhaiRes<K8sWorkloadMock> {
-                find_workload_mock(&wl_mocks, "Job", &ns, &name)
+                find_workload_mock(&wl, "Job", &ns, &name)
             },
-        )
-        .register_get("metadata", K8sWorkloadMock::get_metadata)
-        .register_get("spec", K8sWorkloadMock::get_spec)
-        .register_get("status", K8sWorkloadMock::get_status)
-        .register_fn("wait_done", K8sWorkloadMock::wait_done);
+        );
+    }
+    k8s_mock_workload_getters_fns(target);
+    register_at(
+        target,
+        "wait_done",
+        &["/// Immediate success — no watch."],
+        &["j: &mut K8sJob", "timeout: i64"],
+        K8sWorkloadMock::wait_done,
+    );
+}
+
+/// The three getters shared by the four mock workload entries (same internal
+/// `get$…` names, same seeded-object face).
+fn k8s_mock_workload_getters_fns(target: &mut Target<'_>) {
+    register_get_at(
+        target,
+        "metadata",
+        &["/// The seeded `metadata` sub-document; absent → unit."],
+        &["w: &mut K8sWorkload", "Dynamic"],
+        K8sWorkloadMock::get_metadata,
+    );
+    register_get_at(
+        target,
+        "spec",
+        &["/// The seeded `spec` sub-document; absent → unit."],
+        &["w: &mut K8sWorkload", "Dynamic"],
+        K8sWorkloadMock::get_spec,
+    );
+    register_get_at(
+        target,
+        "status",
+        &["/// The seeded `status` sub-document; absent → unit."],
+        &["w: &mut K8sWorkload", "Dynamic"],
+        K8sWorkloadMock::get_status,
+    );
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
@@ -881,6 +1274,9 @@ pub fn k8s_mock_rhai_register(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Les macros du réel, rejouées par les verrous de compilation ci-dessous (elles ne
+    // sont plus employées par la production du double, liste `k8s_mock_fns` oblige).
+    use crate::{register_k8s_generic, register_k8s_object, register_k8s_raw};
 
     #[test]
     fn k8sobjectmock_original_kind_exists() {
@@ -1339,5 +1735,199 @@ mod tests {
                 "#,
             )
             .expect("les méthodes K8sObject du mock sont présentes");
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Conversion des Scenario de k8s.sdd « k8s_mock_module équivaut à
+    // k8s_mock_rhai_register » et « même script sous le jumeau réel et sous le
+    // double » (issue #47) : motif double cible appliqué au double, sur la face
+    // Target du pilote de ./engine.rs (mêmes libres courtes que le réel `k8s_fns`).
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// Introspection de l'engine : noms de fonctions enregistrés sur lui, hors
+    /// packages standard de `@rhai` (`collect_fn_metadata`, feature `internals`
+    /// toujours activée — patron des verrous jumeaux de ./k8s.rs).
+    fn registered_names(engine: &Engine) -> std::collections::BTreeSet<String> {
+        engine
+            .collect_fn_metadata(None, |f| Some(f.metadata.name.to_string()), false)
+            .into_iter()
+            .collect()
+    }
+
+    /// Noms que l'enregistreur du double ajoute à un `Engine::new` par rapport à sa
+    /// baseline.
+    fn names_added_by(register: impl FnOnce(&mut Engine)) -> std::collections::BTreeSet<String> {
+        let mut engine = Engine::new();
+        register(&mut engine);
+        let apres = registered_names(&engine);
+        let avant = registered_names(&Engine::new());
+        apres.difference(&avant).cloned().collect()
+    }
+
+    /// Noms qu'un jumeau module ajoute à un `Engine::new` par `register_static_module`
+    /// sous `m` (diff sur la baseline, préfixe `m::` retiré).
+    fn names_added_by_module(module: rhai::Module) -> std::collections::BTreeSet<String> {
+        let mut engine = Engine::new();
+        engine.register_static_module("m", module.into());
+        let apres = registered_names(&engine);
+        let avant = registered_names(&Engine::new());
+        apres
+            .difference(&avant)
+            .map(|nom| {
+                let s = nom.as_str();
+                s.strip_prefix("m::").unwrap_or(s).to_string()
+            })
+            .collect()
+    }
+
+    /// Nom du jumeau d'une libre du double : les mêmes renommes courts que le réel
+    /// (table « Noms courts » de ./k8s.sdd).
+    fn nom_jumeau(nom: &str) -> String {
+        match nom {
+            "k8s_resource" => "resource",
+            "update_k8s_crd_cache" => "update_crd_cache",
+            "new_k8s_raw" => "new_raw",
+            autre => autre,
+        }
+        .to_string()
+    }
+
+    /// Bases du double : un `Pod p` en `ns`, un `Deployment d` en `ns`, créés vides.
+    type MockBases = (Arc<Mutex<Vec<Dynamic>>>, Arc<Mutex<Vec<Dynamic>>>);
+
+    fn seeded_mocks() -> MockBases {
+        let pod = to_dynamic(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": { "name": "p", "namespace": "ns" }
+        }))
+        .expect("fixture Pod");
+        let deploy = to_dynamic(serde_json::json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": { "name": "d", "namespace": "ns" },
+            "spec": { "replicas": 1 }
+        }))
+        .expect("fixture Deployment");
+        (
+            Arc::new(Mutex::new(vec![pod, deploy])),
+            Arc::new(Mutex::new(Vec::new())),
+        )
+    }
+
+    // Scenario « k8s_mock_module équivaut à k8s_mock_rhai_register » : deux engines,
+    // noms qualifiés sous `k8s` d'un côté, globaux de l'autre — mêmes résultats et
+    // mêmes erreurs ; `update_crd_cache` no-op sans cluster ; les méthodes restent
+    // globales ; et le `And` : les deux ensembles de noms sont ÉGAUX, comparés par
+    // l'introspection de Rhai (patron des verrous jumeaux de ./k8s.rs).
+    #[test]
+    fn k8s_mock_module_equivalent_a_k8s_mock_rhai_register() {
+        // Face « les deux ensembles de noms de fonctions sont égaux » (introspection,
+        // sous `metadata` comme partout : les renommes courts sont les mêmes que le
+        // réel, les autres noms sont inchangés).
+        let (m, c) = seeded_mocks();
+        let par_enregistreur = names_added_by(|e| k8s_mock_rhai_register(e, m.clone(), c.clone()));
+        let par_module = names_added_by_module(k8s_mock_module(m.clone(), c.clone()));
+        let attendus: std::collections::BTreeSet<String> = par_enregistreur
+            .iter()
+            .map(String::as_str)
+            .map(nom_jumeau)
+            .collect();
+        assert_eq!(
+            par_module, attendus,
+            "le jumeau module pose exactement les noms de l'enregistreur du double \
+             (libres renommées courtes, rien en plus ni en moins)"
+        );
+
+        // Face rejouée : nu chez l'enregistreur, qualifié sous le jumeau.
+        let (m, c) = seeded_mocks();
+        let mut enregistreur = Engine::new();
+        k8s_mock_rhai_register(&mut enregistreur, m.clone(), c.clone());
+        let mut jumeau = Engine::new();
+        jumeau.register_static_module("k8s", k8s_mock_module(m, c).into());
+        for (nom, global, qualifie) in [
+            // Constructeurs : le handle du double se construit SANS cluster des deux
+            // faces (les closures capturent les bases, jamais de pont).
+            (
+                "k8s_resource(ns)",
+                r#"type_of(k8s_resource("Pod", "ns"))"#,
+                r#"type_of(k8s::resource("Pod", "ns"))"#,
+            ),
+            (
+                "k8s_resource(global)",
+                r#"type_of(k8s_resource("Pod"))"#,
+                r#"type_of(k8s::resource("Pod"))"#,
+            ),
+            (
+                "new_k8s_raw",
+                r"type_of(new_k8s_raw())",
+                r"type_of(k8s::new_raw())",
+            ),
+            // `update_crd_cache()` : no-op sans cluster des deux côtés (aucune
+            // LazyLock touchée, aucune erreur — le verrou du no-op du double).
+            (
+                "update_crd_cache",
+                "update_k8s_crd_cache(); true",
+                "k8s::update_crd_cache(); true",
+            ),
+            // Constructeur workload sur la fixture seedée, des deux faces.
+            (
+                "get_deployment",
+                r#"get_deployment("ns", "d").metadata.name"#,
+                r#"k8s::get_deployment("ns", "d").metadata.name"#,
+            ),
+            // Les méthodes (`get`, `list`, `create`…) restent globales : la face
+            // rejouée ci-dessous les appelle en dot sur les deux engines.
+            (
+                "get (méthode globale sous le module)",
+                r#"k8s_resource("Pod", "ns").get("p").metadata.name"#,
+                r#"k8s::resource("Pod", "ns").get("p").metadata.name"#,
+            ),
+        ] {
+            let reel = enregistreur.eval::<Dynamic>(global);
+            let jumeau_out = jumeau.eval::<Dynamic>(qualifie);
+            match (reel, jumeau_out) {
+                (Ok(x), Ok(y)) => {
+                    assert_eq!(x.to_string(), y.to_string(), "valeur divergente pour « {nom} »");
+                }
+                (Err(e), Err(f)) => panic!(
+                    "le double ne doit jamais échouer sans cluster sur « {nom} » : \
+                     enregistreur : {e} | jumeau : {f}"
+                ),
+                (a, b) => panic!("divergence succès/échec pour « {nom} » : {a:?} vs {b:?}"),
+            }
+        }
+        // Les libres ne se résolvent pas nues sous le jumeau (Internal, qualifiées
+        // seulement — même contrat que le réel).
+        let nue = jumeau.eval::<Dynamic>(r#"k8s_resource("Pod", "ns")"#);
+        assert!(
+            matches!(&nue, Err(e) if e.to_string().contains("Function not found")),
+            "libre nue inconnue du jumeau attendue, obtenu : {nue:?}"
+        );
+    }
+
+    // Scenario « même script sous le jumeau réel et sous le double » (k8s, issue
+    // #47) : un seul texte, deux engines enregistrés sous `k8s` — @crate::k8s::
+    // k8s_module d'un côté (cluster), k8s_mock_module de l'autre (bases du double).
+    // Sans cluster sous `current_thread`, le côté réel rend l'erreur de pont de
+    // ./rt.sdd (déterministe, jamais de panic — verrou de ./k8s.rs) pendant que le
+    // double sert sa fixture : le SCRIPT, lui, passe tel quel dans les deux mondes.
+    #[tokio::test(flavor = "current_thread")]
+    async fn same_script_under_real_module_and_mock_module() {
+        let script = r#"let r = k8s::resource("Pod", "ns"); r.get("p").metadata.name"#;
+        let mut reel = Engine::new();
+        reel.register_static_module("k8s", crate::k8s::k8s_module().into());
+        let (m, c) = seeded_mocks();
+        let mut double = Engine::new();
+        double.register_static_module("k8s", k8s_mock_module(m, c).into());
+        let reel_out = reel.eval::<Dynamic>(script);
+        assert!(
+            matches!(&reel_out, Err(e) if e.to_string().contains("multi-thread")),
+            "le jumeau réel rend l'erreur de pont sans cluster, obtenu : {reel_out:?}"
+        );
+        let name: String = double
+            .eval(script)
+            .expect("le MÊME texte s'exécute sous le double (bases de mock)");
+        assert_eq!(name, "p", "le double sert la fixture `Pod p`");
     }
 }

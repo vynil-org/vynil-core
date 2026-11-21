@@ -1,0 +1,268 @@
+Spec: feeds
+
+Purpose:
+  Contrat groupé de ./feeds.rs et ./feeds_mock.rs (règle source+mock d'un seul contrat,
+    ./.specdd/bootstrap.project.md ; issue vynil-org/vynil-core#56) : lecture de flux RSS/Atom en
+    Rhai, à deux niveaux d'API sur un noyau commun (fetch par @crate::http::RestClient, parsing par
+    @feed_rs, normalisation en @crate::feeds::FeedEntry). Premier des clients de protocole de la
+    crate : il ne connaît rien du modèle de données de l'appelant (stockage, planification,
+    embedding : applicatifs). Niveau 1 `feed_read` : sans état, flux téléchargé en entier à chaque
+    appel (face Rust : @crate::feeds::FeedClient, `async fn`, la face Rhai n'en étant qu'une projection
+    synchrone, lot E). Niveau 2 `feed_poll` : avec un curseur opaque et versionné que l'appelant persiste tel
+    quel, fetch conditionnel (ETag, Last-Modified) et détection des entrées nouvelles par guid.
+    Le groupe inclut @crate::feeds_mock, double sur fixtures (flux servis depuis des fixtures,
+    ETag / Last-Modified simulés) : le mock n'a pas de contrat indépendant du contrat mocké.
+
+Owns:
+  ./feeds.rs
+  ./feeds_mock.rs
+
+References:
+  ./http.sdd — @crate::http::RestClient : fetch, certificats, proxys et en-têtes déjà gérés ;
+    le module n'ouvre aucune autre connexion. La feature `feeds` implique `http`, `rt` et `rhai`.
+  ./rt.sdd — @crate::rt::block_on : pont async → sync du fetch (aucune panique tokio depuis un
+    script).
+  ./lib.sdd — déclarant des deux modules (gate `feeds`) et des variantes d'erreur
+    @variant-Error::FeedInvalid et @variant-Error::FeedCursor (tâches jumelles ci-dessous).
+  ../vyvil-core.sdd — catalogue des modules Rhai (module `feeds`, enregistreur et jumeau) et
+    feature `feeds` de ../Cargo.toml.
+  ./docs/rhai_helpers.md et ./docs/mocking.md — pages tenues par ../docs.sdd (tâche jumelle).
+
+Must:
+  N'exister que sous la feature `feeds` (`feeds = ["dep:feed-rs", "http", "rt", "rhai"]`, hors
+    `default`), avec @cfg_attr docsrs, les deux modules publics comme les autres `*_mock`.
+  Normaliser toute entrée, Atom comme RSS 2.0 (et les autres formats de @feed_rs), en
+    @crate::feeds::FeedEntry `{ guid, url, title, published, updated, content, source }` : mêmes
+    champs, mêmes types, pour les deux syntaxes. `source` est l'URL du flux d'où vient l'entrée.
+    Les dates sont des entiers `i64` en MILLISECONDES depuis l'epoch UTC (même convention que
+    ./prometheus.sdd), `()` côté script / @core::option::Option::None côté Rust quand absentes ;
+    jamais de date inventée.
+  Dériver le `guid` d'une entrée sans guid d'un hash : `sha256:` + hexadécimal minuscule de
+    SHA-256 de `url`, d'un octet `\n` puis de `title` (@sha2 est déjà dépendance, aucun crate
+    nouveau). Une entrée sans guid ET sans `url` ni `title` est écartée avec un @tracing::warn
+    (jamais d'entrée à guid vide ni de panique).
+  Offrir `feed_read(url, since)` : tableau de maps @crate::feeds::FeedEntry. `since` est `()` (tout),
+    un entier `i64` en ms UTC ou un @crate::chrono::DateTimeHandler (instant capturé par
+    `date_now`, converti en ms UTC). Le filtre compare `published`, à défaut `updated`, STRICTEMENT
+    supérieur à `since` ; une entrée sans aucune date est GARDÉE (mieux vaut un doublon qu'une
+    nouveauté perdue — la déduplication définitive est à la charge de l'appelant). Pas de fetch
+    conditionnel : le flux est téléchargé en entier. `feed_read` est `feed_poll` avec curseur vide,
+    sans conditionnel, plus ce filtre.
+  Offrir `feed_poll(url, cursor)` : `cursor` est `()` au premier passage ou la map rendue au passage
+    précédent ; le résultat est une map `{ entries, cursor, status }` avec `status` valant `"new"` ou
+    `"not_modified"`.
+  Porter le curseur comme une MAP OPAQUE ET VERSIONNÉE `{ v: 1, etag, last_modified, seen, since }` :
+    l'appelant la persiste telle quelle et la rejoue, ne l'interprète pas. Un `304 Not Modified`
+    rend `status = "not_modified"`, `entries = []` et le curseur INCHANGÉ ; la requête envoie
+    `If-None-Match` / `If-Modified-Since` d'après le curseur quand ils existent.
+  Tenir une entrée pour NOUVELLE si son guid n'est pas dans `seen`, quelle que soit sa date (couvre
+    les flux qui republient avec des dates anciennes). À chaque passage, `seen` est ÉLAGUÉ : seuls
+    les guid encore présents dans le flux courant sont conservés, ce qui le borne naturellement.
+  Refuser un curseur de version inconnue (`v` différent de 1) par @variant-Error::FeedCursor, jamais
+    par une panique ; un curseur mal formé (champ de mauvais type) rend la même erreur.
+  Tenir le curseur pour une OPTIMISATION DE TRANSPORT, PAS UNE GARANTIE : perdu ou corrompu (remis à
+    `()`), il ne coûte qu'un re-téléchargement complet, jamais une erreur ni une perte. La
+    déduplication définitive est à la charge du stockage de l'appelant, par `(source, guid)`.
+  Rendre des erreurs typées, sans panique : flux invalide ou réponse non-XML →
+    @variant-Error::FeedInvalid ; délai dépassé et source injoignable →
+    @variant-Error::ReqwestError (erreur de transport de @crate::http::RestClient) ; statut non-2xx
+    hors 304 → @variant-Error::MethodFailed.
+  Offrir le mock : @crate::feeds_mock::feeds_mock_module (voir Exposes) sert des flux de fixtures
+    sous les MÊMES noms de fonctions que le réel, simule ETag / Last-Modified (un second passage
+    avec le curseur rendu répond `not_modified`), sans réseau ni @tokio.
+  Servir les faces de script et @crate::feeds::FeedClient par UN SEUL noyau : fetch live asynchrone (un
+    seul futur : envoi, statut et corps, donc un seul `block_on` côté synchrone), logique pure après
+    fetch partagée par verbe, branche mock synchrone et sans tokio.
+
+Must not:
+  Contacter autre chose que l'URL demandée, ni suivre ou découvrir de flux depuis une page HTML.
+  Stocker quoi que ce soit : ni cache, ni fichier, ni état de module — tout l'état est dans le
+    curseur que l'appelant détient.
+  Interpréter des sources qui ne sont pas des flux (API de forge pour issues et MR) : autre module
+    éventuel, pas celui-ci.
+  Câbler @crate::feeds::feeds_rhai_register dans @crate::engine::Script::new_bare : le réseau n'est
+    jamais auto-câblé (./engine.sdd).
+  Laisser un en-tête d'authentification ou une URL à identifiants dans un message d'erreur ou un
+    log.
+
+Depends on:
+  feed-rs — @feed_rs::parser::parse sur les octets du corps (Atom, RSS 0.9x/1.0/2.0, JSON Feed) ;
+    version à fixer à l'implémentation (dernière stable mesurée), ajoutée à ../Cargo.toml.
+  ./http.rs — @crate::http::RestClient (GET brut, en-têtes conditionnels).
+  ./rt.rs — @crate::rt::block_on.
+  sha2, hex — guid dérivé (déjà dépendances).
+
+Exposes:
+  @crate::feeds::FeedEntry — `#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]`, les sept
+    champs ci-dessus, publics.
+  @crate::feeds::FeedCursor — struct versionnée (`v`, `etag`, `last_modified`, `seen`, `since`),
+    convertible depuis et vers @rhai::Map.
+  @crate::feeds::feed_read, @crate::feeds::feed_poll — noyau Rust, mêmes sémantiques que les
+    fonctions de script.
+  @crate::feeds::FeedClient — `Clone`, `Debug` sans en-tête (`<redacted>`) ; `new()` /
+    `with_rest_client(RestClient)` (l'URL de base du modèle est ignorée) ; `async fn read(&self, url,
+    since: Option<i64>)` et `async fn poll(&self, url, &FeedCursor)` : mêmes sémantiques et erreurs que
+    `feed_read` / `feed_poll`, sans `rt::block_on`. Annulation : par abandon (drop) du futur — le jeton de
+    @crate::cancel::scope ne s'y applique PAS (il est lié au fil et sert aux ponts synchrones), seules
+    les faces synchrones l'honorent par `rt::block_on`. Pas de double Rust (hors lot).
+  @crate::feeds::feeds_rhai_register(engine) — enregistreur global (`feed_read`, `feed_poll`) ;
+    @crate::feeds::feeds_module() — `#[must_use] pub fn() -> @rhai::Module`, jumeau (règle des
+    jumeaux de ../vyvil-core.sdd), noms courts qualifiés `feeds::read` et `feeds::poll`.
+  @crate::feeds_mock::feeds_mock_module(fixtures) et @crate::feeds_mock::feeds_mock_rhai_register(
+    engine, fixtures) — doubles, mêmes noms que le réel dans chaque voie ; `FeedFixture` (url, corps,
+    etag, last_modified).
+
+Accepts:
+  `feed_read(url: string, since: () | i64 | DateTimeHandler)`, `feed_poll(url: string, cursor: () |
+    map)`.
+
+Returns:
+  `feed_read` : `array` de maps @crate::feeds::FeedEntry. `feed_poll` : `map { entries: array,
+    cursor: map, status: string }`.
+
+Raises:
+  @variant-Error::FeedInvalid (`FEED-001`), @variant-Error::FeedCursor (`FEED-002`),
+    @variant-Error::ReqwestError, @variant-Error::MethodFailed ; côté script, ces erreurs arrivent
+    par @crate::rhai_err avec leur code stable.
+
+Handles:
+  Flux vide : `entries = []`, curseur mis à jour (`seen` vide). Entrées en double dans un même flux :
+    les deux sont rendues une fois (guid identique = une seule entrée, la première gagne). Corps
+    volumineux : le module n'impose pas de plafond propre (celui de @crate::http::RestClient et de
+    son délai fait foi) ; un plafond configurable est à ouvrir comme issue si un consommateur le
+    demande.
+
+Tasks:
+  [x] Spec approuvée, puis tests depuis les `Scenario`, puis implémentation minimale de ./feeds.rs et
+    ./feeds_mock.rs (flux spec → test → code de ./.specdd/bootstrap.project.md). Portes : `cargo test
+    --no-default-features --features feeds` (porte désignée, jumelle de ../tooling.sdd) et
+    `--all-features`.
+  [x] Jumelle de ../vyvil-core.sdd : feature `feeds` et dépendance `feed-rs` dans ../Cargo.toml.
+  [x] Jumelle de ./lib.sdd : déclarer `feeds` et `feeds_mock`, ajouter @variant-Error::FeedInvalid et
+    @variant-Error::FeedCursor.
+  [x] Jumelle de ../docs.sdd : documenter `feeds` dans la page des helpers Rhai et le mock dans
+    la page mocking.
+  [x] Décision à confirmer à la relecture : dates en `i64` ms UTC plutôt qu'un type de date (le
+    module `chrono` ne sait ni parser ni construire un instant passé, seulement `date_now`).
+
+  [x] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first ») : ajouter
+    @crate::feeds::FeedClient, `Clone`, construit par `FeedClient::new()` (client HTTP par défaut) ou
+    `FeedClient::with_rest_client(template: @crate::http::RestClient)` : l'hôte y pose en-têtes
+    d'authentification, CA du serveur, mTLS ; l'URL de base du modèle est IGNORÉE, chaque appel clone
+    le modèle et le pointe sur l'origine du flux demandé. Méthodes `pub async fn read(&self, url: &str,
+    since: Option<i64>) -> crate::Result<Vec<FeedEntry>>` et `pub async fn poll(&self, url: &str,
+    cursor: &FeedCursor) -> crate::Result<FeedPollResult>` : mêmes sémantiques et mêmes erreurs que
+    `feed_read` / `feed_poll`, SANS `rt::block_on` (fetch par `RestClient::http_get_async`, tâche
+    jumelle de ./http.sdd, corps par `Response::bytes().await`). `feed_read`, `feed_poll` et les faces
+    Rhai restent les enveloppes synchrones du même noyau. Découpage imposé : la logique pure après le
+    fetch (parse, filtre `since`, diff `seen`, nouveau curseur) est UNE fonction synchrone partagée PAR
+    VERBE (`read_after_fetch`, `poll_after_fetch` : entrées et sorties différentes, sans énum d'aiguillage) ;
+    seul le fetch diffère — `fetch_live` est `async`, la branche `Fixtures` du mock reste une fonction
+    synchrone distincte (un double n'appelle jamais `block_on` : le mock reste sans tokio). Le `Debug` de
+    `FeedClient` n'affiche aucun en-tête du modèle (`<redacted>`, le `Debug` dérivé de `RestClient` les
+    imprimerait). Tests d'abord depuis les Scenario « FeedClient » ci-dessous. Reprendre `Purpose`,
+    `Exposes` et `Must` à la clôture. Clos (synthèse validator verte, 2026-11-20) ; mesuré : le live fait
+    désormais UN seul `block_on` sur un futur unique (envoi + statut + corps), ce qui corrige de fait un
+    panic antérieur de `feed_read` / `feed_poll` hors de tout runtime (deux runtimes temporaires, le timer
+    reqwest du premier ne survivait pas) ; verrou ci-dessous.
+  [x] Verrou du défaut corrigé (lot E, revue du validator) : tests d'abord, hors runtime — un `#[test]`
+    synchrone appelle `feed_read` ET `feed_poll` sur un faux serveur SANS runtime tokio (entrées rendues,
+    aucun panic), et sous `#[tokio::test]` (`current_thread`) les mêmes appels rendent l'erreur explicite
+    `requires a multi-thread tokio runtime` sans panique. Le test échoue si un second `block_on` revient
+    dans le chemin du fetch. Clos (synthèse validator verte, 2026-11-20) : mesuré par mutation sur le code
+    d'avant (deux `block_on`), le test hors runtime ÉCHOUE sur le panic d'origine « A Tokio 1.x context was
+    found, but it is being shutdown » ; le test `current_thread` verrouille l'erreur explicite, pas l'absence
+    d'un second `block_on`.
+
+Scenario: Atom et RSS 2.0 donnent les mêmes FeedEntry
+  Given un flux Atom et un flux RSS 2.0 décrivant les mêmes deux entrées
+  When `feed_read(url, ())` lit chacun
+  Then les deux tableaux portent les mêmes champs `guid`, `url`, `title`, `published`, `content`
+
+Scenario: premier passage puis passage sans changement
+  Given un serveur de fixture servant un flux avec `ETag: "a"`
+  When `feed_poll(url, ())` est appelé, puis `feed_poll(url, r.cursor)`
+  Then le premier rend `status = "new"` et toutes les entrées ; le second reçoit un 304 et rend
+    `status = "not_modified"`, `entries = []` et un curseur strictement égal à celui passé
+
+Scenario: nouvelle entrée et republication à date ancienne
+  Given un curseur dont `seen` contient `g1` et `g2`, et un flux qui contient `g1`, `g2` et `g3`
+    dont `g3` porte une date antérieure à toutes les autres
+  When `feed_poll` est rejoué
+  Then seule `g3` est rendue comme nouvelle
+
+Scenario: entrée sans date ou sans guid
+  Given une entrée sans `published` ni `updated`
+  When `feed_read(url, since)` est appelé avec un `since` donné
+  Then l'entrée est gardée, ses champs de date valant `()`
+  Given une entrée sans guid mais avec `url` et `title`
+  Then son guid est `sha256:` + le hash contracté, identique d'un passage à l'autre
+  Given une entrée sans guid, sans `url` et sans `title`
+  Then elle est écartée et un @tracing::warn est émis
+
+Scenario: curseur de version inconnue
+  Given un curseur `#{ v: 2 }`
+  When `feed_poll(url, cursor)` est appelé
+  Then l'appel échoue en @variant-Error::FeedCursor, sans panique, et un `try` de script le rattrape
+
+Scenario: seen est élagué
+  Given un curseur dont `seen` contient `g1`, `g2`, `g3` et un flux qui ne contient plus que `g1`
+  When `feed_poll` est rejoué
+  Then le curseur rendu a `seen == ["g1"]`
+
+Scenario: perdre le curseur ne perd rien
+  Given un flux déjà lu par `feed_poll`
+  When le même flux est relu avec un curseur `()`
+  Then toutes les entrées sont rendues comme nouvelles (re-téléchargement) et aucune erreur ne survient
+
+Scenario: flux invalide, réponse non-XML, délai
+  Given un serveur répondant `200` et le corps `not xml`
+  When `feed_read` l'appelle
+  Then l'échec est @variant-Error::FeedInvalid ; un serveur qui accepte la connexion et la
+    ferme sans réponse (silence TCP) donne @variant-Error::ReqwestError — même voie que le délai,
+    le plafond de 5 min de @crate::http::RestClient n'étant pas rejouable en test (arbitrage du
+    développeur principal 2026-11-19) ; un `500` donne @variant-Error::MethodFailed
+
+Scenario: sans la feature feeds, rien n'existe
+  Given une compilation sans la feature `feeds`
+  Then ni @crate::feeds, ni @crate::feeds_mock, ni `feed-rs` n'existent dans le graphe
+
+Scenario: feeds_module équivaut à feeds_rhai_register
+  Given un engine où `feeds_rhai_register` est appelé et un second où `feeds_module()` est
+    enregistré par register_static_module sous le nom `feeds`
+  Then `feed_read`/`feed_poll` et `feeds::read`/`feeds::poll` rendent le même résultat sur la même
+    fixture
+
+Scenario: le mock simule ETag et Last-Modified
+  Given une fixture d'`etag` `"a"` servie par `feeds_mock_module`
+  When un script appelle `feeds::poll(url, ())` puis `feeds::poll(url, r.cursor)`
+  Then le second rend `not_modified`, sans réseau
+
+Scenario: fonctions documentées sous metadata (feeds)
+  Given la feature `metadata` active
+  When l'introspection de l'engine liste les fonctions de `feeds`
+  Then chacune porte son commentaire `///`, les noms de ses paramètres et son type de retour
+    (règle de ../vyvil-core.sdd)
+
+
+Scenario: FeedClient lit sans bloquer le runtime
+  Given un faux serveur servant un flux Atom et un runtime tokio `current_thread`
+  When `FeedClient::new().read(url, None).await` est attendu
+  Then les entrées sont celles que `feed_read` rend sur un runtime multi-thread, sans erreur
+
+Scenario: FeedClient::poll équivaut à feed_poll
+  Given un serveur de fixture servant un flux avec `ETag: "a"`
+  When `FeedClient::poll(url, &FeedCursor::default())` puis `poll(url, &r.cursor)` sont attendus
+  Then le premier rend `PollStatus::New`, le second `PollStatus::NotModified` et un curseur égal ; les
+    mêmes appels via `feed_poll` rendent les mêmes valeurs
+
+Scenario: le modèle de client porte l'authentification et ne la divulgue pas
+  Given un `RestClient` modèle portant `add_header_bearer("s3cr3t")` passé à `with_rest_client`
+  When `read` interroge un faux serveur qui consigne les en-têtes reçus
+  Then la requête porte `Authorization: Bearer s3cr3t`
+  And ni le `Debug` du `FeedClient`, ni aucun message d'erreur (flux invalide, 500, injoignable) ne
+    contient `s3cr3t`
+
+Done when:
+  Chaque Scenario est un test vert, la batterie complète de ../tooling.sdd passe (portes `feeds` et
+    `--all-features` comprises) et les tâches jumelles sont cochées dans le même commit.

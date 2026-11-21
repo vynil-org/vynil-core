@@ -3,8 +3,11 @@
 //! Configure expected `path`/`method` → `return_obj` mappings and register via
 //! `httpmock_rhai_register` instead of `crate::http::http_rhai_register`.
 
-use crate::RhaiRes;
-use rhai::{Dynamic, Engine, Map};
+use crate::{
+    RhaiRes,
+    engine::{Target, register_at, register_engine_only_at, register_free_at, register_type_at},
+};
+use rhai::{Dynamic, Engine, Map, Module};
 use serde::{Deserialize, Serialize};
 
 /// HTTP method matched by a mock entry.
@@ -247,38 +250,248 @@ impl RestClientMock {
     }
 }
 
+// ── Motif double cible (http.sdd, issue #47) — reproduction du pilote de ./engine.rs,
+// ses auxiliaires `Target`/`register_at`/`register_engine_only_at`/`register_free_at`/
+// `register_type_at` étant centralisés dans ./engine.rs (`pub(crate)`) et importés ici.
+// La table du double est définie UNE seule fois dans `httpmock_fns`, appliquée soit
+// directement à un Engine — l'enregistreur, les fonctions tombent dans l'espace de noms
+// global — soit à un Module dans ce même espace — le jumeau, enregistrable par
+// @rhai::Engine::register_static_module sous le nom que choisit le consommateur. Les
+// faces absentes de la table du double (`http_get_yaml`/`get_yaml`, `json_subset`,
+// `json_equal`) sont les trous assumés et documentés du Scenario « co-enregistrement » :
+// le jumeau ne les invente pas.
+
 /// Registers the mock Rhai client (same surface as `crate::http::http_rhai_register`) on a Rhai
 /// `engine`, every new client answering from the `mocks` list.
+///
+/// Module twin: [`httpmock_module`] — same single `httpmock_fns` list, same semantics.
 pub fn httpmock_rhai_register(engine: &mut Engine, mocks: Vec<HttpMockItem>) {
+    httpmock_fns(&mut Target::Engine(engine), mocks);
+}
+
+/// Module twin of [`httpmock_rhai_register`] (issue #47): the same type name and the same
+/// functions, under the global namespace of a fresh [`Module`], registrable by
+/// [`Engine::register_static_module`] under the name the consumer picks. The constructor
+/// answers to the short name `new_client` here (qualified only); `headers_get`/`headers_has`
+/// keep their names; the real module's `get_yaml`/`json_subset`/`json_equal` twins do NOT
+/// exist under the mock (documented holes, Scenario « co-enregistrement »). A twin that
+/// drifts from its registrar is a defect: both share the single `httpmock_fns` list.
+#[must_use]
+pub fn httpmock_module(mocks: Vec<HttpMockItem>) -> Module {
+    let mut module = Module::new();
+    httpmock_fns(&mut Target::Module(&mut module), mocks);
+    module
+}
+
+/// The mock `http` group defined once (motif double cible): the custom type name, then
+/// each entry is a name, its function, its parameter names and its `///` comment
+/// (both under `metadata` only). The seven `http_`-prefixed verb aliases are
+/// engine-only, exactly like the real module's twin table.
+fn httpmock_fns(target: &mut Target<'_>, mocks: Vec<HttpMockItem>) {
+    register_type_at::<RestClientMock>(target, "RestClient");
     let new = move |base: &str| -> RestClientMock { RestClientMock::new(base, mocks.clone()) };
-    engine
-        .register_type_with_name::<RestClientMock>("RestClient")
-        .register_fn("new_http_client", new)
-        .register_fn("headers_reset", RestClientMock::headers_reset)
-        .register_fn("set_baseurl", RestClientMock::baseurl)
-        .register_fn("set_server_ca", RestClientMock::set_server_ca)
-        .register_fn("set_mtls_cert_key", RestClientMock::set_mtls)
-        .register_fn("add_header", RestClientMock::add_header)
-        .register_fn("add_header_json", RestClientMock::add_header_json)
-        .register_fn("add_header_bearer", RestClientMock::add_header_bearer)
-        .register_fn("add_header_basic", RestClientMock::add_header_basic)
-        .register_fn("head", RestClientMock::head)
-        .register_fn("get", RestClientMock::get)
-        .register_fn("http_get", RestClientMock::get)
-        .register_fn("delete", RestClientMock::delete)
-        .register_fn("http_delete", RestClientMock::delete)
-        .register_fn("delete_with_body", RestClientMock::delete_with_body)
-        .register_fn("http_delete_with_body", RestClientMock::delete_with_body)
-        .register_fn("patch", RestClientMock::patch)
-        .register_fn("http_patch", RestClientMock::patch)
-        .register_fn("post", RestClientMock::post)
-        .register_fn("http_post", RestClientMock::post)
-        .register_fn("put", RestClientMock::put)
-        .register_fn("http_put", RestClientMock::put)
-        .register_fn("post_form", RestClientMock::post_form)
-        .register_fn("http_post_form", RestClientMock::post_form)
-        .register_fn("headers_get", crate::http::headers_get)
-        .register_fn("headers_has", crate::http::headers_has);
+    register_free_at(
+        target,
+        "new_http_client",
+        "new_client",
+        &["/// Mock client serving the captured fixtures (first match winning)."],
+        &["base: string", "RestClient"],
+        new,
+    );
+    httpmock_setters_fns(target);
+    httpmock_reads_fns(target);
+    httpmock_writes_fns(target);
+    register_free_at(
+        target,
+        "headers_get",
+        "headers_get",
+        &["/// The real module's header helper, unchanged."],
+        &["headers: array", "name: string", "Dynamic"],
+        crate::http::headers_get,
+    );
+    register_free_at(
+        target,
+        "headers_has",
+        "headers_has",
+        &["/// The real module's header helper, unchanged."],
+        &["headers: array", "name: string", "bool"],
+        crate::http::headers_has,
+    );
+}
+
+/// The mock's eight muted setters, defined once (motif double cible).
+fn httpmock_setters_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "headers_reset",
+        &["/// No-op mock setter."],
+        &["client: &mut RestClient"],
+        RestClientMock::headers_reset,
+    );
+    register_at(
+        target,
+        "set_baseurl",
+        &["/// Stores the base URL, never read by the matcher."],
+        &["client: &mut RestClient", "base: string"],
+        RestClientMock::baseurl,
+    );
+    register_at(
+        target,
+        "set_server_ca",
+        &["/// No-op mock setter."],
+        &["client: &mut RestClient", "ca: string"],
+        RestClientMock::set_server_ca,
+    );
+    register_at(
+        target,
+        "set_mtls_cert_key",
+        &["/// No-op mock setter."],
+        &["client: &mut RestClient", "cert: string", "key: string"],
+        RestClientMock::set_mtls,
+    );
+    register_at(
+        target,
+        "add_header",
+        &["/// No-op mock setter."],
+        &["client: &mut RestClient", "key: string", "value: string"],
+        RestClientMock::add_header,
+    );
+    register_at(
+        target,
+        "add_header_json",
+        &["/// No-op mock setter."],
+        &["client: &mut RestClient"],
+        RestClientMock::add_header_json,
+    );
+    register_at(
+        target,
+        "add_header_bearer",
+        &["/// No-op mock setter."],
+        &["client: &mut RestClient", "token: string"],
+        RestClientMock::add_header_bearer,
+    );
+    register_at(
+        target,
+        "add_header_basic",
+        &["/// No-op mock setter."],
+        &["client: &mut RestClient", "username: string", "password: string"],
+        RestClientMock::add_header_basic,
+    );
+}
+
+/// The mock's read verbs (`head`/`get`/`delete`, each with its engine-only `http_`
+/// alias except `head` — documented hole), defined once (motif double cible).
+fn httpmock_reads_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "head",
+        &["/// The HEAD fixture's `return_obj`, first match winning."],
+        &["client: &mut RestClient", "path: string", "map"],
+        RestClientMock::head,
+    );
+    register_at(
+        target,
+        "get",
+        &["/// The GET fixture's `return_obj`, first match winning."],
+        &["client: &mut RestClient", "path: string", "map"],
+        RestClientMock::get,
+    );
+    register_engine_only_at(
+        target,
+        "http_get",
+        &["/// Alias of `get` (registrar-only twin surface)."],
+        &["client: &mut RestClient", "path: string", "map"],
+        RestClientMock::get,
+    );
+    register_at(
+        target,
+        "delete",
+        &["/// The DELETE fixture's `return_obj`, first match winning."],
+        &["client: &mut RestClient", "path: string", "map"],
+        RestClientMock::delete,
+    );
+    register_engine_only_at(
+        target,
+        "http_delete",
+        &["/// Alias of `delete` (registrar-only twin surface)."],
+        &["client: &mut RestClient", "path: string", "map"],
+        RestClientMock::delete,
+    );
+    register_at(
+        target,
+        "delete_with_body",
+        &["/// The DELETE fixture's `return_obj`; the body is ignored."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClientMock::delete_with_body,
+    );
+    register_engine_only_at(
+        target,
+        "http_delete_with_body",
+        &["/// Alias of `delete_with_body` (registrar-only twin surface)."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClientMock::delete_with_body,
+    );
+}
+
+/// The mock's write verbs (`patch`/`post`/`put`/`post_form`, each with its engine-only
+/// `http_` alias), defined once (motif double cible).
+fn httpmock_writes_fns(target: &mut Target<'_>) {
+    register_at(
+        target,
+        "patch",
+        &["/// The PATCH fixture's `return_obj`; the body is ignored."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClientMock::patch,
+    );
+    register_engine_only_at(
+        target,
+        "http_patch",
+        &["/// Alias of `patch` (registrar-only twin surface)."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClientMock::patch,
+    );
+    register_at(
+        target,
+        "post",
+        &["/// The POST fixture's `return_obj`; the body is ignored."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClientMock::post,
+    );
+    register_engine_only_at(
+        target,
+        "http_post",
+        &["/// Alias of `post` (registrar-only twin surface)."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClientMock::post,
+    );
+    register_at(
+        target,
+        "put",
+        &["/// The PUT fixture's `return_obj`; the body is ignored."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClientMock::put,
+    );
+    register_engine_only_at(
+        target,
+        "http_put",
+        &["/// Alias of `put` (registrar-only twin surface)."],
+        &["client: &mut RestClient", "path: string", "val: Dynamic", "map"],
+        RestClientMock::put,
+    );
+    register_at(
+        target,
+        "post_form",
+        &["/// The POST fixture's `return_obj`, shared with `post`; the body is ignored."],
+        &["client: &mut RestClient", "path: string", "val: map", "map"],
+        RestClientMock::post_form,
+    );
+    register_engine_only_at(
+        target,
+        "http_post_form",
+        &["/// Alias of `post_form` (registrar-only twin surface)."],
+        &["client: &mut RestClient", "path: string", "val: map", "map"],
+        RestClientMock::post_form,
+    );
 }
 
 #[cfg(test)]
@@ -289,7 +502,7 @@ mod tests {
     // ════════════════════════════════════════════════════════════════════════
     // Conversion des Scenario de http.sdd nommant le mock (le fichier vivait
     // SANS VERROU) : « le mock est un serveur dans une liste », « co-
-    // enregistrement, la substitution à deux trous », et le pas de runtime du
+    // enregistrement, la substitution à trois trous », et le pas de runtime du
     // Scenario « hors runtime multi-thread, jamais de panique tokio ».
     // ════════════════════════════════════════════════════════════════════════
 
@@ -443,7 +656,7 @@ mod tests {
         assert_eq!(out.into_string().expect("chaîne"), "mocked");
     }
 
-    // Scenario « co-enregistrement, la substitution à deux trous » (first when) :
+    // Scenario « co-enregistrement, la substitution à trois trous » (first when) :
     // VRAI registre PUIS registre mock sur le même engine — dernier enregistré
     // gagne : `new_http_client` rend un @crate::http_mock::RestClientMock sous le
     // MÊME nom de type "RestClient", servant les fixtures capturées par la closure
@@ -516,5 +729,132 @@ mod tests {
         assert_eq!(HttpMethod::default(), HttpMethod::Get, "Get est le défaut");
         let mut mock = RestClientMock::new("http://base.example", items);
         assert_eq!(body_of(mock.post("/a".to_string(), Dynamic::UNIT)), "cfg");
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Conversion des Scenario de http.sdd « httpmock_module équivaut à
+    // httpmock_rhai_register » et « même script sous le jumeau réel et sous le
+    // double » (issue #47) : motif double cible appliqué au double lui-même.
+    // ════════════════════════════════════════════════════════════════════════
+
+    // Scenario « httpmock_module équivaut à httpmock_rhai_register » : deux engines,
+    // noms qualifiés sous `http` d'un côté, globaux de l'autre — même fixture ;
+    // `http::headers_get`/`http::headers_has` répondent ; les méthodes restent
+    // appelables en espace global ; `get_yaml`/`json_subset`/`json_equal` n'existent
+    // PAS sous le double (fonction inconnue — trous documentés).
+    #[test]
+    fn httpmock_module_equivalent_a_httpmock_rhai_register() {
+        // Fixture de tête : `return_obj` porte `body` et `headers` (paires
+        // construites côté Rust, comme la map figée du vrai client — la face
+        // rejouée des verrous `headers_*` de ./http.rs, jamais de littéral).
+        let fixtures = || {
+            let mut return_obj = Map::new();
+            return_obj.insert("body".into(), Dynamic::from("ok".to_string()));
+            return_obj.insert(
+                "headers".into(),
+                Dynamic::from(vec![("x-a".to_string(), "1".to_string())]),
+            );
+            vec![HttpMockItem {
+                path: "/a".to_string(),
+                method: HttpMethod::Get,
+                return_obj,
+            }]
+        };
+        let mut enregistreur = Engine::new();
+        httpmock_rhai_register(&mut enregistreur, fixtures());
+        let mut jumeau = Engine::new();
+        jumeau.register_static_module("http", httpmock_module(fixtures()).into());
+        // La fixture sort des deux faces : `new_http_client` nu chez l'enregistreur,
+        // le nom court `http::new_client` sous le jumeau ; la méthode `get` reste
+        // appelable en espace global sur les DEUX engines (dispatch par type).
+        assert_eq!(
+            body_of(enregistreur.eval::<Map>(r#"let c = new_http_client("b"); c.get("/a")"#)),
+            body_of(jumeau.eval::<Map>(r#"let c = http::new_client("b"); c.get("/a")"#)),
+            "la même fixture rend sous le double en global et sous son jumeau module"
+        );
+        // Les libres `headers_get`/`headers_has` répondent qualifiées sous le jumeau,
+        // sur les mêmes têtes que le vrai monde (résultat d'appel natif, jamais un
+        // littéral — quirk de hashage @rhai préexistant, face des verrous ./http.rs).
+        assert!(
+            jumeau
+                .eval::<bool>(
+                    r#"let c = http::new_client("b"); http::headers_has(c.get("/a").headers, "x-a")"#
+                )
+                .expect("http::headers_has répond sous le jumeau"),
+            "headers_has vrai sur la paire présente"
+        );
+        assert_eq!(
+            jumeau
+                .eval::<String>(
+                    r#"let c = http::new_client("b"); http::headers_get(c.get("/a").headers, "x-a")"#
+                )
+                .expect("http::headers_get répond sous le jumeau"),
+            "1",
+            "headers_get rend la valeur de la paire présente"
+        );
+        // Les trois faces du module réel absentes de la table du double : fonction
+        // INCONNUE qualifiée sous le jumeau (le double n'enregistre ni get_yaml ni
+        // les comparateurs — trous assumés, cf. « co-enregistrement »).
+        for (appels, nom) in [
+            (r#"http::get_yaml("http://x/a.yaml", "", "")"#, "get_yaml"),
+            (r"http::json_subset(#{}, #{})", "json_subset"),
+            (r"http::json_equal(#{}, #{})", "json_equal"),
+        ] {
+            let err = jumeau
+                .eval::<Dynamic>(appels)
+                .expect_err("cette face n'existe pas sous le double");
+            assert!(
+                err.to_string().contains(nom),
+                "fonction inconnue {nom} attendue sous le jumeau, obtenu : {err}"
+            );
+        }
+    }
+
+    // Scenario « même script sous le jumeau réel et sous le double » (http, issue
+    // #47) : un seul texte, deux engines enregistrés sous `http` — @crate::http::
+    // http_module d'un côté (réseau : @wiremock), httpmock_module de l'autre
+    // (fixture). Le baseurl est ignoré au matching du double : le script est
+    // LITTÉRALEMENT le même des deux côtés.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn same_script_under_real_module_and_mock_module() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/a"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_string("live"))
+            .mount(&server)
+            .await;
+        let script = format!(r#"let c = http::new_client("{}"); c.get("a")"#, server.uri());
+        let mut reel = Engine::new();
+        reel.register_static_module("http", crate::http::http_module().into());
+        let mut double = Engine::new();
+        double.register_static_module(
+            "http",
+            httpmock_module(vec![item(HttpMethod::Get, "a", "ok")]).into(),
+        );
+        let reel_out = reel
+            .eval::<Dynamic>(&script)
+            .expect("le script s'exécute sans modification sous le jumeau réel");
+        let reel_map = reel_out
+            .try_cast::<Map>()
+            .expect("la face réelle rend la map figée");
+        assert_eq!(
+            reel_map
+                .get("body")
+                .cloned()
+                .and_then(|d| d.into_string().ok())
+                .expect("corps de la réponse live"),
+            "live",
+            "le jumeau réel a touché le wiremock"
+        );
+        let mock_out = double
+            .eval::<Dynamic>(&script)
+            .expect("le MÊME texte s'exécute sans modification sous le double");
+        let mock_map = mock_out.try_cast::<Map>().expect("le double rend sa fixture map");
+        assert_eq!(
+            body_of(Ok(mock_map)),
+            "ok",
+            "le double sert sa fixture, baseurl ignoré"
+        );
     }
 }

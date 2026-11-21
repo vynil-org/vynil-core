@@ -76,7 +76,7 @@ Must:
     en lint. C'est aussi, explicitement, ce qui laisse `surface_without_features` hors de tout lint.
   Compter dans les combinaisons testées les huit runs de tests que la matrice explicite ne
     couvrait pas : `--no-default-features` seul (porte où `rhai` est éteinte, donc où le seam de
-    la racine `surface_without_features` de `src/lib.sdd` et les 15 Display non gated sont
+    la racine `surface_without_features` de `src/lib.sdd` et les 16 Display non gated sont
     réellement exécutés — mesuré : ils le sont aussi sous `hbs`, `crypto` et `hbs,crypto`, cette
     porte n'est pas exclusive, elle est la plus étroite) ; `--no-default-features --features hbs` seul (seule porte qui joue
     le graphe `hbs` sans `rhai` et tient donc l'invariant d'isolabilité de l'issue #9 en
@@ -113,7 +113,7 @@ Must:
     sans `rhai`…) soit compilé seul par au moins une commande et que l'invariant d'isolabilité
     de `hbs` (racine `vyvil-core.sdd`) soit vérifié. Les combinaisons explicites qui portent un
     sens (`k8s,oci,s3`, `--all-features`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`,
-    `rhai,fs`, `rhai,password`) restent
+    `rhai,fs`, `rhai,password`, `feeds`, `prometheus`, `loki`) restent
     en plus.
 
 Must not:
@@ -156,6 +156,18 @@ Scenario: exemption en test
   Then aucun warning de la famille stricte n'est émis pour ce module
 
 Tasks:
+  [ ] Reprendre les phrases descriptives des combinaisons de la batterie (ce fichier — énumérations
+    « qui portent un sens » des `Must`/`Accepts` et compteurs de runs —, les commentaires et
+    `name:` de ./.github/workflows/test.yml, la liste de commandes de ./AGENTS.md et la batterie de
+    ./.opencode/agents/validator.md) : là où elles nomment encore `rhai` nu et s'arrêtent à
+    `rhai,password`, `rt` et `rhai,quantity` accompagnent désormais `rhai` dans la batterie jouée
+    (mesure à l'inscription : les deux faces de `rhai,quantity` — test et clippy — et la porte `rt`
+    sont bien jouées par test.yml, AGENTS.md et validator.md, que `--each-feature` ne joue pas en
+    test ; ce sont les phrases descriptives de ce fichier et certains commentaires de test.yml qui
+    restent à jour en retard, plus les compteurs « huit runs »/« quatorze runs » devenus faux).
+    Vérifier au passage si une face `rhai,rt` a un verrou propre à jouer — mesure à l'inscription :
+    aucun `all(test, rhai, rt)` dans ./src (le module `cancel` est sous `any(rhai, rt)`, joué sur
+    les deux portes séparées), la face ne s'inscrit donc que si un verrou naît sous `rhai,rt`.
   [x] Basculer la famille strict `deny` module par module à mesure que la dette est purgée.
   [x] Basculer `pedantic`/`cargo` en `deny` quand la crate est à zéro warning.
   [x] Remettre `cargo clippy --all-features --all-targets -- -D warnings` dans la CI quand
@@ -281,6 +293,19 @@ Tasks:
     (./.opencode/agents/validator.md) et ./.github/workflows/test.yml. Jumelle de « Exposer la feature
     `quantity` » de ./vyvil-core.sdd et de la tâche de ./.github/workflows/workflows.sdd, cochée dans
     le même commit.
+
+  [x] Ajouter les portes `--no-default-features --features feeds`, `... --features prometheus` et `... --features
+    loki` à la batterie (test et clippy `--all-targets -- -D warnings`) : chacune joue les verrous de son
+    module sous sa seule feature (le graphe `http`+`rt`+`rhai` qu'elle implique, sans `default`), et la
+    porte `prometheus` comme la porte `loki` jouent ensemble les verrous du noyau `query_client`, qui n'a
+    PAS de porte nommée propre (feature interne sans consommateur seule, couverte aussi par `cargo hack
+    --each-feature` ; décision de ./src/query_client.sdd). Les trois s'ajoutent aux combinaisons explicites
+    (elles ne se déduisent pas de `--each-feature`, qui ne joue aucun test). Lockstep des quatre
+    emplacements : ce fichier, ./AGENTS.md (liste de commandes et phrase des combinaisons explicites),
+    l'agent `validator` (./.opencode/agents/validator.md) et ./.github/workflows/test.yml. Jumelle de
+    « Reprendre la batterie pour les trois portes neuves » de ./vyvil-core.sdd, de la tâche de
+    ./.github/workflows/workflows.sdd et des portes désignées de ./src/feeds.sdd, ./src/prometheus.sdd,
+    ./src/loki.sdd, cochée dans le même commit.
 
 Done when:
   `cargo clippy --all-targets -- -D warnings` et `cargo clippy --all-features --all-targets

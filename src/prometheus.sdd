@@ -1,0 +1,189 @@
+Spec: prometheus
+
+Purpose:
+  Contrat groupé de ./prometheus.rs et ./prometheus_mock.rs (règle source+mock d'un seul contrat,
+    ./.specdd/bootstrap.project.md ; issue vynil-org/vynil-core#57) : connecteur en LECTURE vers
+    une API compatible Prometheus (Prometheus, Mimir, Thanos, VictoriaMetrics), construit sur le
+    noyau ./query_client.sdd (client configuré par l'hôte, lecture en flux bornée, erreurs typées).
+    Il expose à Rhai un MODULE D'HÔTE nommé : l'hôte bâtit un @crate::query_client::QueryClient,
+    en tire un @rhai::Module et l'enregistre sous le nom qu'il choisit
+    (@rhai::Engine::register_static_module, accordable par type de contexte côté hôte) ; le script ne
+    passe que la requête et la plage de temps. Face Rust (lot E, « Rust first ») :
+    @crate::prometheus::PrometheusClient, `async fn`, même noyau, même forme de sortie ; le module de script
+    n'en est qu'une projection synchrone. Il ne voit ni jeton, ni URL, ni autre tenant. La
+    sortie est normalisée à la forme du type `timeseries` du moteur de widgets de vanyline, par
+    conception et sans dépendance entre les deux. Le groupe inclut le double
+    @crate::prometheus_mock, qui sert les mêmes fonctions depuis des fixtures.
+
+Owns:
+  ./prometheus.rs
+  ./prometheus_mock.rs
+
+References:
+  ./query_client.sdd — noyau partagé : config, plafonds, flux, pas automatique, erreurs
+    @crate::query_client::QueryError, redaction. Ce qui y est contracté n'est pas répété ici.
+  ./chrono.sdd — @crate::chrono::DateTimeHandler, accepté comme borne de temps.
+  ./lib.sdd — déclarant des deux modules (gate `prometheus`).
+  ../vyvil-core.sdd — catalogue des modules Rhai (module d'hôte, exception à la règle `X_rhai_register`)
+    et feature `prometheus` de ../Cargo.toml.
+  ./docs/rhai_helpers.md et ./docs/mocking.md — pages tenues par ../docs.sdd (tâche jumelle).
+
+Must:
+  N'exister que sous la feature `prometheus` (`prometheus = ["query_client"]`, qui implique donc
+    `http`, `rt` et `rhai` ; hors `default`), avec @cfg_attr docsrs, les deux modules publics.
+  Exposer deux fonctions de script, par un module d'hôte et lui seul (AUCUN enregistreur global
+    `prometheus_rhai_register` : un client est lié à une instance configurée, sans type de handle
+    côté script ; exception motivée à la règle des jumeaux de ../vyvil-core.sdd) :
+    `query(expr, time)` — requête instantanée — et `query_range(expr, start, end, step)`.
+    @crate::prometheus::prometheus_module(client) rend le @rhai::Module ; l'hôte choisit le nom.
+  Accepter comme `time`, `start` et `end` un entier `i64` en millisecondes depuis l'epoch UTC, ou un
+    @crate::chrono::DateTimeHandler ; `step` est `"auto"` ou une durée Prometheus (`"30s"`, `"5m"`,
+    `"1h"`, `"1d"`, `"500ms"`). Un `time` ou une borne invalide, ou `end < start`, est un échec de script
+    (@crate::RhaiRes), jamais une panique.
+  Rendre la sortie normalisée `{ series: [{ labels, points: [[t, v]] }], truncated }` :
+    `labels` est une map de chaînes (vide si absente) ; `t` est un entier `i64` en MILLISECONDES
+    UTC, STRICTEMENT croissant dans une série ; `v` est un nombre fini (`f64`) ou `()` (null).
+    `NaN` devient `()` (un trou) ; `±Inf` n'est JAMAIS passé tel quel : il fait échouer l'appel en
+    `NonFinite` (décision du 2026-11-18). La forme est alignée par conception sur le type
+    `timeseries` de vanyline ; un jeu de fixtures commun en vérifie l'alignement.
+  Rendre une requête instantanée (`query`) dans la même forme : une série par vecteur, un seul point
+    `[t, v]` ; un résultat scalaire donne une série sans labels ; un résultat de type chaîne est
+    refusé en `BadResponse`.
+  Tenir `truncated` pour la seule voie de lecture du dépassement de plafond (séries, points, octets,
+    cf. ./query_client.sdd) : `false` quand le résultat est complet, `true` quand il est tronqué,
+    jamais de troncature silencieuse.
+  Servir le double @crate::prometheus_mock::prometheus_mock_module(fixtures) : mêmes noms de fonctions
+    que le réel (`query`, `query_range`), mêmes formes de sortie, réponses issues de fixtures, sans
+    réseau ni @tokio, pour qu'un même script s'exécute sous le vrai module et sous le double
+    (critère de ../vyvil-core.sdd). Le double ne voit pas non plus de configuration.
+
+Must not:
+  Offrir au script la moindre lecture de la configuration, ni écriture (règles, push), ni liste de
+    métadonnées (noms de métriques, de labels).
+  Agréger, découper ou ré-échantillonner les séries : le producteur de la requête décide.
+  Rendre un point `[t, v]` dont `v` est une chaîne : la conversion de la valeur texte de Prometheus
+    (`"1.5"`, `"NaN"`, `"+Inf"`) vers nombre est ici, jamais laissée au script.
+
+Depends on:
+  ./query_client.rs — @crate::query_client::QueryClient, @crate::query_client::QueryError.
+  ./chrono.rs — @crate::chrono::DateTimeHandler.
+
+Exposes:
+  @crate::prometheus::PrometheusClient — `Clone`, `Debug` sans jeton (hérité de @crate::query_client::QueryClient) ;
+    `new(client)`, `async fn query(&self, expr, time_ms: i64)` et `async fn query_range(&self, expr, start_ms,
+    end_ms: i64, step: Option<Duration>)` (`None` = pas automatique) rendant @crate::prometheus::SeriesResult ;
+    plage inversée → @variant-Error::Other sans requête ; ne tourne pas sous `current_thread` (erreur explicite).
+  @crate::prometheus::prometheus_module — `#[must_use] pub fn(client: QueryClient) -> @rhai::Module`.
+  @crate::prometheus::SeriesResult — `pub struct { series: Vec<Series>, truncated: bool }`
+    (`Series { labels, points }`), convertible en @rhai::Map et sérialisable : forme normalisée pour les
+    consommateurs Rust.
+  @crate::prometheus_mock::prometheus_mock_module — `pub fn(fixtures: Vec<PrometheusFixture>) ->
+    @rhai::Module` ; `PrometheusFixture` associe une expression et une réponse normalisée.
+
+Accepts:
+  `query(expr: string, time: i64 | DateTimeHandler)` ;
+  `query_range(expr: string, start: i64 | DateTimeHandler, end: i64 | DateTimeHandler, step: string)`.
+
+Returns:
+  `map { series: array, truncated: bool }` (cf. Must).
+
+Raises:
+  @variant-Error::Query portant @crate::query_client::QueryError (`QUERY-001` à `QUERY-009`) ; une
+    entrée de script invalide : @crate::RhaiRes en échec.
+
+Handles:
+  Série vide : `series: []`. Plusieurs séries : l'ordre du serveur est conservé. Étiquettes absentes :
+    `labels` est la map vide. Même requête contre Mimir (préfixe `/prometheus`) et contre un
+    Prometheus nu : même sortie (le préfixe est de la config hôte).
+
+Tasks:
+  [x] Spec approuvée, puis tests depuis les `Scenario`, puis implémentation minimale de ./prometheus.rs
+    et ./prometheus_mock.rs. Portes : `cargo test --no-default-features --features prometheus` (porte
+    désignée, jumelle de ../tooling.sdd) et `--all-features`.
+  [x] Jumelle de ./query_client.sdd et de ../vyvil-core.sdd : feature `prometheus` dans ../Cargo.toml.
+  [x] Jumelle de ./lib.sdd : déclarer `prometheus` et `prometheus_mock`.
+  [x] Jumelle de ../docs.sdd : documenter le module d'hôte `prometheus` (enregistrement, forme de
+    sortie, erreurs) et le mock.
+  [x] Fixtures communes : un jeu de fixtures de séries partagé avec vanyline vérifie l'alignement avec son
+    type `timeseries` (côté vynil-core : un test sur la forme ; côté vanyline : hors de ce dépôt).
+
+  [x] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first », architecture
+    « hybride » : noyau de lecture synchrone inchangé, façade async par `run_blocking` de
+    ./query_client.sdd) : ajouter @crate::prometheus::PrometheusClient, `Clone`, construit par
+    `PrometheusClient::new(client: @crate::query_client::QueryClient)`, avec `pub async fn query(&self,
+    expr: &str, time_ms: i64) -> crate::Result<SeriesResult>` et `pub async fn query_range(&self, expr:
+    &str, start_ms: i64, end_ms: i64, step: Option<std::time::Duration>) -> crate::Result<SeriesResult>`
+    (`None` = pas automatique du noyau). Les temps sont des `i64` en millisecondes UTC, comme la sortie.
+    Refactor imposé : extraire de `query_impl` / `query_range_impl` deux fonctions synchrones pures
+    `query_sync` et `query_range_sync` sur `(&QueryClient, …)` qui portent URL, noyau et normalisation ;
+    la face Rhai ne garde que la conversion `Dynamic` → `i64` / pas et l'appel de ces fonctions, avec
+    EXACTEMENT les mêmes messages d'erreur qu'aujourd'hui (les tests actuels de la face Rhai sont le
+    verrou, ils ne changent pas) ; les méthodes async appellent les mêmes fonctions par `run_blocking`
+    sur un clone du client. `end_ms < start_ms` rend @variant-Error::Other `query_range: end is before
+    start`, avant tout réseau. Pas de mock Rust ici : hors lot, à ouvrir à la demande d'un consommateur.
+    Tests d'abord depuis les Scenario « PrometheusClient » ci-dessous. Reprendre `Purpose`, `Exposes` et
+    `Must` à la clôture. Clos (synthèse validator verte, 2026-11-20) ; les contrôles d'entrée (plage inversée)
+    existent côté face Rhai (messages sans préfixe, verrouillés par les tests existants) ET dans
+    `query_range_sync` (`Error::Other`) : duplication voulue, un test aligne à terme les deux messages.
+
+Scenario: requête instantanée et requête de plage nominales
+  Given un faux serveur Prometheus servant un vecteur puis une matrice à deux séries
+  When le script appelle `query("up", t)` puis `query_range("rate(x[5m])", s, e, "1m")`
+  Then les sorties sont `{series, truncated: false}` avec `t` entiers ms UTC strictement croissants
+
+Scenario: trous et valeurs non finies
+  Given une série dont une valeur est `"NaN"`
+  Then le point correspondant porte `v = ()` et la série reste rendue
+  Given une série dont une valeur est `"+Inf"`
+  Then l'appel échoue en `NonFinite`, aucune valeur infinie n'est passée au script
+
+Scenario: série vide, plusieurs séries, étiquettes absentes
+  Given une réponse de résultat vide, une de trois séries, et une série sans `metric`
+  Then respectivement `series: []`, trois séries dans l'ordre du serveur, et `labels` à la map vide
+
+Scenario: dépassement de plafond
+  Given `max_series = 2` et une matrice de cinq séries
+  Then deux séries complètes sont rendues avec `truncated: true`
+  Given un pas `"auto"` sur une plage dépassant `max_points`
+  Then le pas s'adapte ; un pas explicite trop fin est refusé en `StepTooFine`
+
+Scenario: syntaxe PromQL invalide
+  Given un serveur répondant 400 `parse error: unexpected …`
+  When le script appelle `query("sum(", t)`
+  Then l'erreur est `Syntax` et porte le message du serveur ; le jeton est absent du message
+
+Scenario: tenant et jeton non exposés
+  Given un client à tenant et jeton, enregistré sous le nom `metrics`
+  When le script appelle `metrics::query("up", t)`
+  Then la requête porte `X-Scope-OrgID` et `Authorization` côté réseau, et rien de cela n'est
+    atteignable ni visible depuis le script
+
+Scenario: même script sous le vrai module et sous le mock
+  Given un script `metrics::query_range("x", s, e, "1m")`
+  When il tourne sous `prometheus_module` puis sous `prometheus_mock_module`
+  Then il s'exécute sans modification et rend la même forme de sortie
+
+Scenario: sans la feature prometheus, rien n'existe
+  Given une compilation sans `prometheus`
+  Then ni @crate::prometheus ni @crate::prometheus_mock n'existent
+
+Scenario: fonctions documentées sous metadata (prometheus)
+  Given la feature `metadata` active
+  Then `query` et `query_range` portent commentaire `///`, noms de paramètres et type de retour
+
+
+Scenario: PrometheusClient rend la même forme normalisée que le module de script
+  Given un faux serveur servant la même matrice à deux séries
+  When `PrometheusClient::query_range` est attendu puis le script appelle `query_range` sur le même serveur
+  Then le `SeriesResult` Rust égale (`PartialEq`) la conversion en map du résultat de script
+
+Scenario: PrometheusClient rend les erreurs typées et refuse une plage inversée
+  Given un faux serveur répondant 400 `parse error`, et une plage dont `end_ms < start_ms`
+  When `query` est attendu sur la syntaxe invalide, puis `query_range` sur la plage inversée
+  Then la première erreur est `Error::Query(QueryError::Syntax(..))` portant le message du serveur
+  And la seconde est `Error::Other` sans qu'aucune requête réseau ne soit partie
+  And un pas explicite trop fin donne `QueryError::StepTooFine` portant le pas minimal
+
+Done when:
+  Chaque Scenario est un test vert, la batterie de ../tooling.sdd passe (porte `prometheus` et
+    `--all-features`), et les tâches jumelles sont cochées dans le même commit.

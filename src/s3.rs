@@ -7,9 +7,489 @@ use crate::{
     engine::{Target, register_free_at},
     rhai_err,
 };
-use futures::StreamExt;
-use object_store::{ObjectStore, path::Path};
+use bytes::Bytes;
+use futures::{Stream, StreamExt, stream::BoxStream};
+use object_store::{
+    ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion, WriteMultipart, path::Path,
+};
 use rhai::{Dynamic, Engine, Module};
+use std::{fmt, sync::Arc};
+
+/// Re-export of the `object_store` crate this module is built on, so that a consumer uses
+/// exactly the same version as the crate (s3.sdd, lot E).
+pub use object_store;
+
+/// Re-export of the `bytes` crate: the type of the read methods is [`bytes::Bytes`], so a
+/// consumer uses exactly the same version as the crate (s3.sdd, lot E).
+pub use bytes;
+
+/// Explicit S3 credentials. Both fields are required together; `Debug` redacts them.
+#[derive(Clone)]
+pub struct S3Credentials {
+    /// Access key id.
+    pub access_key: String,
+    /// Secret access key.
+    pub secret_key: String,
+}
+
+impl fmt::Debug for S3Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("S3Credentials")
+            .field("access_key", &"<redacted>")
+            .field("secret_key", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Configuration of an [`S3Store`]. `endpoint: Some` selects an S3-compatible store (plain
+/// HTTP allowed); `credentials: None` selects the default credential chain of `object_store`.
+/// `prefix` is the store's root inside the bucket. `Debug` redacts the credentials.
+#[derive(Clone, Default)]
+pub struct S3Config {
+    /// Bucket name.
+    pub bucket: String,
+    /// Region.
+    pub region: String,
+    /// Custom endpoint, `None` for AWS S3.
+    pub endpoint: Option<String>,
+    /// Explicit credentials, `None` for the default credential chain.
+    pub credentials: Option<S3Credentials>,
+    /// Root prefix of the store, joined to every key.
+    pub prefix: String,
+}
+
+impl fmt::Debug for S3Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("S3Config")
+            .field("bucket", &self.bucket)
+            .field("region", &self.region)
+            .field("endpoint", &self.endpoint)
+            .field("credentials", &self.credentials)
+            .field("prefix", &self.prefix)
+            .finish()
+    }
+}
+
+/// Metadata of an object, as returned by [`S3Store::head`] and [`S3Store::list`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct S3Meta {
+    /// Key relative to the store prefix.
+    pub key: String,
+    /// Size in bytes.
+    pub size: u64,
+    /// Last modification, in milliseconds since the Unix epoch (UTC).
+    pub last_modified: i64,
+    /// Entity tag, when the backend provides one.
+    pub etag: Option<String>,
+}
+
+/// Result of a successful [`S3Store::put`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct S3PutResult {
+    /// Entity tag of the written object, when the backend provides one.
+    pub etag: Option<String>,
+}
+
+/// Condition of a conditional write, see [`S3Store::put_if`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum S3Condition {
+    /// Write only if no object exists under the key.
+    IfNotExists,
+    /// Write only if the object under the key has this entity tag.
+    IfMatch(String),
+}
+
+/// Typed failure of the S3 client. Each Display starts with its stable code `S3-00x`, and the
+/// wrapping [`crate::Error::S3`] shows the same text.
+#[derive(Debug, thiserror::Error)]
+pub enum S3Error {
+    /// The object does not exist (`S3-001`).
+    #[error("S3-001 object not found: {key}")]
+    NotFound {
+        /// Key relative to the store prefix.
+        key: String,
+    },
+    /// The object already exists and the operation forbids overwriting it (`S3-002`).
+    #[error("S3-002 object already exists: {key}")]
+    AlreadyExists {
+        /// Key relative to the store prefix.
+        key: String,
+    },
+    /// A condition of the request failed (`S3-003`).
+    #[error("S3-003 precondition failed: {key}")]
+    PreconditionFailed {
+        /// Key relative to the store prefix.
+        key: String,
+    },
+    /// Any other backend failure, carrying the `object_store` message (`S3-004`).
+    #[error("S3-004 S3 backend error: {0}")]
+    Backend(String),
+}
+
+/// Maps an `object_store` error on `key` to its typed [`S3Error`] (s3.sdd, lot E).
+fn map_store_error(key: &str, e: object_store::Error) -> S3Error {
+    use object_store::Error as StoreError;
+    match e {
+        StoreError::NotFound { .. } => S3Error::NotFound { key: key.to_string() },
+        StoreError::AlreadyExists { .. } => S3Error::AlreadyExists { key: key.to_string() },
+        StoreError::Precondition { .. } => S3Error::PreconditionFailed { key: key.to_string() },
+        other => S3Error::Backend(other.to_string()),
+    }
+}
+
+/// [`map_store_error`] lifted into the crate error, for `?` in the [`S3Store`] methods.
+fn store_err(key: &str, e: object_store::Error) -> Error {
+    Error::S3(map_store_error(key, e))
+}
+
+/// Builds the `object_store` store of `config` — the one set of build rules shared by the
+/// Rhai faces ([`build_store`]) and [`S3Store::new`].
+fn store_from_config(config: &S3Config) -> crate::Result<Box<dyn ObjectStore>> {
+    use object_store::aws::AmazonS3Builder;
+    let (access_key, secret_key) = match &config.credentials {
+        None => ("", ""),
+        Some(c) => (c.access_key.as_str(), c.secret_key.as_str()),
+    };
+    if access_key.is_empty() != secret_key.is_empty() {
+        return Err(Error::Other(
+            "s3: access_key and secret_key must be provided together".to_string(),
+        ));
+    }
+    let mut builder = AmazonS3Builder::new()
+        .with_bucket_name(&config.bucket)
+        .with_region(&config.region);
+    if !access_key.is_empty() {
+        builder = builder
+            .with_access_key_id(access_key)
+            .with_secret_access_key(secret_key);
+    }
+    if let Some(endpoint) = config.endpoint.as_deref().filter(|e| !e.is_empty()) {
+        builder = builder.with_endpoint(endpoint).with_allow_http(true);
+    }
+    let store = builder.build().map_err(|e| Error::Other(e.to_string()))?;
+    Ok(Box::new(store))
+}
+
+/// S3 client of the filestore (s3.sdd, lot E). Keys passed to and returned by the methods are
+/// relative to the store prefix, joined with the normalized separator of `join_prefix_key`.
+#[derive(Clone)]
+pub struct S3Store {
+    store: Arc<dyn ObjectStore>,
+    prefix: String,
+}
+
+impl fmt::Debug for S3Store {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("S3Store")
+            .field("store", &self.store.to_string())
+            .field("prefix", &self.prefix)
+            .finish()
+    }
+}
+
+impl S3Store {
+    /// Builds the store described by `config`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::Other`] when the store cannot be built (incomplete credentials,
+    /// backend builder refusal).
+    pub fn new(config: S3Config) -> crate::Result<Self> {
+        let store = store_from_config(&config)?;
+        let prefix = config.prefix;
+        Ok(Self {
+            store: Arc::from(store),
+            prefix: drop_empty_segments(&prefix),
+        })
+    }
+
+    /// Wraps an existing [`ObjectStore`] (for instance `InMemory` in tests) under `prefix`.
+    /// The prefix is normalized as by [`S3Store::prefix`]; it never fails here.
+    #[must_use]
+    pub fn from_object_store(store: Arc<dyn ObjectStore>, prefix: impl Into<String>) -> Self {
+        Self {
+            store,
+            prefix: drop_empty_segments(&prefix.into()),
+        }
+    }
+
+    /// The underlying `object_store` store (escape hatch; keys are full, prefix included).
+    #[must_use]
+    pub fn object_store(&self) -> &Arc<dyn ObjectStore> {
+        &self.store
+    }
+
+    /// The root prefix of the store, normalized at construction: no leading `/`, no trailing
+    /// `/`, no empty segment (`"/x//y/"` becomes `"x/y"`). Any other character is kept as is.
+    #[must_use]
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
+    /// Full location of the relative `key`, through the normalized join and [`raw_path`]: the
+    /// key is stored under its own spelling, never percent-encoded.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::Other`] when a segment of the full key is refused by `object_store`
+    /// (`.`, `..`, ASCII control character).
+    fn location(&self, key: &str) -> crate::Result<Path> {
+        raw_path(&join_prefix_key(&self.prefix, key))
+    }
+
+    /// Key of `location` relative to the store prefix, as stored (no decoding needed: the
+    /// location is the raw key).
+    fn relative_key(&self, location: &Path) -> crate::Result<String> {
+        let full = location.as_ref();
+        let root = self.prefix.trim_end_matches('/');
+        if root.is_empty() {
+            return Ok(full.to_string());
+        }
+        full.strip_prefix(root)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .map(str::to_string)
+            .ok_or_else(|| {
+                Error::S3(S3Error::Backend(format!(
+                    "location outside the store prefix: {full}"
+                )))
+            })
+    }
+
+    /// Reads the whole object `key`.
+    ///
+    /// # Errors
+    ///
+    /// [`S3Error::NotFound`] when the object is absent, [`S3Error::Backend`] otherwise.
+    pub async fn get(&self, key: &str) -> crate::Result<Bytes> {
+        let result = self
+            .store
+            .get(&self.location(key)?)
+            .await
+            .map_err(|e| store_err(key, e))?;
+        result.bytes().await.map_err(|e| store_err(key, e))
+    }
+
+    /// Reads the metadata of the object `key`.
+    ///
+    /// # Errors
+    ///
+    /// [`S3Error::NotFound`] when the object is absent, [`S3Error::Backend`] otherwise.
+    pub async fn head(&self, key: &str) -> crate::Result<S3Meta> {
+        let meta = self
+            .store
+            .head(&self.location(key)?)
+            .await
+            .map_err(|e| store_err(key, e))?;
+        Ok(S3Meta {
+            key: self.relative_key(&meta.location)?,
+            size: meta.size,
+            last_modified: meta.last_modified.timestamp_millis(),
+            etag: meta.e_tag,
+        })
+    }
+
+    /// Writes `data` under `key`, overwriting any previous object. The key is normalized like every
+    /// key of the store: empty segments are dropped, so `a//b` and `a/b/` both store `a/b`.
+    ///
+    /// # Errors
+    ///
+    /// [`S3Error::Backend`] on any backend failure.
+    pub async fn put(&self, key: &str, data: impl Into<PutPayload>) -> crate::Result<S3PutResult> {
+        let result = self
+            .store
+            .put(&self.location(key)?, data.into())
+            .await
+            .map_err(|e| store_err(key, e))?;
+        Ok(S3PutResult { etag: result.e_tag })
+    }
+
+    /// Reads the bytes `range` (semi-open interval of byte offsets) of the object `key`.
+    ///
+    /// # Errors
+    ///
+    /// [`S3Error::NotFound`] when the object is absent, [`S3Error::Backend`] otherwise.
+    pub async fn get_range(&self, key: &str, range: std::ops::Range<u64>) -> crate::Result<Bytes> {
+        self.store
+            .get_range(&self.location(key)?, range)
+            .await
+            .map_err(|e| store_err(key, e))
+    }
+
+    /// Streams the object `key` without loading its body in memory.
+    ///
+    /// # Errors
+    ///
+    /// [`S3Error::NotFound`] when the object is absent; the items of the returned stream are
+    /// [`S3Error`]s mapped the same way.
+    pub async fn get_stream(&self, key: &str) -> crate::Result<BoxStream<'static, crate::Result<Bytes>>> {
+        let result = self
+            .store
+            .get(&self.location(key)?)
+            .await
+            .map_err(|e| store_err(key, e))?;
+        let key = key.to_string();
+        Ok(result
+            .into_stream()
+            .map(move |item| item.map_err(|e| store_err(&key, e)))
+            .boxed())
+    }
+
+    /// Writes the chunks of `stream` under `key` as a multipart upload, cut into parts of
+    /// `chunk_size` bytes, with at most 8 parts in flight (a structural guarantee of the
+    /// feeding loop, not covered by a test).
+    ///
+    /// A stream that yields no byte (empty, or only empty chunks) writes an empty object with
+    /// a plain `put`: S3 refuses to complete a multipart upload with zero parts.
+    ///
+    /// Limits of the real S3 that the in-memory store does not reproduce: every part except the
+    /// last must be at least 5 MiB, and S3 refuses the completion of the upload otherwise, whereas
+    /// [`object_store::memory::InMemory`] accepts any part size. Choose `chunk_size` >= 5 MiB for
+    /// a bucket. Dropping the returned future before it completes does not abort the multipart
+    /// upload: an incomplete upload can remain on the S3 side (it is not cleaned up here).
+    ///
+    /// # Errors
+    ///
+    /// A `chunk_size` of zero is refused with [`crate::Error::Other`] before any write. An
+    /// error of the input stream is returned as is: the upload is then aborted and no object
+    /// is left under `key`; a failure of that abort is swallowed, the stream error prevails.
+    /// [`S3Error::Backend`] on any backend failure.
+    pub async fn put_stream<S>(&self, key: &str, stream: S, chunk_size: usize) -> crate::Result<S3PutResult>
+    where
+        S: Stream<Item = crate::Result<Bytes>> + Unpin,
+    {
+        if chunk_size == 0 {
+            return Err(Error::Other(
+                "s3: put_stream chunk_size must be greater than zero".to_string(),
+            ));
+        }
+        let upload = self
+            .store
+            .put_multipart(&self.location(key)?)
+            .await
+            .map_err(|e| store_err(key, e))?;
+        let mut write = WriteMultipart::new_with_chunk_size(upload, chunk_size);
+        match feed_parts(key, stream, &mut write, chunk_size).await {
+            Ok(true) => write
+                .finish()
+                .await
+                .map(|result| S3PutResult { etag: result.e_tag })
+                .map_err(|e| store_err(key, e)),
+            Ok(false) => {
+                // Nothing to upload: drop the multipart and write the empty object directly.
+                let _ = write.abort().await;
+                self.put(key, Bytes::new()).await
+            }
+            Err(e) => {
+                // The error of the input stream prevails; a failed abort cannot make it worse.
+                let _ = write.abort().await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Writes `data` under `key` only if `condition` holds.
+    ///
+    /// # Errors
+    ///
+    /// [`S3Error::AlreadyExists`] when [`S3Condition::IfNotExists`] fails,
+    /// [`S3Error::PreconditionFailed`] when [`S3Condition::IfMatch`] fails,
+    /// [`S3Error::Backend`] otherwise.
+    pub async fn put_if(
+        &self,
+        key: &str,
+        data: impl Into<PutPayload>,
+        condition: S3Condition,
+    ) -> crate::Result<S3PutResult> {
+        let mode = match condition {
+            S3Condition::IfNotExists => PutMode::Create,
+            S3Condition::IfMatch(etag) => PutMode::Update(UpdateVersion {
+                e_tag: Some(etag),
+                version: None,
+            }),
+        };
+        let opts = PutOptions {
+            mode,
+            ..PutOptions::default()
+        };
+        let result = self
+            .store
+            .put_opts(&self.location(key)?, data.into(), opts)
+            .await
+            .map_err(|e| store_err(key, e))?;
+        Ok(S3PutResult { etag: result.e_tag })
+    }
+
+    /// Deletes the object `key`.
+    ///
+    /// # Errors
+    ///
+    /// [`S3Error::Backend`] on any backend failure.
+    pub async fn delete(&self, key: &str) -> crate::Result<()> {
+        self.store
+            .delete(&self.location(key)?)
+            .await
+            .map_err(|e| store_err(key, e))
+    }
+
+    /// Lists the objects under `prefix` (relative to the store prefix), sorted by key in byte
+    /// order, with keys relative to the store prefix.
+    ///
+    /// `prefix` is matched by path segment, as a directory would be: `list("doc")` returns
+    /// `doc/y` but not `docs/x`.
+    ///
+    /// # Errors
+    ///
+    /// [`S3Error::Backend`] on any listing failure.
+    pub async fn list(&self, prefix: &str) -> crate::Result<Vec<S3Meta>> {
+        let location_prefix = self.location(prefix)?;
+        let mut stream = self.store.list(Some(&location_prefix));
+        let mut metas = vec![];
+        while let Some(item) = stream.next().await {
+            let meta = item.map_err(|e| store_err(prefix, e))?;
+            metas.push(S3Meta {
+                key: self.relative_key(&meta.location)?,
+                size: meta.size,
+                last_modified: meta.last_modified.timestamp_millis(),
+                etag: meta.e_tag,
+            });
+        }
+        metas.sort_by(|a, b| a.key.cmp(&b.key));
+        Ok(metas)
+    }
+}
+
+
+/// Parts of a multipart upload that may be in flight at the same time (s3.sdd, lot E).
+const MAX_PARTS_IN_FLIGHT: usize = 8;
+
+/// Feeds the chunks of `stream` into `write`, cut into pieces of at most `chunk_size` bytes.
+/// Before each piece, waits for a free slot (at most [`MAX_PARTS_IN_FLIGHT`] parts in flight),
+/// so a piece spawns at most one part. Returns whether at least one byte was fed. An error of
+/// the stream is returned as is; the caller decides to abort the upload.
+async fn feed_parts<S>(
+    key: &str,
+    mut stream: S,
+    write: &mut WriteMultipart,
+    chunk_size: usize,
+) -> crate::Result<bool>
+where
+    S: Stream<Item = crate::Result<Bytes>> + Unpin,
+{
+    let mut fed = false;
+    while let Some(item) = stream.next().await {
+        let mut chunk = item?;
+        while !chunk.is_empty() {
+            write
+                .wait_for_capacity(MAX_PARTS_IN_FLIGHT)
+                .await
+                .map_err(|e| store_err(key, e))?;
+            let piece = chunk.split_to(chunk.len().min(chunk_size));
+            write.put(piece);
+            fed = true;
+        }
+    }
+    Ok(fed)
+}
 
 /// Join `prefix` and `key` into one object key with a single `/` separator:
 /// trailing `/` trimmed from `prefix`, leading `/` trimmed from `key`, one `/`
@@ -25,6 +505,27 @@ fn join_prefix_key(prefix: &str, key: &str) -> String {
     }
 }
 
+/// `path` without its empty segments: `"/x//y/"` becomes `"x/y"`. Any other character,
+/// including non-ASCII and `%`, is kept as is (s3.sdd, filestore « clés UTF-8 »).
+fn drop_empty_segments(path: &str) -> String {
+    path.split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Object key as a [`Path`] holding the raw spelling of `full`: empty segments are dropped,
+/// and the path is built by [`Path::parse`], never by [`Path::from`], which percent-encodes
+/// (`é.txt` would become `%C3%A9.txt`, and the bucket would store that encoded spelling).
+/// `object_store` refuses `.`, `..` and ASCII control characters: they are refused here too,
+/// with an explicit error rather than an encoded or silently altered key.
+fn raw_path(full: &str) -> crate::Result<Path> {
+    let normalized = drop_empty_segments(full);
+    Path::parse(&normalized).map_err(|e| Error::Other(format!("s3: invalid object key {full:?}: {e}")))
+}
+
+/// Script-face build: the Rhai strings become an [`S3Config`] (empty endpoint = AWS, both
+/// credentials empty = default chain) and go through [`store_from_config`].
 fn build_store(
     bucket: &str,
     region: &str,
@@ -32,25 +533,17 @@ fn build_store(
     access_key: &str,
     secret_key: &str,
 ) -> crate::Result<Box<dyn ObjectStore>> {
-    use object_store::aws::AmazonS3Builder;
-    if access_key.is_empty() != secret_key.is_empty() {
-        return Err(Error::Other(
-            "s3: access_key and secret_key must be provided together".to_string(),
-        ));
-    }
-    let mut builder = AmazonS3Builder::new()
-        .with_bucket_name(bucket)
-        .with_region(region);
-    if !access_key.is_empty() {
-        builder = builder
-            .with_access_key_id(access_key)
-            .with_secret_access_key(secret_key);
-    }
-    if !endpoint.is_empty() {
-        builder = builder.with_endpoint(endpoint).with_allow_http(true);
-    }
-    let store = builder.build().map_err(|e| Error::Other(e.to_string()))?;
-    Ok(Box::new(store))
+    let config = S3Config {
+        bucket: bucket.to_string(),
+        region: region.to_string(),
+        endpoint: Some(endpoint.to_string()),
+        credentials: (!access_key.is_empty() || !secret_key.is_empty()).then(|| S3Credentials {
+            access_key: access_key.to_string(),
+            secret_key: secret_key.to_string(),
+        }),
+        prefix: String::new(),
+    };
+    store_from_config(&config)
 }
 
 /// Read the object `prefix` + `key` (normalized join) from `store` and transmute it
@@ -222,10 +715,477 @@ pub fn s3_module() -> Module {
 }
 
 #[cfg(test)]
+mod s3store_tests {
+    use super::*;
+    use crate::Error;
+    use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path};
+
+    fn store(prefix: &str) -> S3Store {
+        S3Store::from_object_store(Arc::new(InMemory::new()), prefix)
+    }
+
+    fn keys_of(metas: &[S3Meta]) -> Vec<String> {
+        metas.iter().map(|m| m.key.clone()).collect()
+    }
+
+    // ── Scenario « S3Store joint préfixe et clé, relatif de bout en bout » ──
+    #[tokio::test]
+    async fn s3store_joins_prefix_and_key_relative_end_to_end() {
+        let s = store("tenant/a/");
+        s.put("docs//x.txt", PutPayload::from(b"hi".to_vec()))
+            .await
+            .unwrap();
+        let raw = s
+            .object_store()
+            .get(&Path::from("tenant/a/docs/x.txt"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(raw.as_ref(), b"hi", "objet attendu sous tenant/a/docs/x.txt");
+        let listed = s.list("docs").await.unwrap();
+        assert_eq!(keys_of(&listed), vec!["docs/x.txt".to_string()]);
+    }
+
+    // ── Scenario « S3Store typé ses erreurs » : NotFound + code S3-001 ──
+    #[tokio::test]
+    async fn get_absent_is_typed_not_found_carrying_the_key() {
+        let s = store("");
+        match s.get("absent").await {
+            Err(Error::S3(S3Error::NotFound { key })) => assert_eq!(key, "absent"),
+            other => panic!("Error::S3(NotFound) attendu, rendu : {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_absent_display_starts_with_stable_code_s3_001() {
+        let err = store("").get("absent").await.unwrap_err();
+        assert!(
+            err.to_string().starts_with("S3-001"),
+            "code S3-001 attendu : {err}"
+        );
+    }
+
+    // ── Scenario « S3Store typé ses erreurs » : le Debug d'un S3Config ne montre pas le secret ──
+    #[test]
+    fn debug_of_config_never_shows_the_secret() {
+        let cfg = S3Config {
+            bucket: "b".to_string(),
+            region: "r".to_string(),
+            endpoint: None,
+            credentials: Some(S3Credentials {
+                access_key: "AKIAEXAMPLE".to_string(),
+                secret_key: "s3cr3t".to_string(),
+            }),
+            prefix: "p".to_string(),
+        };
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("s3cr3t"), "secret visible dans le Debug : {dbg}");
+        assert!(
+            !dbg.contains("AKIAEXAMPLE"),
+            "access key visible dans le Debug : {dbg}"
+        );
+        assert!(dbg.contains("<redacted>"), "marqueur attendu : {dbg}");
+    }
+
+    // ── Scenario « head, delete et list sur un jeu connu » ──
+    #[tokio::test]
+    async fn head_delete_and_list_on_a_known_set() {
+        let s = store("");
+        s.put("b/z", PutPayload::from(b"zz".to_vec())).await.unwrap();
+        s.put("a/y", PutPayload::from(b"y".to_vec())).await.unwrap();
+        s.put("a/x", PutPayload::from(b"xxx".to_vec())).await.unwrap();
+
+        let meta = s.head("a/x").await.unwrap();
+        assert_eq!(meta.key, "a/x");
+        assert_eq!(meta.size, 3, "taille en octets");
+        assert!(
+            meta.last_modified > 0,
+            "last_modified en ms UTC : {}",
+            meta.last_modified
+        );
+        assert!(meta.etag.is_some(), "etag attendu depuis InMemory");
+
+        let all = s.list("").await.unwrap();
+        assert_eq!(
+            keys_of(&all),
+            vec!["a/x".to_string(), "a/y".to_string(), "b/z".to_string()],
+            "clés triées par octets"
+        );
+        let under_a = s.list("a").await.unwrap();
+        assert_eq!(keys_of(&under_a), vec!["a/x".to_string(), "a/y".to_string()]);
+
+        s.delete("a/x").await.unwrap();
+        assert!(
+            matches!(s.get("a/x").await, Err(Error::S3(S3Error::NotFound { .. }))),
+            "après delete, get rend NotFound"
+        );
+    }
+
+    // ── Must « put écrase » ──
+    #[tokio::test]
+    async fn put_overwrites_the_previous_object() {
+        let s = store("p");
+        s.put("k", PutPayload::from(b"one".to_vec())).await.unwrap();
+        s.put("k", PutPayload::from(b"two".to_vec())).await.unwrap();
+        assert_eq!(s.get("k").await.unwrap().as_ref(), b"two");
+    }
+
+    // ── Construction partagée avec build_store : credentials incomplets refusés ──
+    #[test]
+    fn new_refuses_incomplete_credentials_with_the_shared_message() {
+        let cfg = S3Config {
+            bucket: "b".to_string(),
+            region: "r".to_string(),
+            credentials: Some(S3Credentials {
+                access_key: "ak".to_string(),
+                secret_key: String::new(),
+            }),
+            ..S3Config::default()
+        };
+        match S3Store::new(cfg) {
+            Err(Error::Other(msg)) => {
+                assert_eq!(msg, "s3: access_key and secret_key must be provided together");
+            }
+            other => panic!("Error::Other attendu, rendu : {other:?}"),
+        }
+    }
+
+    #[test]
+    fn new_builds_with_default_chain_when_no_credentials_given() {
+        let cfg = S3Config {
+            bucket: "b".to_string(),
+            region: "r".to_string(),
+            ..S3Config::default()
+        };
+        assert!(
+            S3Store::new(cfg).is_ok(),
+            "build Ok attendu sans credentials explicites"
+        );
+    }
+
+    // ── Mapping object_store → S3Error ──
+    #[test]
+    fn store_errors_map_to_typed_s3_errors() {
+        let nf = object_store::Error::NotFound {
+            path: "p".to_string(),
+            source: "x".into(),
+        };
+        assert!(matches!(map_store_error("k", nf), S3Error::NotFound { key } if key == "k"));
+        let ae = object_store::Error::AlreadyExists {
+            path: "p".to_string(),
+            source: "x".into(),
+        };
+        assert!(matches!(map_store_error("k", ae), S3Error::AlreadyExists { key } if key == "k"));
+        let pc = object_store::Error::Precondition {
+            path: "p".to_string(),
+            source: "x".into(),
+        };
+        assert!(matches!(map_store_error("k", pc), S3Error::PreconditionFailed { key } if key == "k"));
+        let generic = object_store::Error::Generic {
+            store: "S3",
+            source: "boom".into(),
+        };
+        assert!(matches!(map_store_error("k", generic), S3Error::Backend(msg) if msg.contains("boom")));
+    }
+
+    // ── Codes stables des quatre variantes de S3Error ──
+    #[test]
+    fn s3_error_display_freezes_codes_s3_001_to_004() {
+        assert_eq!(
+            S3Error::NotFound { key: "k".to_string() }.to_string(),
+            "S3-001 object not found: k"
+        );
+        assert_eq!(
+            S3Error::AlreadyExists { key: "k".to_string() }.to_string(),
+            "S3-002 object already exists: k"
+        );
+        assert_eq!(
+            S3Error::PreconditionFailed { key: "k".to_string() }.to_string(),
+            "S3-003 precondition failed: k"
+        );
+        assert_eq!(
+            S3Error::Backend("boom".to_string()).to_string(),
+            "S3-004 S3 backend error: boom"
+        );
+    }
+
+    // MESURE (lot E, consignée au rapport) : `InMemory::delete` sur une clé absente rend
+    // `Ok(())`. `S3Store::delete` reflète ce comportement sans l'inventer : succès.
+    #[tokio::test]
+    async fn delete_absent_key_follows_the_inmemory_measure_and_succeeds() {
+        let s = store("");
+        s.delete("absent")
+            .await
+            .expect("delete sur clé absente : Ok mesuré sur InMemory");
+    }
+
+    // ── Scenario « filestore : lecture partielle et flux » ──
+    #[tokio::test]
+    async fn get_range_returns_the_semi_open_byte_interval() {
+        let s = store("");
+        s.put("ten", PutPayload::from(b"0123456789".to_vec()))
+            .await
+            .unwrap();
+        let bytes = s.get_range("ten", 2..5).await.unwrap();
+        assert_eq!(bytes.as_ref(), b"234", "indices 2, 3, 4 : intervalle semi-ouvert");
+    }
+
+    #[tokio::test]
+    async fn get_stream_concatenation_equals_the_whole_object() {
+        let s = store("");
+        let body: Vec<u8> = (0..=255_u8).cycle().take(10_000).collect();
+        s.put("big", PutPayload::from(body.clone())).await.unwrap();
+        let mut stream = s.get_stream("big").await.unwrap();
+        let mut got = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            got.extend_from_slice(&chunk.unwrap());
+        }
+        assert_eq!(got, body, "la concaténation des morceaux égale l'objet entier");
+    }
+
+    #[tokio::test]
+    async fn get_stream_on_absent_key_is_typed_not_found() {
+        let s = store("");
+        assert!(
+            matches!(
+                s.get_stream("absent").await,
+                Err(Error::S3(S3Error::NotFound { .. }))
+            ),
+            "NotFound attendu sur un flux d'objet absent"
+        );
+    }
+
+    // ── Scenario « filestore : gros fichier en multipart, abandon propre » ──
+    #[tokio::test]
+    async fn put_stream_multipart_reads_back_the_concatenation() {
+        let s = store("");
+        let parts = vec![
+            Bytes::from_static(b"abcdefg"),
+            Bytes::from_static(b"hijklmnopqrstuvw"),
+            Bytes::from_static(b"xyz0123456789"),
+        ];
+        let expected: Vec<u8> = parts.iter().flat_map(|p| p.to_vec()).collect();
+        let items: Vec<crate::Result<Bytes>> = parts.into_iter().map(Ok).collect();
+        s.put_stream("multi", futures::stream::iter(items), 4)
+            .await
+            .unwrap();
+        assert_eq!(
+            s.get("multi").await.unwrap().as_ref(),
+            expected.as_slice(),
+            "l'objet relu égale la concaténation du flux"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_stream_aborts_and_leaves_no_object_on_stream_error() {
+        let s = store("");
+        let items: Vec<crate::Result<Bytes>> = vec![
+            Ok(Bytes::from_static(b"abcdefgh")),
+            Err(Error::Other("boom".to_string())),
+        ];
+        let err = s
+            .put_stream("partial", futures::stream::iter(items), 4)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Other(msg) if msg == "boom"),
+            "l'erreur du flux d'entrée doit être rendue telle quelle : {err:?}"
+        );
+        assert!(
+            matches!(s.get("partial").await, Err(Error::S3(S3Error::NotFound { .. }))),
+            "aucun objet partiel ne doit exister sous la clé après abandon"
+        );
+    }
+
+    // Garde ajoutée par la revue (hors Scenario) : un flux qui ne rend aucun octet écrit un
+    // objet vide par un `put` simple, car un multipart à zéro partie est refusé par S3.
+    #[tokio::test]
+    async fn put_stream_empty_input_writes_an_empty_object() {
+        let s = store("");
+        let empty: Vec<crate::Result<Bytes>> = vec![];
+        s.put_stream("empty", futures::stream::iter(empty), 4)
+            .await
+            .unwrap();
+        let meta = s.head("empty").await.unwrap();
+        assert_eq!(meta.size, 0, "l'objet vide existe avec une taille de 0");
+        assert!(s.get("empty").await.unwrap().is_empty(), "le corps relu est vide");
+
+        let blanks: Vec<crate::Result<Bytes>> = vec![Ok(Bytes::new()), Ok(Bytes::new())];
+        s.put_stream("blanks", futures::stream::iter(blanks), 4)
+            .await
+            .unwrap();
+        assert_eq!(
+            s.head("blanks").await.unwrap().size,
+            0,
+            "des éléments tous vides valent un flux vide"
+        );
+    }
+
+    // Garde ajoutée par l'implémentation (hors Scenario) : une taille de partie nulle
+    // ne peut pas découper le flux et bouclerait ; rendue en erreur, sans écriture.
+    #[tokio::test]
+    async fn put_stream_refuses_a_zero_chunk_size_without_writing() {
+        let s = store("");
+        let items: Vec<crate::Result<Bytes>> = vec![Ok(Bytes::from_static(b"a"))];
+        let err = s
+            .put_stream("zero", futures::stream::iter(items), 0)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Other(_)),
+            "erreur refusée attendue : {err:?}"
+        );
+        assert!(
+            matches!(s.get("zero").await, Err(Error::S3(S3Error::NotFound { .. }))),
+            "rien n'est écrit avec une taille de partie nulle"
+        );
+    }
+
+    // Verrou de la sémantique de segment documentée dans la rustdoc de `list` : ce test
+    // passe d'emblée (comportement d'@object_store déjà en place, documenté, pas nouveau).
+    #[tokio::test]
+    async fn list_matches_whole_path_segments_not_string_prefixes() {
+        let s = store("");
+        s.put("docs/x", PutPayload::from(b"1".to_vec())).await.unwrap();
+        s.put("doc/y", PutPayload::from(b"2".to_vec())).await.unwrap();
+        assert_eq!(keys_of(&s.list("doc").await.unwrap()), vec!["doc/y".to_string()]);
+    }
+
+    // ── Scenario « clés UTF-8 et caractères spéciaux » (s3.sdd, filestore) ──
+    #[tokio::test]
+    async fn utf8_and_special_keys_round_trip_and_are_stored_raw() {
+        let inner = Arc::new(InMemory::new());
+        let s = S3Store::from_object_store(inner.clone(), "clients/é #1/");
+        s.put("é.txt", PutPayload::from(b"e".to_vec())).await.unwrap();
+        s.put("a#b/c%d.txt", PutPayload::from(b"s".to_vec()))
+            .await
+            .unwrap();
+        let listed = keys_of(&s.list("").await.unwrap());
+        assert_eq!(listed, vec!["a#b/c%d.txt".to_string(), "é.txt".to_string()]);
+        for key in &listed {
+            s.head(key).await.unwrap();
+            s.get(key).await.unwrap();
+        }
+        let mut stored = vec![];
+        let mut all = inner.list(None);
+        while let Some(meta) = all.next().await {
+            stored.push(meta.unwrap().location.as_ref().to_string());
+        }
+        stored.sort();
+        assert_eq!(stored, vec![
+            "clients/é #1/a#b/c%d.txt".to_string(),
+            "clients/é #1/é.txt".to_string()
+        ]);
+        for key in &listed {
+            s.delete(key).await.unwrap();
+        }
+        assert_eq!(s.list("").await.unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn store_prefix_with_edge_slashes_is_normalized_at_construction() {
+        let inner = Arc::new(InMemory::new());
+        let s = S3Store::from_object_store(inner.clone(), "/x//y/");
+        assert_eq!(s.prefix(), "x/y");
+        s.put("k", PutPayload::from(b"v".to_vec())).await.unwrap();
+        assert_eq!(keys_of(&s.list("").await.unwrap()), vec!["k".to_string()]);
+        s.get("k").await.unwrap();
+        s.head("k").await.unwrap();
+        assert!(inner.head(&Path::parse("x/y/k").unwrap()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn dot_segments_and_control_characters_are_refused_not_encoded() {
+        let s = store("p");
+        assert!(matches!(s.get("a/../b").await, Err(Error::Other(_))));
+        assert!(matches!(
+            s.put("./x", PutPayload::from(b"v".to_vec())).await,
+            Err(Error::Other(_))
+        ));
+        assert!(matches!(s.get("x\ny").await, Err(Error::Other(_))));
+    }
+
+    // ── Scenario « filestore : écriture conditionnelle » ──
+    #[tokio::test]
+    async fn put_if_if_not_exists_writes_absent_and_refuses_existing_keeping_it() {
+        let s = store("");
+        s.put_if("k", PutPayload::from(b"v0".to_vec()), S3Condition::IfNotExists)
+            .await
+            .unwrap();
+        s.put("k", PutPayload::from(b"v1".to_vec())).await.unwrap();
+        let err = s
+            .put_if("k", PutPayload::from(b"v2".to_vec()), S3Condition::IfNotExists)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::S3(S3Error::AlreadyExists { key }) if key == "k"),
+            "AlreadyExists attendu : {err:?}"
+        );
+        assert_eq!(s.get("k").await.unwrap().as_ref(), b"v1", "objet inchangé");
+    }
+
+    #[tokio::test]
+    async fn put_if_if_match_refuses_a_wrong_etag_then_accepts_the_current_one() {
+        let s = store("");
+        let e1 = s
+            .put("k", PutPayload::from(b"v1".to_vec()))
+            .await
+            .unwrap()
+            .etag
+            .expect("etag e1 attendu depuis InMemory");
+        let err = s
+            .put_if(
+                "k",
+                PutPayload::from(b"v2".to_vec()),
+                S3Condition::IfMatch("mauvais".to_string()),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::S3(S3Error::PreconditionFailed { key }) if key == "k"),
+            "PreconditionFailed attendu : {err:?}"
+        );
+        assert_eq!(
+            s.get("k").await.unwrap().as_ref(),
+            b"v1",
+            "objet inchangé après refus"
+        );
+        let written = s
+            .put_if(
+                "k",
+                PutPayload::from(b"v2".to_vec()),
+                S3Condition::IfMatch(e1.clone()),
+            )
+            .await
+            .unwrap();
+        let e2 = written.etag.expect("nouvel etag rendu");
+        assert_ne!(e2, e1, "l'écriture conditionnelle rend un nouvel etag");
+        assert_eq!(s.get("k").await.unwrap().as_ref(), b"v2");
+    }
+
+    // Mesure (lot E, consignée au rapport) : le builder S3 d'@object_store 0.14.2 pose
+    // l'écriture conditionnelle `ETagMatch` par défaut ; `S3Store::new` n'a donc rien à poser.
+    #[test]
+    fn s3_builder_default_conditional_put_is_etag_match() {
+        use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
+        let builder = AmazonS3Builder::new();
+        assert_eq!(
+            builder
+                .get_config_value(&AmazonS3ConfigKey::ConditionalPut)
+                .as_deref(),
+            Some("etag"),
+            "défaut ETagMatch attendu sur le builder S3 de 0.14.2"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::Error;
-    use object_store::{PutPayload, memory::InMemory, path::Path};
+    use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path};
 
     async fn put_key(store: &InMemory, key: &str, body: &[u8]) {
         store

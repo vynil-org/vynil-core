@@ -3,7 +3,7 @@ Spec: oci
 Purpose:
   Contrat groupé de ./oci.rs et ./oci_mock.rs (règle source+mock d'un seul contrat,
     tâche nommée de ./vyvil-core.sdd) : @crate::oci::Registry, client de registre OCI sur
-    @oci_client 0.15 — push d'une image une-couche tar+gzip fabriquée depuis un dossier
+    @oci_client 0.18 — push d'une image une-couche tar+gzip fabriquée depuis un dossier
     local, pull décompressé sur disque, listing de tags paginé jusqu'à épuisement (borné à 10 000), manifeste rendu en
     @rhai::Dynamic par double passe JSON, signature par le binaire EXTERNE `cosign`, plus
     la lecture locale d'un docker-config JSON (@crate::oci::get_auth_from_file) et deux
@@ -40,8 +40,8 @@ References:
     rédiger avec le lot http), le même que ./s3.sdd : plus aucune panique tokio.
   ./Cargo.toml — `oci = ["dep:oci-client", "dep:tokio", "rhai"]` (ligne 58) : la feature
     implique `rhai`, les signatures Rust des méthodes prennent donc des types Rhai en dur
-    (commentaire lignes 56-57). @oci-client déclaré et lock 0.15.0 (@oci-spec 0.8.4 et
-    @reqwest 0.12.28 en transitif) ; @tokio 1.48 déclaré, lock 1.53.1. Non optionnels
+    (commentaire lignes 56-57). @oci-client déclaré et lock 0.18.0 (@oci-spec 0.10.0 et
+    @reqwest 0.12.28 en transitif) ; @tokio 1.48 déclaré, lock 1.54.1. Non optionnels
     consommés par CE groupe : @base64, @chrono (@chrono::Utc::now), @sha256, @flate2,
     @tar, @serde_json, @rhai (feature `serde`). Le mock ne tient qu'à @rhai + @crate.
   ./docs/rhai_helpers.md — section 11 « Feature `oci` (auto-wired) », table des 5 méthodes
@@ -71,7 +71,7 @@ Must:
     depuis le dossier courant du processus, chemin relatif ou absolu accepté tel quel) ;
     digest `diff_id` = préfixe `sha256:` + hex @sha256::digest du tar NON compressé ;
     compression @flate2 niveau default ; @oci_client::client::ImageLayer::oci_v1_gzip ;
-    @oci_client::config::ConfigFile figé — created @chrono::Utc::now, architecture None,
+    @oci_client::config::ConfigFile figé — created @chrono::Utc::now, architecture `Other("")` (la variante `None` a disparu d'oci-spec 0.10, sortie fil inchangée : chaîne vide),
     os Linux, rootfs type `layers` avec l'unique diff_id, working_dir `/`, history à UNE
     entrée `created_by` `vynil` et commentaire `vynil.build`, empty_layer false ; @
     oci_client::client::Config::oci_v1_from_config_file ; @oci_client::manifest::OciImageManifest::build
@@ -195,7 +195,7 @@ Depends on:
     @oci_client::client::{ClientConfig, ImageLayer, Config}, @oci_client::config::{ConfigFile,
     Architecture, Os, Rootfs, Config, History}, @oci_client::manifest::{OciImageManifest,
     OCI_IMAGE_MEDIA_TYPE, IMAGE_LAYER_GZIP_MEDIA_TYPE, IMAGE_DOCKER_LAYER_GZIP_MEDIA_TYPE},
-    @oci_client::errors::{OciDistributionError, OciErrorCode} ; 0.15.0 en lock. Les flux
+    @oci_client::errors::{OciDistributionError, OciErrorCode} ; 0.18.0 en lock. Les flux
     réseau réels (auth, retries, timeouts) appartiennent à la dépendance ; son backend TLS par
     défaut est rustls (`default-features = false`, feature `rustls-tls` — bascule jouée
     2026-10-10, `native-tls`/OpenSSL système exclus du graphe, verrou cargo tree ; §`Tasks`).
@@ -246,6 +246,13 @@ Exposes:
     @rhai::Map — invisible en script.
   @crate::oci_mock::oci_mock_rhai_register — `pub fn(engine: &mut @rhai::Engine)` ; six
     enregistrements, `get_auth_from_file` compris.
+  @crate::oci_mock::oci_mock_module — `#[must_use] pub fn() -> @rhai::Module`, jumeau module du double
+    (issue vynil-org/vynil-core#47, décision du 2026-11-18 ; règle des jumeaux de ../vyvil-core.sdd) :
+    MÊME liste de registrations que @crate::oci_mock::oci_mock_rhai_register, qui reste la seule
+    définition ; enregistrable par @rhai::Engine::register_static_module sous le nom `oci` À LA PLACE
+    de @crate::oci::oci_module. Les noms courts sont ceux du jumeau réel : `oci::new_registry` et
+    `oci::get_auth_from_file` qualifiés seulement, les méthodes du type `Registry` (`list_tags`,
+    `get_manifest`, `push_image`, `sign_image`) restant globales.
   @crate::oci::oci_module — `#[must_use] pub fn() -> @rhai::Module`, porte `oci`, jumeau de
     @crate::oci::oci_rhai_register (règle des jumeaux de ../vyvil-core.sdd, issue vynil-org/vynil-core#19) :
     même comportement, enregistrable par @rhai::Engine::register_static_module sous le nom `oci` ;
@@ -326,6 +333,14 @@ Handles:
     mondes, le dernier enregistré gagne à co-enregistrement — mécanisme laissé à @rhai.
 
 Tasks:
+  [x] Jumeau module du double (issue #47) : ajouter @crate::oci_mock::oci_mock_module dans ./oci_mock.rs,
+    qui partage la liste de registrations de @crate::oci_mock::oci_mock_rhai_register (une seule
+    définition). Tests d'abord depuis les Scenario ci-dessous. Reprendre `Exposes` à la clôture. Jumelle
+    de ../vyvil-core.sdd (tâche « Jumeaux module des trois doubles »), de ./http.sdd, de ./k8s.sdd et de
+    ../docs.sdd, cochée dans le même commit.
+    # Cette spec ne contracte pas les montées `oci-client` 0.18 (PR #16) : voir ../vyvil-core.sdd
+    # (tâche « Intégrer les montées de dépendances »), dont la branche `fix/oci-client-0.18` porte
+    # déjà ses lignes de ce fichier.
   [x] Convertir les Scenario en tests passants. ./oci.rs portait 7 `#[test]` inline à HEAD
     (get_auth_from_file ×4 via `tempfile`, sign_image clé vide, cosign introuvable en
     `is_err` seul, pull hors runtime servi par le runtime temporaire) plus 3
@@ -456,7 +471,7 @@ Scenario: push construit la couche unique et rend le sha256 tronqué
   Given un faux registre OCI de test (seam des `Tasks`) et un dossier à deux fichiers
   When push_image réussit avec une Map d'annotations vide
   Then une unique couche gzip a été poussée, `diff_id` = sha256 du tar BRUT, config os
-    Linux/arch None/working_dir `/`, history created_by `vynil` — et Some(annotations vides)
+    Linux/arch Other vide (`""`)/working_dir `/`, history created_by `vynil` — et Some(annotations vides)
     passé, jamais None
   And la sortie est la tranche `sha256:...` depuis le DERNIER porteur de `sha256:` dans la
     manifest_url
@@ -545,6 +560,21 @@ Scenario: co-enregistrement des deux mondes est possible mais déconseillé
     des trois chaînes résout le DERNIER enregistré — les méthodes se dispatchant par type,
     les deux types peuvent coexister ; la recommandation mocking.md (un seul monde par
     engine) est la conduite contractuelle, le mécanisme de coexistence restant détail @rhai
+
+Scenario: oci_mock_module équivaut à oci_mock_rhai_register
+  Given un @rhai::Engine où oci_mock_rhai_register est appelé et un second, vierge, où le résultat de
+    @crate::oci_mock::oci_mock_module() est enregistré par register_static_module sous le nom `oci`
+  When un script écrit en noms qualifiés (`let r = oci::new_registry("a","b","c"); r.list_tags("x")`,
+    `oci::get_auth_from_file("p","r")`) tourne sur le second, et son équivalent global
+    (`new_registry`, `get_auth_from_file`) sur le premier
+  Then les résultats sont identiques (listes de tags et digest constants, auth anonyme) et les
+    méthodes restent globales
+
+Scenario: même script sous le jumeau réel et sous le double
+  Given un script `let r = oci::new_registry("a","b","c"); r.list_tags("x")`
+  When il tourne sur un engine portant @crate::oci::oci_module puis sur un engine portant
+    @crate::oci_mock::oci_mock_module, sous le même nom `oci`
+  Then il s'exécute sans modification dans les deux cas
 
 Scenario: oci_module équivaut à oci_rhai_register
   Given un @rhai::Engine où oci_rhai_register est appelé et un second, vierge, où le résultat de

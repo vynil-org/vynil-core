@@ -245,18 +245,26 @@ impl RestClient {
     /// request fails; builder errors are also logged at warn level. Returns [`Error::Other`] on a
     /// `current_thread` runtime (see `crate::rt::block_on`).
     pub fn http_get(&mut self, path: &str) -> crate::Result<Response> {
+        crate::rt::block_on(self.http_get_async(path)).and_then(|r| r)
+    }
+
+    /// Sends a `GET` to `base/path` with the configured headers, as a future: no
+    /// `crate::rt::block_on`, so it runs on any runtime flavor (`current_thread` included) and
+    /// is awaited by the caller. Same client, headers, errors and log as [`Self::http_get`],
+    /// which is its synchronous wrapper.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ReqwestError`] if the client cannot be built (PEM/TLS issues) or the
+    /// request fails; builder errors are also logged at warn level.
+    pub async fn http_get_async(&mut self, path: &str) -> crate::Result<Response> {
         debug!("http_get '{}' ", format!("{}/{}", self.baseurl, path));
-        match self.get_client() {
-            Ok(client) => {
-                let mut req = client.get(format!("{}/{}", self.baseurl, path));
-                for (key, val) in self.headers.clone() {
-                    req = req.header(key.to_string(), val.to_string());
-                }
-                crate::rt::block_on(async move { req.send().await })
-                    .and_then(|r| r.map_err(Error::ReqwestError))
-            }
-            Err(e) => Err(Error::ReqwestError(e)),
+        let client = self.get_client().map_err(Error::ReqwestError)?;
+        let mut req = client.get(format!("{}/{}", self.baseurl, path));
+        for (key, val) in self.headers.clone() {
+            req = req.header(key.to_string(), val.to_string());
         }
+        req.send().await.map_err(Error::ReqwestError)
     }
 
     /// GETs `path` and returns the response body as text.
@@ -1837,6 +1845,69 @@ mod tests {
         assert!(
             received.is_empty(),
             "le futur interne ne doit pas être exécuté, reçu : {received:?}"
+        );
+    }
+
+    // ── Scenario « http_get_async fonctionne là où http_get refuse » (http.sdd) ──
+
+    // Multi-thread : `http_get_async` rend le même statut et le même corps que `http_get`
+    // sur un même faux serveur (la face synchrone n'est qu'une enveloppe de la même fonction).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_get_async_matches_http_get_on_multi_thread() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("corps connu"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let response = client
+            .http_get_async("x")
+            .await
+            .expect("http_get_async doit répondre");
+        let async_status = response.status().as_u16();
+        let async_body = response.text().await.expect("corps lisible");
+        let sync = client.http_get("x").expect("http_get doit répondre");
+        assert_eq!(async_status, sync.status().as_u16(), "même statut");
+        assert_eq!(
+            async_body,
+            sync.text().await.expect("corps lisible"),
+            "même corps"
+        );
+        assert_eq!((async_status, async_body.as_str()), (200, "corps connu"));
+    }
+
+    // Current-thread : `http_get_async` répond là où `http_get` rend l'erreur explicite de
+    // `rt::block_on` (sans panique, et sans que la requête synchrone parte).
+    #[tokio::test(flavor = "current_thread")]
+    async fn http_get_async_answers_on_current_thread_where_http_get_refuses() {
+        crate::set_client_name(|| "vynil-core-tests".to_string());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/x"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("corps connu"))
+            .mount(&server)
+            .await;
+        let mut client = RestClient::new(server.uri().as_str());
+        let response = client
+            .http_get_async("x")
+            .await
+            .expect("current_thread : http_get_async répond");
+        assert_eq!(response.status().as_u16(), 200);
+        assert_eq!(response.text().await.expect("corps lisible"), "corps connu");
+        match client.http_get("x") {
+            Err(crate::Error::Other(msg)) => assert!(
+                msg.contains("requires a multi-thread tokio runtime"),
+                "http_get doit garder son erreur explicite, obtenu : {msg}"
+            ),
+            other => panic!("Error::Other attendu pour http_get, rendu : {other:?}"),
+        }
+        let received = server.received_requests().await.unwrap_or_default();
+        assert_eq!(
+            received.len(),
+            1,
+            "seule la requête async part, pas celle de http_get"
         );
     }
 

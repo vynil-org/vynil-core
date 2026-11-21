@@ -1,0 +1,166 @@
+Spec: loki
+
+Purpose:
+  Contrat groupé de ./loki.rs et ./loki_mock.rs (règle source+mock d'un seul contrat,
+    ./.specdd/bootstrap.project.md ; issue vynil-org/vynil-core#57) : connecteur en LECTURE vers
+    Loki, construit sur le noyau ./query_client.sdd (client configuré par l'hôte, lecture en flux
+    bornée, erreurs typées), selon le même principe que ./prometheus.sdd : l'hôte bâtit un
+    @crate::query_client::QueryClient, en tire un @rhai::Module (@crate::loki::loki_module) et
+    l'enregistre sous le nom de son choix ; le script ne passe que la requête LogQL, la plage de
+    temps, la limite et la direction. Face Rust (lot E, « Rust first ») : @crate::loki::LokiClient, `async fn`,
+    même noyau, même forme de sortie ; le module de script n'en est qu'une projection synchrone. Il ne voit ni jeton, ni URL, ni tenant. Le groupe inclut le
+    double @crate::loki_mock.
+
+Owns:
+  ./loki.rs
+  ./loki_mock.rs
+
+References:
+  ./query_client.sdd — noyau partagé : config, plafonds (en particulier `max_lines`), flux, erreurs,
+    redaction. Ce qui y est contracté n'est pas répété ici.
+  ./prometheus.sdd — même patron de module d'hôte, mêmes conventions de temps (ms UTC), de
+    `truncated` et d'erreurs ; AUCUN code partagé avec lui (les deux features sont indépendantes).
+  ./lib.sdd — déclarant des deux modules (gate `loki`).
+  ../vyvil-core.sdd — catalogue des modules Rhai et feature `loki` de ../Cargo.toml.
+  ./docs/rhai_helpers.md et ./docs/mocking.md — pages tenues par ../docs.sdd (tâche jumelle).
+
+Must:
+  N'exister que sous la feature `loki` (`loki = ["query_client"]`, qui implique `http`, `rt` et
+    `rhai` ; hors `default`), avec @cfg_attr docsrs, les deux modules publics.
+  Exposer une fonction de script `query_range(expr, start, end, limit, direction)` par un module
+    d'hôte et lui seul (pas d'enregistreur global, motif de ./prometheus.sdd). `start` et `end` : un
+    `i64` en ms UTC ou un @crate::chrono::DateTimeHandler ; `limit` : entier positif, plafonné par le
+    `max_lines` de la config hôte via @crate::query_client::QueryClient::limits (le plus petit des
+    deux gagne, et `truncated` vaut `true` si le
+    serveur a eu plus de lignes à rendre que le plafond retenu) ; `direction` : `"forward"` ou
+    `"backward"` (autre valeur : échec de script). La requête part sur `path_prefix` +
+    `loki/api/v1/query_range` (décision du développeur principal 2026-11-19 : le chemin natif de
+    Loki, un Loki nu sous `/`, Mimir sous son préfixe).
+  Rendre la sortie normalisée `{ streams: [{ labels, lines: [[t, texte]] }], truncated }` : `labels`
+    est une map de chaînes ; `t` est un entier `i64` en ms UTC (le timestamp en nanosecondes de Loki
+    est TRONQUÉ à la milliseconde, donc plusieurs lignes d'un flux peuvent partager un `t` ; l'ordre est
+    celui du serveur, selon `direction`) ; `texte` est la ligne telle que Loki la rend, sans
+    transformation ni masquage.
+  Tenir `truncated` comme la seule voie de lecture du dépassement de plafond (flux, lignes, octets,
+    cf. ./query_client.sdd), jamais de troncature silencieuse.
+  Servir le double @crate::loki_mock::loki_mock_module(fixtures) : mêmes nom (`query_range`) et même
+    forme que le réel, sans réseau ni @tokio, pour qu'un même script tourne sous les deux.
+
+Must not:
+  Offrir au script la moindre lecture de la configuration, ni écriture (push), ni requête
+    instantanée `query`, ni exploration de labels (hors périmètre de #57).
+  Masquer des secrets dans les lignes, ou corréler des flux : responsabilités de l'appelant.
+  Rendre un `t` en nanosecondes ni en chaîne : la conversion est ici.
+
+Depends on:
+  ./query_client.rs — @crate::query_client::QueryClient, @crate::query_client::QueryError.
+  ./chrono.rs — @crate::chrono::DateTimeHandler.
+
+Exposes:
+  @crate::loki::LokiClient — `Clone`, `Debug` sans jeton ; `new(client)` et `async fn query_range(&self, expr,
+    start_ms, end_ms: i64, limit: usize, direction: Direction)` rendant @crate::loki::LogsResult ;
+    @crate::loki::Direction — `Forward` / `Backward`, `as_str` (`"forward"` / `"backward"`) ; `limit` plafonné
+    par `max_lines`, `limit == 0` ou plage inversée → @variant-Error::Other sans requête ; ne tourne pas sous
+    `current_thread` (erreur explicite).
+  @crate::loki::loki_module — `#[must_use] pub fn(client: QueryClient) -> @rhai::Module`.
+  @crate::loki::LogsResult — `pub struct { streams: Vec<LogStream>, truncated: bool }`
+    (`LogStream { labels, lines }`), forme normalisée pour les consommateurs Rust.
+  @crate::loki_mock::loki_mock_module — `pub fn(fixtures: Vec<LokiFixture>) -> @rhai::Module`.
+
+Accepts:
+  `query_range(expr: string, start: i64 | DateTimeHandler, end: i64 | DateTimeHandler,
+    limit: i64, direction: string)`.
+
+Returns:
+  `map { streams: array, truncated: bool }`.
+
+Raises:
+  @variant-Error::Query portant @crate::query_client::QueryError (`QUERY-001` à `QUERY-009`) ;
+    entrée de script invalide : @crate::RhaiRes en échec.
+
+Handles:
+  Flux vide : `streams: []`. Plusieurs flux : l'ordre du serveur est conservé. Étiquettes absentes :
+    `labels` est la map vide. Un `limit` supérieur à `max_lines` est ramené à `max_lines`.
+
+Tasks:
+  [x] Spec approuvée, puis tests depuis les `Scenario`, puis implémentation minimale de ./loki.rs et
+    ./loki_mock.rs. Portes : `cargo test --no-default-features --features loki` (porte désignée,
+    jumelle de ../tooling.sdd) et `--all-features`.
+  [x] Jumelle de ./query_client.sdd et de ../vyvil-core.sdd : feature `loki` dans ../Cargo.toml.
+  [x] Jumelle de ./lib.sdd : déclarer `loki` et `loki_mock`.
+  [x] Jumelle de ../docs.sdd : documenter le module d'hôte `loki` et le mock.
+  [x] Décision à confirmer à la relecture : `t` en ms (Loki en ns) conforme à l'issue ; les égalités
+    d'une même milliseconde sont tolérées pour les lignes, contrairement aux points de métriques.
+
+  [x] Client Rust async-first (lot E de ../vyvil-core.sdd, décision 2026-11-20 « Rust first », architecture
+    « hybride », jumelle de ./prometheus.sdd) : ajouter @crate::loki::LokiClient, `Clone`, construit par
+    `LokiClient::new(client: @crate::query_client::QueryClient)`, avec `pub async fn query_range(&self,
+    expr: &str, start_ms: i64, end_ms: i64, limit: usize, direction: Direction) ->
+    crate::Result<LogsResult>` et l'énum publique @crate::loki::Direction (`Forward`, `Backward`,
+    `Debug`/`Clone`/`Copy`/`PartialEq`, `as_str` rendant `"forward"` / `"backward"`). Même refactor que
+    ./prometheus.sdd : une fonction synchrone pure `query_range_sync` porte l'URL, le noyau et la
+    normalisation ; la face Rhai garde la validation de ses `Dynamic` avec les mêmes messages ; la méthode
+    async passe par `run_blocking`. `limit == 0` et `end_ms < start_ms` rendent @variant-Error::Other, avant
+    tout réseau ; un `limit` supérieur à `max_lines` est ramené à `max_lines` (comme la face Rhai).
+    Tests d'abord depuis les Scenario « LokiClient » ci-dessous. Reprendre `Purpose`, `Exposes` et `Must`
+    à la clôture. Clos (synthèse validator verte, 2026-11-20) ; même duplication voulue des contrôles
+    d'entrée que ./prometheus.sdd.
+
+Scenario: requête de plage nominale
+  Given un faux Loki servant deux flux de trois lignes
+  When le script appelle `query_range("{app=\"x\"}", s, e, 100, "backward")`
+  Then la sortie est `{streams, truncated: false}`, les `t` en ms UTC dans l'ordre du serveur
+
+Scenario: limite et direction
+  Given `max_lines = 50` côté hôte et un script demandant `limit = 500`
+  Then la requête part avec `limit=50` ; si le serveur a plus de lignes, `truncated` vaut `true`
+  Given `direction = "sideways"`
+  Then l'appel échoue (échec de script) sans requête réseau
+
+Scenario: dépassement d'octets
+  Given une réponse de plusieurs centaines de mégaoctets et `max_bytes` bas
+  Then les flux et lignes complets lus avant le plafond sont rendus avec `truncated: true`, mémoire
+    bornée
+
+Scenario: syntaxe LogQL invalide
+  Given un serveur répondant 400 avec un message de parseur LogQL
+  Then l'erreur est `Syntax` portant ce message ; le jeton est absent du message
+
+Scenario: nanosecondes tronquées en millisecondes
+  Given une ligne au timestamp `1700000000123456789`
+  Then son `t` vaut `1700000000123`
+
+Scenario: tenant et jeton non exposés
+  Given un client à tenant et jeton enregistré sous le nom `logs`
+  Then `logs::query_range(...)` envoie `X-Scope-OrgID` et `Authorization`, et le script ne peut
+    atteindre ni l'un ni l'autre
+
+Scenario: même script sous le vrai module et sous le mock
+  Given un script `logs::query_range(...)`
+  When il tourne sous `loki_module` puis `loki_mock_module`
+  Then il s'exécute sans modification et rend la même forme
+
+Scenario: sans la feature loki, rien n'existe
+  Given une compilation sans `loki`
+  Then ni @crate::loki ni @crate::loki_mock n'existent
+
+Scenario: fonctions documentées sous metadata (loki)
+  Given la feature `metadata` active
+  Then `query_range` porte commentaire `///`, noms de paramètres et type de retour
+
+
+Scenario: LokiClient rend la même forme normalisée que le module de script
+  Given un faux serveur Loki servant deux flux
+  When `LokiClient::query_range` est attendu puis le script appelle `query_range` sur le même serveur
+  Then le `LogsResult` Rust égale la conversion en map du résultat de script
+
+Scenario: LokiClient plafonne la limite et refuse une entrée invalide
+  Given `max_lines = 100` côté hôte
+  When `query_range` est attendu avec `limit = 10_000`
+  Then la requête reçue par le serveur porte `limit=100`
+  When il est attendu avec `limit = 0`, ou avec `end_ms < start_ms`
+  Then l'erreur est `Error::Other` et aucune requête n'est partie
+
+Done when:
+  Chaque Scenario est un test vert, la batterie de ../tooling.sdd passe (porte `loki` et
+    `--all-features`), et les tâches jumelles sont cochées dans le même commit.

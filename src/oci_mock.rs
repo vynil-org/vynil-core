@@ -1,7 +1,10 @@
 //! Mock OCI registry for tests. See [`crate::oci::Registry`] for the real client.
 
-use crate::RhaiRes;
-use rhai::{Dynamic, Engine};
+use crate::{
+    RhaiRes,
+    engine::{Target, register_at, register_free_at, register_type_at},
+};
+use rhai::{Dynamic, Engine, Module};
 
 /// No-op OCI registry mock exposing the Rhai surface of [`crate::oci::Registry`]: every call
 /// succeeds and returns static test data.
@@ -54,22 +57,109 @@ impl OciRegistryMock {
     }
 }
 
+// ── Motif double cible (oci.sdd, issue #47) — reproduction du pilote de ./engine.rs,
+// ses auxiliaires `Target`/`register_at`/`register_free_at`/`register_type_at` étant
+// centralisés dans ./engine.rs (`pub(crate)`) et importés ici. La table du double est
+// définie UNE seule fois dans `oci_mock_fns`, appliquée soit directement à un Engine —
+// l'enregistreur, les fonctions tombent dans l'espace de noms global — soit à un Module
+// dans ce même espace de noms global — le jumeau, enregistrable par
+// @rhai::Engine::register_static_module sous le nom que choisit le consommateur.
+// Le double porte les mêmes noms sous les deux faces (aucun renommé : `new_registry`
+// et `get_auth_from_file` sont déjà courts).
+
 /// Registers the mock under the Rhai type name `Registry`, identical to the
 /// real client (the Rust struct keeps `OciRegistryMock`), plus its six Rhai
 /// names: `new_registry`, `list_tags`, `get_manifest`, `push_image`,
 /// `sign_image` and the free `get_auth_from_file`.
+///
+/// Module twin: [`oci_mock_module`] — same single `oci_mock_fns` list, same semantics.
 pub fn oci_mock_rhai_register(engine: &mut Engine) {
-    engine
-        .register_type_with_name::<OciRegistryMock>("Registry")
-        .register_fn("new_registry", |_: String, _: String, _: String| OciRegistryMock)
-        .register_fn("list_tags", OciRegistryMock::list_tags)
-        .register_fn("get_manifest", OciRegistryMock::get_manifest)
-        .register_fn("push_image", OciRegistryMock::push_image)
-        .register_fn("sign_image", OciRegistryMock::sign_image)
-        .register_fn(
-            "get_auth_from_file",
-            |_path: String, _registry: String| -> RhaiRes<Dynamic> { Ok(constant_anonymous_auth()) },
-        );
+    oci_mock_fns(&mut Target::Engine(engine));
+}
+
+/// Module twin of [`oci_mock_rhai_register`] (issue #47): the same type entry and the same
+/// functions, under the global namespace of a fresh [`Module`], registrable by
+/// [`Engine::register_static_module`] under the name the consumer picks. A twin that
+/// drifts from its registrar is a defect: both share the single `oci_mock_fns` list.
+#[must_use]
+pub fn oci_mock_module() -> Module {
+    let mut module = Module::new();
+    oci_mock_fns(&mut Target::Module(&mut module));
+    module
+}
+
+/// The mock `Registry` surface defined once (motif double cible): one type entry, then
+/// each registration as a name, its function, its parameter names and its `///` comment
+/// (both under `metadata` only).
+fn oci_mock_fns(target: &mut Target<'_>) {
+    register_type_at::<OciRegistryMock>(target, "Registry");
+    register_free_at(
+        target,
+        "new_registry",
+        "new_registry",
+        &["/// Mock constructor: the constant, state-free `Registry` double."],
+        &[
+            "registry: string",
+            "username: string",
+            "password: string",
+            "Registry",
+        ],
+        |_: String, _: String, _: String| -> OciRegistryMock { OciRegistryMock },
+    );
+    register_at(
+        target,
+        "list_tags",
+        &["/// Always the EMPTY array — no seed API exists on the mock."],
+        &["reg: &mut Registry", "repository: string", "Dynamic"],
+        OciRegistryMock::list_tags,
+    );
+    register_at(
+        target,
+        "get_manifest",
+        &["/// A manifest carrying ONLY `annotations`, itself empty."],
+        &[
+            "reg: &mut Registry",
+            "repository: string",
+            "tag: string",
+            "Dynamic",
+        ],
+        OciRegistryMock::get_manifest,
+    );
+    register_at(
+        target,
+        "push_image",
+        &["/// The fixed digest `sha256:mock-digest-for-testing`, without any spawn."],
+        &[
+            "reg: &mut Registry",
+            "source_dir: string",
+            "repository: string",
+            "tag: string",
+            "annotations: map",
+            "string",
+        ],
+        OciRegistryMock::push_image,
+    );
+    register_at(
+        target,
+        "sign_image",
+        &["/// A successful no-op."],
+        &[
+            "reg: &mut Registry",
+            "repository: string",
+            "tag: string",
+            "digest: string",
+            "key_path: string",
+        ],
+        OciRegistryMock::sign_image,
+    );
+    register_free_at(
+        target,
+        "get_auth_from_file",
+        "get_auth_from_file",
+        &["/// The constant `{user \"\", pass \"\"}` map, without reading any file."],
+        &["path: string", "registry: string", "Dynamic"],
+        |_path: String, _registry: String| -> RhaiRes<Dynamic> { Ok(constant_anonymous_auth()) },
+    );
 }
 
 /// La valeur constante `{user "", pass ""}` (anonyme), sans lecture de fichier.
@@ -132,6 +222,90 @@ mod tests {
         assert!(
             auth,
             "get_auth_from_file rend la constante {{user \"\", pass \"\"}}"
+        );
+    }
+
+    // Scenario « oci_mock_module équivaut à oci_mock_rhai_register » (issue #47) :
+    // un engine portant l'enregistreur, un second vierge portant le jumeau module
+    // sous `oci` ; noms qualifiés d'un côté, équivalent global de l'autre — mêmes
+    // constantes (tags vides, digest figé, auth anonyme) et méthodes globales.
+    #[test]
+    fn oci_mock_module_equivalent_a_oci_mock_rhai_register() {
+        let mut enregistreur = Engine::new();
+        super::oci_mock_rhai_register(&mut enregistreur);
+        let mut jumeau = Engine::new();
+        jumeau.register_static_module("oci", super::oci_mock_module().into());
+        // Les listes de tags constantes, vides des deux côtés.
+        assert_eq!(
+            enregistreur
+                .eval::<i64>(r#"let r = new_registry("a", "b", "c"); r.list_tags("x").len()"#)
+                .expect("le registre du double sert le tableau VIDE"),
+            jumeau
+                .eval::<i64>(r#"let r = oci::new_registry("a", "b", "c"); r.list_tags("x").len()"#)
+                .expect("le jumeau module sert le tableau VIDE — les méthodes restent globales"),
+            "list_tags constant identique sous les deux faces"
+        );
+        // Le digest constant, des deux faces.
+        assert_eq!(
+            enregistreur
+                .eval::<String>(r#"let r = new_registry("a", "b", "c"); r.push_image("d", "e", "f", #{})"#)
+                .expect("push_image constant du registre"),
+            jumeau
+                .eval::<String>(
+                    r#"let r = oci::new_registry("a", "b", "c"); r.push_image("d", "e", "f", #{})"#
+                )
+                .expect("push_image constant du jumeau — digest constant attendu"),
+            "push_image constant identique sous les deux faces"
+        );
+        // La libre `get_auth_from_file` : anonyme figée, nue chez l'enregistreur,
+        // qualifiée sous le jumeau.
+        assert!(
+            enregistreur
+                .eval::<bool>(r#"let a = get_auth_from_file("p", "r"); a.user == "" && a.pass == """#)
+                .expect("auth anonyme du registre"),
+            "auth anonyme nue"
+        );
+        assert!(
+            jumeau
+                .eval::<bool>(r#"let a = oci::get_auth_from_file("p", "r"); a.user == "" && a.pass == """#)
+                .expect("auth anonyme qualifiée du jumeau — la libre répond sous `oci::`"),
+            "auth anonyme qualifiée"
+        );
+        // Le type porte le même nom des deux faces.
+        assert_eq!(
+            enregistreur
+                .eval::<String>(r#"type_of(new_registry("a", "b", "c"))"#)
+                .expect("type_of du registre"),
+            jumeau
+                .eval::<String>(r#"type_of(oci::new_registry("a", "b", "c"))"#)
+                .expect("type_of du jumeau"),
+            "le nom de type « Registry » passe le module statique"
+        );
+    }
+
+    // Scenario « même script sous le jumeau réel et sous le double » (oci, issue #47) :
+    // un seul texte, deux engines enregistrés sous `oci`. Sans cluster ni registre,
+    // le côté réel rend l'erreur de pont ./rt.sdd sous `current_thread` (déterministe,
+    // jamais de réseau) pendant que le double rend sa constante — le script, lui,
+    // s'exécute sans modification dans les deux cas.
+    #[tokio::test(flavor = "current_thread")]
+    async fn same_script_under_real_module_and_mock_module() {
+        let script = r#"let r = oci::new_registry("a", "b", "c"); r.list_tags("x")"#;
+        let mut reel = Engine::new();
+        reel.register_static_module("oci", crate::oci::oci_module().into());
+        let mut double = Engine::new();
+        double.register_static_module("oci", super::oci_mock_module().into());
+        let reel_out = reel.eval::<rhai::Dynamic>(script);
+        assert!(
+            matches!(&reel_out, Err(e) if e.to_string().contains("multi-thread")),
+            "le jumeau réel rend l'erreur de pont sans cluster, obtenu : {reel_out:?}"
+        );
+        let mock_out = double
+            .eval::<rhai::Dynamic>(script)
+            .expect("le même texte tourne sous le double");
+        assert!(
+            mock_out.cast::<Vec<rhai::Dynamic>>().is_empty(),
+            "le double rend son tableau VIDE"
         );
     }
 

@@ -16,25 +16,29 @@
 //! | `rhai` | ✅ | `engine::Script` engine + every other module's Rhai bindings |
 //! | `hbs` | ✅ | `hbs::HandleBars` engine |
 //! | `hbs-scripting` | ✅ | `register_helper_dir` / `rhai_register_helper_dir` (`handlebars/script_helper`). Implies `hbs` + `rhai`. Keep it separate because `script_helper` pulls `smartstring` which breaks `String + &String` in some graphs (see `hbs` docs) |
-//! | `http` | ✅ | `http::RestClient` (reqwest) + `http_mock::RestClientMock`. Implies `rhai` |
+//! | `http` | ✅ | `http::RestClient` (reqwest, async Rust GET `RestClient::http_get_async`) + `http_mock::RestClientMock`. Implies `rhai` |
 //! | `crypto` | ✅ | `argon_hash` / `bcrypt_hash` / `gen_private_key` helpers (Handlebars). In Rhai: the `Argon` type via `new_argon` with its `.hash` method, plus `bcrypt_hash` / `gen_private_key` |
 //! | `k8s` | ❌ | Generic K8s handlers (`k8s::K8sGeneric`, `k8s::K8sObject`, …) + mocks. Implies `rhai` |
 //! | `oci` | ❌ | `oci::Registry` + OCI mock. Implies `rhai` |
-//! | `s3` | ❌ | S3 helpers (`s3::s3_get_yaml`, `s3::s3_list_keys`). Implies `rhai` |
+//! | `s3` | ❌ | S3 helpers (`s3::s3_get_yaml`, `s3::s3_list_keys`) and async Rust client `s3::S3Store` (configured by `s3::S3Config`; re-exports `object_store` and `bytes`). Implies `rhai` |
 //! | `fs` | ❌ | Filesystem access from Rhai (`file_read`, `file_write`, …) |
 //! | `shell` | ❌ | Shell execution (`shell::run` / `shell::get_out` + Rhai `shell_run` / `shell_output`); unix-only, commands are interpreted by a literal `sh -c` |
 //! | `quantity` | ❌ | Kubernetes `Quantity` parser (`quantity::cpu_millis_of`, `quantity::memory_bytes_of`), exact arithmetic; its Rhai glue needs `rhai` too |
 //! | `password` | ❌ | Auto-wires `gen_password` / `gen_password_alphanum` into `new_bare` and registers the Handlebars helpers; the Rhai glue itself compiles under `rhai` alone (opt-in to avoid name collisions) |
 //! | `metadata` | ❌ | Rhai introspection metadata: `///` comments + parameter names on registered script functions, consumed by `gen_fn_signatures` / `gen_fn_metadata_to_json`. Implies `rhai` |
 //! | `rt` | ❌ | async → sync bridge `rt::block_on` for consumers; pulls `tokio`; does not imply `rhai` |
+//! | `query_client` | ❌ | Shared read kernel of the protocol clients (`query_client::QueryClient`, `QueryClientConfig`, `QueryError`, public types): host-configured client, bounded streaming reads, auto step, typed errors. Enabled by `prometheus` or `loki`, which imply it. Implies `http`, `rt` and `rhai` |
+//! | `prometheus` | ❌ | Read connector for Prometheus-compatible APIs (`prometheus::prometheus_module` + `prometheus_mock::prometheus_mock_module`, async Rust client `prometheus::PrometheusClient`): a host module over the `query_client` kernel — the host configures the client, scripts only query. Implies `query_client` |
+//! | `loki` | ❌ | Read connector for Loki (`loki::loki_module` + `loki_mock::loki_mock_module`, async Rust client `loki::LokiClient`): a host module over the `query_client` kernel, same principle as `prometheus`, no shared code with it. Implies `query_client` |
+//! | `feeds` | ❌ | RSS/Atom feed reading (`feeds::feed_read` / `feeds::feed_poll` + `feeds_mock`, feed-rs based; async Rust client `feeds::FeedClient`). Implies `http`, `rt` and `rhai` |
 //!
 //! ```toml
 //! # default: Rhai + Handlebars + HTTP + crypto
-//! vynil-core = "0.9"
+//! vynil-core = "0.10"
 //! # Kubernetes project
-//! vynil-core = { version = "0.9", features = ["k8s"] }
+//! vynil-core = { version = "0.10", features = ["k8s"] }
 //! # Handlebars only, no Rhai/smartstring in the graph
-//! vynil-core = { version = "0.9", default-features = false, features = ["hbs", "crypto"] }
+//! vynil-core = { version = "0.10", default-features = false, features = ["hbs", "crypto"] }
 //! ```
 //!
 #![cfg_attr(
@@ -80,7 +84,12 @@ assert_eq!(out, "Hello world!");
 //! `shell_*` (feature `shell`), and `Registry` (feature `oci`).
 //! Never injected by `new_bare`, even with every feature enabled: `s3_*`, `RestClient`
 //! and `k8s_*` are registered only on the caller's consent — `s3_rhai_register`,
-//! `http_rhai_register` and the `k8s_rhai_register` registrar.
+//! `http_rhai_register` and the `k8s_rhai_register` registrar. The same holds for the four
+//! `feeds_*` entry points (`feeds_rhai_register`, `feeds_module`, `feeds_mock_rhai_register`,
+//! `feeds_mock_module`, feature `feeds`) and for the `query` / `query_range` family served by
+//! the host modules of features `prometheus` and `loki` (`prometheus_module`, `loki_module`
+//! and their mock twins): the host registers those with `register_static_module`, under the
+//! name it chooses — never `new_bare`.
 //!
 //! Scripts also get `assert` and `import_run` / `import_template` shims for optional imports.
 //!
@@ -129,11 +138,14 @@ use thiserror::Error;
 /// kept out of its [`std::fmt::Display`] — bodies can carry tokens or personal data that
 /// must not leak into logs — and is reachable only through [`Error::http_body`].
 ///
-/// Three Display texts embed a raw searchable code, frozen in the format string and exposed
+/// Several Display texts embed a raw searchable code, frozen in the format string and exposed
 /// with no constant (settled decision): `KEY-ALGO-001` ([`Error::UnsupportedKeyAlgorithm`],
-/// ungated), `KEY-OPENSSL-001` (`Error::OpenSSL`, feature `crypto`) and `CANCEL-001`
-/// ([`Error::Cancelled`], ungated). They are stable identifiers meant to be searched for by
-/// consumers — part of the API contract.
+/// ungated), `KEY-OPENSSL-001` (`Error::OpenSSL`, feature `crypto`), `CANCEL-001`
+/// ([`Error::Cancelled`], ungated), `QUERY-001` to `QUERY-009` (`Error::Query`, feature
+/// `query_client`, carried by `QueryError`'s own Display), `FEED-001` (`Error::FeedInvalid`,
+/// feature `feeds`), `FEED-002` (`Error::FeedCursor`, feature `feeds`) and `S3-001` to `S3-004`
+/// (`Error::S3`, feature `s3`, carried by `S3Error`'s own Display). They are stable
+/// identifiers meant to be searched for by consumers — part of the API contract.
 #[derive(Error, Debug)]
 pub enum Error {
     /// JSON serialization / deserialization failure.
@@ -167,6 +179,39 @@ pub enum Error {
     #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
     #[error("Reqwest error: {0}")]
     ReqwestError(#[from] reqwest::Error),
+
+    /// Failure of a protocol read client of the shared query kernel (feature `query_client`,
+    /// see [`query_client::QueryError`]). Its Display carries a stable code of its own,
+    /// `QUERY-001` to `QUERY-009` — like `KEY-ALGO-001` and `CANCEL-001`, a searchable
+    /// identifier — and never embeds a token or a credential-bearing URL (see `query_client.sdd`).
+    #[cfg(feature = "query_client")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "query_client")))]
+    #[error("{0}")]
+    Query(#[from] crate::query_client::QueryError),
+
+    /// Failure of the S3 client of the `s3` module (feature `s3`, see [`s3::S3Error`] and
+    /// `s3.sdd`). Its Display carries a stable code of its own, `S3-001` to `S3-004`, and never
+    /// embeds a credential.
+    #[cfg(feature = "s3")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "s3")))]
+    #[error("{0}")]
+    S3(#[from] crate::s3::S3Error),
+
+    /// An invalid feed, or a response that is not a feed at all (feature `feeds`, see
+    /// `feeds.sdd`). Its Display carries the stable code `FEED-001` — like `KEY-ALGO-001`,
+    /// `CANCEL-001` and the `QUERY-0xx` family, a searchable identifier — and never a
+    /// credential-bearing URL.
+    #[cfg(feature = "feeds")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "feeds")))]
+    #[error("FEED-001 invalid feed: {0}")]
+    FeedInvalid(String),
+
+    /// A feed cursor of unknown version, or carrying a malformed field (feature `feeds`, see
+    /// `feeds.sdd`). Its Display carries the stable code `FEED-002`.
+    #[cfg(feature = "feeds")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "feeds")))]
+    #[error("FEED-002 invalid feed cursor: {0}")]
+    FeedCursor(String),
 
     /// JSON decoding of an HTTP body failed.
     #[error("Json decoding error: {0}")]
@@ -421,9 +466,56 @@ pub mod hbs;
 /// `oci`, `s3` and `k8s` modules and public for consumers; only compiled with the `rt` feature.
 pub mod rt;
 
+#[cfg(feature = "query_client")]
+#[cfg_attr(docsrs, doc(cfg(feature = "query_client")))]
+/// Shared read kernel of the Prometheus and Loki protocol clients ([`query_client::QueryClient`]):
+/// public types, host-configured client (the script never sets URL, tenant or token), bounded
+/// streaming reads, auto step and typed errors. Enabled by `prometheus` or `loki`, which imply it.
+pub mod query_client;
+
+#[cfg(feature = "prometheus")]
+#[cfg_attr(docsrs, doc(cfg(feature = "prometheus")))]
+/// Read connector for Prometheus-compatible APIs ([`prometheus::prometheus_module`]): a HOST
+/// module over the [`query_client`] kernel — the host configures the client and registers the
+/// module under the name it chooses; scripts only pass the query and the time range. Rust callers
+/// get the async client [`prometheus::PrometheusClient`] on the same kernel.
+pub mod prometheus;
+#[cfg(feature = "prometheus")]
+#[cfg_attr(docsrs, doc(cfg(feature = "prometheus")))]
+/// Fixture-driven double of the `prometheus` host module ([`prometheus_mock::prometheus_mock_module`]):
+/// same function names and same output shape, no network.
+pub mod prometheus_mock;
+
+#[cfg(feature = "loki")]
+#[cfg_attr(docsrs, doc(cfg(feature = "loki")))]
+/// Read connector for Loki ([`loki::loki_module`]): a HOST module over the [`query_client`]
+/// kernel — the host configures the client and registers the module under the name it chooses;
+/// scripts only pass the LogQL query, the time range, the line limit and the direction. Rust
+/// callers get the async client [`loki::LokiClient`] on the same kernel.
+pub mod loki;
+#[cfg(feature = "loki")]
+#[cfg_attr(docsrs, doc(cfg(feature = "loki")))]
+/// Fixture-driven double of the `loki` host module ([`loki_mock::loki_mock_module`]): same
+/// function name and same output shape, no network.
+pub mod loki_mock;
+
+#[cfg(feature = "feeds")]
+#[cfg_attr(docsrs, doc(cfg(feature = "feeds")))]
+/// RSS/Atom feed reader ([`feeds::feed_read`] stateless, [`feeds::feed_poll`] with an opaque
+/// versioned cursor; feature `feeds`, issue #56): a protocol client that knows nothing of the
+/// caller's data model — fetch goes through [`http::RestClient`], parsing through `feed-rs`.
+/// Rust callers get the async client [`feeds::FeedClient`] on the same parser.
+pub mod feeds;
+#[cfg(feature = "feeds")]
+#[cfg_attr(docsrs, doc(cfg(feature = "feeds")))]
+/// Fixture-driven double of the `feeds` module ([`feeds_mock::feeds_mock_module`]): same function
+/// names, simulated ETag / Last-Modified, no network and no `tokio`.
+pub mod feeds_mock;
+
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
-/// HTTP client ([`http::RestClient`]).
+/// HTTP client ([`http::RestClient`]). Rust callers also get the async GET
+/// [`http::RestClient::http_get_async`].
 pub mod http;
 #[cfg(feature = "http")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http")))]
@@ -441,7 +533,9 @@ pub mod oci_mock;
 
 #[cfg(feature = "s3")]
 #[cfg_attr(docsrs, doc(cfg(feature = "s3")))]
-/// S3 helpers (`s3_get_yaml`, `s3_list_keys`).
+/// S3 helpers (`s3_get_yaml`, `s3_list_keys`) for Rhai, and the async Rust client
+/// [`s3::S3Store`] configured by [`s3::S3Config`]; the `object_store` and `bytes` crates are
+/// re-exported as `s3::object_store` and `s3::bytes`.
 pub mod s3;
 
 #[cfg(feature = "k8s")]
@@ -986,6 +1080,126 @@ mod tests {
         fn http_body_is_none_for_reqwest_error() {
             let inner = reqwest::Client::new().post("http://:bad").build().unwrap_err();
             assert_eq!(Error::ReqwestError(inner).http_body(), None);
+        }
+    }
+
+    // ── Display de la variante gated `query_client` (Scenario « erreurs typées » de
+    // query_client.sdd côté racine : Error::Query porte le Display de QueryError, codes
+    // QUERY-001..009 ; http_body = None) ──
+    #[cfg(feature = "query_client")]
+    mod display_query_client {
+        use super::Error;
+        use crate::query_client::QueryError;
+        use std::error::Error as _;
+
+        #[test]
+        fn display_query_carries_query_error_display_with_stable_code() {
+            let inner = QueryError::Timeout {
+                host: "mimir.example".to_string(),
+                path: "/prometheus/api/v1/query".to_string(),
+            };
+            let msg = inner.to_string();
+            assert!(
+                msg.starts_with("QUERY-001"),
+                "le Display de QueryError porte son code stable : {msg}"
+            );
+            let err = Error::Query(inner);
+            assert_eq!(
+                err.to_string(),
+                msg,
+                "Error::Query affiche le Display du QueryError brut"
+            );
+            assert_eq!(
+                err.source().map(ToString::to_string),
+                Some(msg),
+                "From alimente source()"
+            );
+        }
+
+        // http_body = None sur la variante gated `query_client`.
+        #[test]
+        fn http_body_is_none_for_query_error() {
+            assert_eq!(Error::Query(QueryError::Unauthorized).http_body(), None);
+        }
+    }
+
+    // ── Variante gated `s3` (Error::S3 porte S3Error ; code stable porté par S3Error) ──
+    #[cfg(feature = "s3")]
+    mod display_s3 {
+        use super::Error;
+        use crate::s3::S3Error;
+        use std::error::Error as _;
+
+        #[test]
+        fn display_s3_carries_s3_error_display_with_stable_code() {
+            let inner = S3Error::NotFound {
+                key: "index.yaml".to_string(),
+            };
+            let msg = inner.to_string();
+            assert!(
+                msg.starts_with("S3-001"),
+                "le Display de S3Error porte son code stable : {msg}"
+            );
+            let err = Error::S3(inner);
+            assert_eq!(
+                err.to_string(),
+                msg,
+                "Error::S3 affiche le Display du S3Error brut"
+            );
+            assert_eq!(
+                err.source().map(ToString::to_string),
+                Some(msg),
+                "From alimente source()"
+            );
+        }
+
+        #[test]
+        fn from_s3_error_converts_into_error_s3() {
+            let err: Error = S3Error::Backend("boom".to_string()).into();
+            assert!(matches!(err, Error::S3(S3Error::Backend(_))));
+        }
+
+        // http_body = None sur la variante gated `s3`.
+        #[test]
+        fn http_body_is_none_for_s3_variant() {
+            assert_eq!(Error::S3(S3Error::Backend("x".to_string())).http_body(), None);
+        }
+    }
+
+    // ── Display des deux variantes gated `feeds` (issues #56 : FEED-001 / FEED-002, codes
+    // stables figés dans le format comme KEY-ALGO-001 et CANCEL-001 ; http_body = None) ──
+    #[cfg(feature = "feeds")]
+    mod display_feeds {
+        use super::Error;
+        use std::error::Error as _;
+
+        #[test]
+        fn display_feed_invalid_freezes_feed_001() {
+            let err = Error::FeedInvalid("no root element".to_string());
+            assert_eq!(
+                err.to_string(),
+                "FEED-001 invalid feed: no root element",
+                "FEED-001 est un identifiant stable congelé dans le Display"
+            );
+            assert!(err.source().is_none());
+        }
+
+        #[test]
+        fn display_feed_cursor_freezes_feed_002() {
+            let err = Error::FeedCursor("unknown version 2".to_string());
+            assert_eq!(
+                err.to_string(),
+                "FEED-002 invalid feed cursor: unknown version 2",
+                "FEED-002 est un identifiant stable congelé dans le Display"
+            );
+            assert!(err.source().is_none());
+        }
+
+        // http_body = None sur les deux variantes gated `feeds`.
+        #[test]
+        fn http_body_is_none_for_feeds_variants() {
+            assert_eq!(Error::FeedInvalid("x".to_string()).http_body(), None);
+            assert_eq!(Error::FeedCursor("x".to_string()).http_body(), None);
         }
     }
 

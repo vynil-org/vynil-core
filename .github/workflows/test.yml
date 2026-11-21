@@ -77,6 +77,18 @@ jobs:
           # `rhai` ; joue le consommateur externe de ./tests/rt_block_on_public.rs.
           - name: rt
             args: "--no-default-features --features rt"
+          # `feeds`, `prometheus` et `loki` (issues #56, #57) : trois portes nommées qui jouent les
+          # verrous de leur module sous leur seule feature (le graphe `http`+`rt`+`rhai` qu'elles
+          # impliquent, sans `default`). `prometheus` et `loki` jouent ensemble les verrous du noyau
+          # `query_client`, qui n'a PAS de porte nommée propre (feature interne sans consommateur
+          # seule, couverte par `cargo hack --each-feature` ; décision de ./src/query_client.sdd). Ces
+          # portes ne se déduisent pas de `--each-feature`, qui ne joue aucun test.
+          - name: feeds
+            args: "--no-default-features --features feeds"
+          - name: prometheus
+            args: "--no-default-features --features prometheus"
+          - name: loki
+            args: "--no-default-features --features loki"
     steps:
       - uses: actions/checkout@v7
 
@@ -143,7 +155,9 @@ jobs:
       # missing_docs warn) + `-D warnings` pour les warnings rustc hors [lints]. Ce job rejoue
       # en explicite, entre le `--all-targets` par défaut et le `--all-features`, les portes
       # `k8s`, `oci`, `s3`, `k8s,oci,s3`, `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`,
-      # `rhai,fs` et `rhai,password`, ainsi que `rt` (pont public sans `rhai`). Les
+      # `rhai,fs` et `rhai,password`, ainsi que `rt` (pont public sans `rhai`) et `feeds`,
+      # `prometheus`, `loki` (les trois portes nommées des modules éponymes, dont `prometheus`
+      # et `loki` jouent les verrous du noyau `query_client`, sans porte propre). Les
       # quatre premières parce que les analyses pedantic (pureté de `must_use_candidate`, etc.)
       # dépendent du graphe de features et qu'un lint peut ne se déclencher que sur une
       # combinaison (voir ../../tooling.sdd) ; `crypto`, `rhai`, `hbs,crypto`, `rhai,shell`,
@@ -169,7 +183,7 @@ jobs:
         run: |
           set -e
           cargo clippy --all-targets -- -D warnings
-          for features in k8s oci s3 k8s,oci,s3 crypto rhai hbs,crypto rhai,shell rhai,fs rhai,password rhai,quantity rt; do
+          for features in k8s oci s3 k8s,oci,s3 crypto rhai hbs,crypto rhai,shell rhai,fs rhai,password rhai,quantity rt feeds prometheus loki; do
             cargo clippy --no-default-features --features "$features" --all-targets -- -D warnings
           done
           cargo clippy --all-features --all-targets -- -D warnings
@@ -193,7 +207,7 @@ jobs:
   # `cfg(test)` où vivent les verrous, et comme il n'isole qu'une feature à la fois, il ne
   # joue aucune combinaison à deux features. Les combinaisons explicites restent donc en
   # plus (../../tooling.sdd) : celles qui portent un sens (k8s,oci,s3, --all-features,
-  # crypto, rhai, hbs,crypto, rhai,shell, rhai,fs, rhai,password).
+  # crypto, rhai, hbs,crypto, rhai,shell, rhai,fs, rhai,password, feeds, prometheus, loki).
   feature-matrix:
     name: Feature matrix (cargo hack)
     runs-on: ubuntu-latest

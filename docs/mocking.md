@@ -1,17 +1,21 @@
 # Mocking
 
-`vynil-core` ships three Rhai test doubles, one per network/cluster-facing module: HTTP, `k8s`,
-and OCI. Each mock re-registers (mostly) the same Rhai type and function names as its real
+`vynil-core` ships a Rhai test double for each of its six network/cluster-facing modules: HTTP,
+`k8s`, OCI, `feeds`, `prometheus` and `loki`. Each mock re-registers (mostly) the same Rhai type
+and function names as its real
 counterpart, in place of a live network call or cluster — `http_mock` and `k8s_mock` are backed by
 in-memory fixtures; `oci_mock` has no fixtures at all, every method returning a fixed canned value
-(section 3) — so a script written against the real API can run against a mock in a unit test with
+(section 3); `feeds_mock` serves feed bodies from fixtures with ETag / Last-Modified SIMULATED
+(section 4); `prometheus_mock` and `loki_mock` answer from fixtures keyed by query expression,
+with no configuration seen by the double or the script (sections 5, 6) — so a script written
+against the real API can run against a mock in a unit test with
 little or no change. There is no Handlebars equivalent; mocking only applies to the Rhai side.
 
 See [rhai_helpers.md](rhai_helpers.md) for the real APIs these mirror.
 
 ## Shared shape
 
-None of the three mock registration functions are called automatically by
+None of the mock registration functions are called automatically by
 `Script::new_bare` — call them yourself, the same way you would the real `*_rhai_register`
 functions, but passing fixture data instead of (or in addition to) an `Engine`:
 
@@ -26,11 +30,53 @@ vynil_core::k8s_mock::k8s_mock_rhai_register(&mut script.engine, mocks.clone(), 
 
 #[cfg(feature = "oci")]
 vynil_core::oci_mock::oci_mock_rhai_register(&mut script.engine);
+
+#[cfg(feature = "feeds")]
+vynil_core::feeds_mock::feeds_mock_rhai_register(&mut script.engine, my_feed_fixtures);
 ```
 
 A given `Engine` should get *either* the real registration *or* the mock one for a given module,
 never both — they claim the same Rhai type/function names and the second registration would
 shadow the first.
+
+### Module twins
+
+Each mock registrar also has a module twin — a `Module` built from the same single registration
+list, with the same semantics (a twin that drifts from its registrar is a defect):
+
+```rust
+let mut script = vynil_core::Script::new_bare(vec![]);
+
+#[cfg(feature = "http")]
+script.engine.register_static_module("http", vynil_core::http_mock::httpmock_module(my_http_fixtures));
+
+#[cfg(feature = "k8s")]
+script.engine.register_static_module("k8s", vynil_core::k8s_mock::k8s_mock_module(mocks.clone(), created.clone()));
+
+#[cfg(feature = "oci")]
+script.engine.register_static_module("oci", vynil_core::oci_mock::oci_mock_module());
+
+#[cfg(feature = "feeds")]
+script.engine.register_static_module("feeds", vynil_core::feeds_mock::feeds_mock_module(my_feed_fixtures));
+```
+
+Registered under the name of the *real* module (`http`, `k8s`, `oci`, `feeds`), the twin takes its place:
+free functions carry the real twin's short, qualified names (`http::new_client`,
+`k8s::resource`, `k8s::new_raw`, `k8s::update_crd_cache`, `oci::new_registry`,
+`oci::get_auth_from_file`, `feeds::read`, `feeds::poll`), and methods keep their names — see the
+naming rule in
+[rhai_helpers.md](rhai_helpers.md). The criterion is that **one and the same script, written in
+qualified names, runs unmodified under the real module and under its double**: the production
+engine gets `http_module` / `k8s_module` / `oci_module` / `feeds_module`, the test engine gets
+`httpmock_module` / `k8s_mock_module` / `oci_mock_module` / `feeds_mock_module`, and the `.rhai`
+source is untouched. The same criterion holds for the two host-module doubles,
+`prometheus_mock_module` and `loki_mock_module` (sections 5, 6): they are modules only — no
+registrar, mirroring the host-module shape of the real modules — registered under the name the
+host chose for `prometheus_module` / `loki_module`.
+
+The one exception is the accepted holes of the `http` double: `http::get_yaml`,
+`http::json_subset` and `http::json_equal` are **not** registered by `httpmock_module`
+(section 1) — a script calling them is not source-compatible with the mock.
 
 ---
 
@@ -42,7 +88,15 @@ source-compatible between the real and mocked engine.
 
 ```rust
 pub fn httpmock_rhai_register(engine: &mut Engine, mocks: Vec<HttpMockItem>)
+
+// module twin
+pub fn httpmock_module(mocks: Vec<HttpMockItem>) -> Module
 ```
+
+Under the twin the mock constructor answers to the short qualified name `http::new_client`,
+`headers_get`/`headers_has` keep their names, and the `http_`-prefixed verb aliases are
+registrar-only (methods are global on both sides). The real twin's `get_yaml`/`json_subset`/
+`json_equal` are absent from the mock — the gaps below.
 
 Fixtures, supplied up front instead of via context wiring:
 
@@ -96,11 +150,12 @@ it (e.g. set `return_obj = #{code: 200, json: #{...}}`).
 
 ## 2. `k8s_mock` — feature `k8s`
 
-Reuses the *same* `register_k8s_object!` / `register_k8s_generic!` / `register_k8s_raw!` macros
-that `k8s.rs` uses for the real client, instantiated against mock structs but registered under
-the **exact same Rhai type names**: `K8sObject`, `K8sGeneric`, `K8sRaw`, `K8sDeploy`,
-`K8sDaemonSet`, `K8sStatefulSet`, `K8sJob`. A script written against the real `k8s` module runs
-unmodified against the mock.
+Registers the mock structs under the **exact same Rhai type names** as the real client:
+`K8sObject`, `K8sGeneric`, `K8sRaw`, `K8sDeploy`, `K8sDaemonSet`, `K8sStatefulSet`, `K8sJob`.
+The surface is defined once, in a single registration list shared by the registrar and its
+module twin (the `register_k8s_object!`/`register_k8s_generic!`/`register_k8s_raw!` macros are no
+longer the mechanism — they are only replayed against the mocks in this crate's own equivalence
+tests). A script written against the real `k8s` module runs unmodified against the mock.
 
 ```rust
 pub fn k8s_mock_rhai_register(
@@ -108,7 +163,17 @@ pub fn k8s_mock_rhai_register(
     mocks: Arc<Mutex<Vec<Dynamic>>>,    // fixture objects
     created: Arc<Mutex<Vec<Dynamic>>>,  // write-log for assertions
 )
+
+// module twin
+pub fn k8s_mock_module(
+    mocks: Arc<Mutex<Vec<Dynamic>>>,
+    created: Arc<Mutex<Vec<Dynamic>>>,
+) -> Module
 ```
+
+Under the twin the free names are the real twin's short names — `k8s::resource`,
+`k8s::new_raw`, `k8s::update_crd_cache` — and the workload constructors keep their names
+(`k8s::get_deployment`, …), exactly as under the real `k8s_module`.
 
 Unlike the real module, **no runtime context wiring is required**: `k8s_mock` never touches
 `set_client_name`/`set_get_client`/the discovery cache, so it's safe to use in a plain unit test
@@ -151,9 +216,14 @@ are all accepted — the mock will not change (decision on record).
 
 ```rust
 pub fn oci_mock_rhai_register(engine: &mut Engine)
+
+// module twin
+pub fn oci_mock_module() -> Module
 ```
 
-No fixtures — every method returns a fixed canned value regardless of its arguments.
+No fixtures — every method returns a fixed canned value regardless of its arguments. Under the
+twin the names are the same as under the registrar, qualified: `oci::new_registry` and
+`oci::get_auth_from_file` (both were already short — no renaming on either side).
 
 > **Caveat:** the mock registers the **same** Rhai type name as the real client —
 > `Registry` — like `http_mock` and `k8s_mock` do for their types: a script that only does
@@ -169,3 +239,111 @@ No fixtures — every method returns a fixed canned value regardless of its argu
 | `.push_image(dir, repository, tag, annotations)` | `"sha256:mock-digest-for-testing"` |
 | `.sign_image(repository, tag, digest, key_path)` | `()` (always succeeds, never actually shells out to `cosign`) |
 | `get_auth_from_file(path, registry)` | `#{ "user": "", "pass": "" }` (both arguments ignored, never reads the file) |
+
+---
+
+## 4. `feeds_mock` — feature `feeds` (implies `http`, `rt`, `rhai`)
+
+```rust
+pub fn feeds_mock_rhai_register(engine: &mut Engine, fixtures: Vec<FeedFixture>)
+
+// module twin
+pub fn feeds_mock_module(fixtures: Vec<FeedFixture>) -> Module
+```
+
+Fixtures, supplied up front:
+
+```rust
+pub struct FeedFixture {
+    pub url: String,                      // the exact URL this fixture answers (requested as-is)
+    pub body: String,                     // real Atom / RSS / JSON Feed text
+    pub etag: Option<String>,             // simulated ETag
+    pub last_modified: Option<String>,    // simulated Last-Modified
+}
+```
+
+### Registered surface
+
+The same script functions as the real module, on both paths — global `feed_read` / `feed_poll`
+under the registrar, short qualified `feeds::read` / `feeds::poll` under the twin registered as
+`feeds` — with the same accepted argument forms and the same `{entries, cursor, status}` output.
+Entry normalization, guid derivation and the cursor semantics are the real module's code (one
+shared registration list over the same kernel): the double changes only where the bytes come from.
+The criterion holds: one and the same script in qualified names runs unchanged under the real
+module and under this double.
+
+### Gaps vs. the real module
+
+- ETag and `Last-Modified` are **SIMULATED**, no network and no `tokio`: a second pass replaying
+  the cursor the double returned answers `not_modified` with the cursor unchanged (a fixture
+  without validators is always served whole).
+- The fixture whose `url` matches first wins; a URL with no fixture fails as a typed error naming
+  the URL queried.
+- The feed `body` is parsed exactly like the live fetch (same parser, same `FeedEntry` shape), so
+  fixture streams exercise the real normalization.
+
+---
+
+## 5. `prometheus_mock` — feature `prometheus` (implies `query_client` → `http`, `rt`, `rhai`)
+
+```rust
+pub fn prometheus_mock_module(fixtures: Vec<PrometheusFixture>) -> Module
+
+pub struct PrometheusFixture {
+    pub expression: String,      // the query string this entry matches, against the script's `expr`
+    pub response: SeriesResult,  // the normalized response served for it
+}
+```
+
+A module-only double — the real `prometheus` module has no registrar either — so register it under
+the same name the host uses for `prometheus_module`, in place of it.
+
+### Registered surface
+
+The same two functions, `query` and `query_range`, with the same names, the same accepted time
+forms, and the same normalized output shape `{ series: [{ labels, points: [[t, v]] }], truncated
+}` — including holes rendered as `()`. One and the same script in qualified names (say
+`metrics::query_range("up", s, e, "1m")`) runs unchanged under the real module and under this
+double, and returns the same form.
+
+### Gaps vs. the real module
+
+- Responses come from **fixtures keyed by expression** (exact match, first entry wins); an unknown
+  expression fails as a script error. The `time`/`start`/`end`/`step` arguments are accepted but
+  not applied — the fixture table, not the time range, decides the answer.
+- The configuration is invisible: like the real host module (and the script through it), the
+  double sees no URL, no tenant and no token — and no network and no `tokio` are ever touched, so
+  ceiling, timeout and streaming behaviour of the kernel are not exercised under the double.
+
+---
+
+## 6. `loki_mock` — feature `loki` (implies `query_client` → `http`, `rt`, `rhai`)
+
+```rust
+pub fn loki_mock_module(fixtures: Vec<LokiFixture>) -> Module
+
+pub struct LokiFixture {
+    pub expression: String,     // the LogQL query this entry matches, against the script's `expr`
+    pub response: LogsResult,   // the normalized response served for it
+}
+```
+
+A module-only double (no registrar on either side): register it under the name the host chose for
+`loki_module`.
+
+### Registered surface
+
+The same single function, `query_range`, with the same name, the same accepted argument forms and
+the same normalized output shape `{ streams: [{ labels, lines: [[t, text]] }], truncated }`. One
+and the same script in qualified names (`logs::query_range(...)`) runs unchanged under the real
+module and under this double, and returns the same form.
+
+### Gaps vs. the real module
+
+- Responses come from **fixtures keyed by LogQL expression** (exact match, first entry wins); an
+  unknown expression fails as a script error. The `start`/`end`/`limit`/`direction` arguments are
+  accepted but not applied — the fixture table decides the answer, so a fixture carries its lines
+  as-is.
+- The configuration is invisible: no URL, no tenant, no token — and no network and no `tokio` are
+  ever touched, so the `max_lines` capping, byte ceilings and streaming of the kernel are not
+  exercised under the double.

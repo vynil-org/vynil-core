@@ -1,6 +1,6 @@
 [package]
 name = "vynil-core"
-version = "0.9.1"
+version = "0.10.0"
 authors = [
     "Sébastien Huss <sebastien.huss@gmail.com>",
     "Xavier Mortelette <reivaxm@gmail.com>"
@@ -58,7 +58,7 @@ k8s = ["dep:kube", "dep:k8s-openapi", "rt", "rhai"]
 oci = ["dep:oci-client", "dep:tar", "dep:flate2", "rt", "rhai"]
 # s3_get_yaml/s3_list_keys are RhaiRes-typed from the start, no plain-Rust equivalent — same
 # reasoning as k8s above.
-s3 = ["dep:object_store", "dep:futures", "rt", "rhai"]
+s3 = ["dep:object_store", "dep:futures", "dep:bytes", "rt", "rhai"]
 # Filesystem access from Rhai scripts (file_read/file_write/file_copy/create_dir/read_dir/is_file/is_dir).
 fs = []
 # Shell command execution (run/get_out always available under this feature alone; the
@@ -105,6 +105,25 @@ metadata = ["rhai", "rhai/metadata"]
 # it does not imply `rhai`, the bridge never touches Rhai types. `http`, `oci`, `s3` and `k8s`
 # depend on it instead of `tokio` directly.
 rt = ["dep:tokio"]
+# Shared read kernel for the Prometheus/Mimir and Loki connectors (src/query_client.rs, issue
+# vynil-org/vynil-core#57): public types, host-configured client, bounded streaming reads, auto
+# step and typed errors. Enabled by `prometheus` or `loki`, which imply it; the async Rust clients
+# `PrometheusClient` / `LokiClient` sit on top of it. Like k8s/oci/s3/http it implies `rhai`; it
+# also implies `http` (it builds an `http::RestClient` host-side) and `rt` (the streaming reads
+# bridge through `rt::block_on`).
+query_client = ["http", "rt", "rhai"]
+# Read connector for Prometheus-compatible APIs (src/prometheus.rs + its mock, issue
+# vynil-org/vynil-core#57): a host module over the `query_client` kernel — the host configures
+# the client, the script only queries. Implies `rhai` through the kernel; off `default`.
+prometheus = ["query_client"]
+# Read connector for Loki (src/loki.rs + its mock, issue vynil-org/vynil-core#57): a host module
+# over the `query_client` kernel, same principle as `prometheus` and no shared code with it (the
+# two features stay independent). Implies `rhai` through the kernel; off `default`.
+loki = ["query_client"]
+# RSS/Atom feed reader (src/feeds.rs + its mock, issue vynil-org/vynil-core#56): stateless
+# `feed_read` and cursor-based `feed_poll` over feed-rs, fetched through `http::RestClient` and
+# bridged through `rt` (never tokio from a script). Implies `http`, `rt` and `rhai`; off `default`.
+feeds = ["dep:feed-rs", "http", "rt", "rhai"]
 
 [dependencies]
 # Features par défaut de rhai CONSERVÉES (dont `ahash/runtime-rng`, seed de hachage tiré à l'exécution) :
@@ -155,10 +174,15 @@ schemars = { version = "1.0", features = ["chrono04"], optional = true }
 kube = { version = "4.2.0", features = ["runtime", "client", "derive"], optional = true }
 k8s-openapi = { version = "0.28.0", features = ["latest", "schemars"], default-features = false, optional = true }
 futures = { version = "0.3", optional = true }
-oci-client = { version = "0.15.0", default-features = false, features = ["rustls-tls"], optional = true }
-object_store = { version = "0.11", features = ["aws"], optional = true }
+oci-client = { version = "0.18.0", default-features = false, features = ["rustls-tls"], optional = true }
+object_store = { version = "0.14", features = ["aws"], optional = true }
+# Byte buffers of the S3 client (`S3Store::get`); already in the graph via object_store and reqwest.
+bytes = { version = "1.12", optional = true }
 flate2 = { version = "1.1.4", optional = true }
 tar = { version = "0.4.46", optional = true }
+# Atom / RSS 0.9x–2.0 / JSON Feed parser of the `feeds` module (src/feeds.rs, issue #56). Version
+# retained measured on crates.io at implementation time (2026-11-19, max stable 3.0.0).
+feed-rs = { version = "3.0", optional = true }
 
 [dev-dependencies]
 wiremock = "0.6"
@@ -168,7 +192,7 @@ tower-test = "0.4.0"
 # @std::cargo::dev-dependencies) : `Subscriber` confiné au fil via un `Layer` de capture écrit
 # dans le module de tests. Rien que `registry` — pas `fmt` ni ses réglages gratuits.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"] }
-httpmock = "0.7"
+httpmock = "0.9"
 # Faux registre HTTP local des chemins réseau d'src/oci.rs (vyvil-core.sdd, tâche `httpmock`,
 # jumelle de « Tester les chemins réseau » d'src/oci.sdd) : en-tête `Accept` reçu par
 # `verify_tag_in_registry`, pagination de `list_tags`, cosign absent par fils `env_clear`.

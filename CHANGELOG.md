@@ -3,6 +3,76 @@
 All notable changes to `vynil-core` are documented here. The crate is pre-1.0: minor versions
 may break the public API, and every breaking change is listed explicitly.
 
+## 0.10.0
+
+The protocol-client release: fixture-driven module twins for the test doubles, three new
+features — `feeds`, `prometheus` and `loki` — each designed Rust first (an async Rust client, the
+script module being a thin synchronous projection of it), a Rust client for S3 object stores
+(`S3Store`, for building a file store), and dependency bumps closing a run of RustSec advisories.
+
+### Added
+
+- **Module twins of the test doubles** (#47): `http_mock::httpmock_module(mocks)`,
+  `k8s_mock::k8s_mock_module(arced_mocks, created)` and `oci_mock::oci_mock_module()`, twins of the
+  three `*_rhai_register`, registrable through `Engine::register_static_module` with the same
+  names and semantics as their registrars.
+- **Feature `feeds`** (#56, off by default): RSS/Atom feed reading. `feeds::feed_read(url, since)`
+  is stateless; `feeds::feed_poll(url, cursor)` reads through an opaque, versioned cursor the
+  caller persists as-is, with conditional fetches (ETag, Last-Modified) and new-entry detection.
+  Fetches go through `http::RestClient`, parsing through `feed-rs`. With the module twin
+  `feeds::feeds_module()` and the fixture-driven double `feeds_mock::feeds_mock_module(fixtures)`.
+- **Features `prometheus` and `loki`** (#57, off by default): two independent read connectors,
+  each a HOST module over the shared `query_client` kernel — the host builds a configured
+  `query_client::QueryClient` and registers `prometheus::prometheus_module(client)` or
+  `loki::loki_module(client)` under the name it chooses; the script never sees a URL, a tenant or
+  a token. Prometheus exposes `query(expr, time)` and `query_range(expr, start, end, step)`, Loki
+  `query_range(expr, start, end, limit, direction)`. Fixture-driven doubles:
+  `prometheus_mock::prometheus_mock_module(fixtures)` and `loki_mock::loki_mock_module(fixtures)`.
+- **New gated error variants**: `Error::FeedInvalid` (Display code `FEED-001`) and
+  `Error::FeedCursor` (`FEED-002`) under `feeds`, and `Error::Query(QueryError)` under
+  `query_client` (pulled in by `prometheus`/`loki`), whose Display carries a stable code
+  `QUERY-001`…`QUERY-009` and never a token or a credential-bearing URL.
+- **Rust clients, async-first**: `feeds::FeedClient` (`read`, `poll`; truly async),
+  `prometheus::PrometheusClient` (`query`, `query_range`) and `loki::LokiClient` (`query_range`,
+  with `loki::Direction`) — async facades over the synchronous streaming kernel (they need a
+  multi-thread tokio runtime; a truly async kernel is future work) — and
+  `http::RestClient::http_get_async`, the async `GET` the feed client is built on.
+  The `query_client` kernel (`QueryClient`, `QueryClientConfig`, `QueryError`) is a public,
+  shared type set, not an internal detail.
+- **`s3::S3Store`**, a Rust client for S3-compatible stores built from `s3::S3Config`, meant as a
+  base for file stores: `get`, `get_range`, `get_stream`, `put`, `put_stream` (multipart),
+  `put_if` (conditional write, `S3Condition`), `head`, `delete` and `list`, with keys relative to
+  a store prefix (raw UTF-8 keys, stored as given; empty segments dropped; `.`/`..` segments and
+  ASCII control characters refused) and `S3Store::from_object_store` to test against an in-memory store. The `s3`
+  module re-exports `object_store` and `bytes` so consumers share the crate's versions. The Rhai
+  helpers `s3_get_yaml` and `s3_list_keys` are unchanged and are not a projection of `S3Store`.
+- **Typed S3 errors** (feature `s3`): `Error::S3(S3Error)`, with the stable codes `S3-001`
+  (not found), `S3-002` (already exists), `S3-003` (precondition failed) and `S3-004` (backend).
+
+### Changed
+
+- Dependencies, closing RustSec advisories: `object_store` 0.11 → 0.14.2 drops `quick-xml` 0.37.5
+  (#50, #51); `oci-client` 0.15 → 0.18.0 drops `jwt` (#53); `httpmock` 0.7 → 0.9.0 (dev-dependency)
+  drops `async-std` and `pin-utils` (#52, #54). RUSTSEC-2026-0249 `smartstring` (#55) stays open
+  by decision: `rhai` 1.27 pulls the crate itself, so it is not fixable from here.
+- The documentation examples `vynil-core = ...` now show `0.10`.
+
+### Breaking changes
+
+- **`Error` gains variants** — and it is not `#[non_exhaustive]`, so a `match` on `Error` without a
+  wildcard arm stops compiling until the arm is added. Each new variant exists only when its feature
+  is enabled: `Error::S3` (feature `s3`, existing), `Error::Query` (feature `query_client`, pulled in
+  by the new `prometheus` and `loki`), `Error::FeedInvalid` and `Error::FeedCursor` (the new
+  feature `feeds`). A consumer that enables none of these features sees no change.
+- Nothing else breaks: no public signature is removed or changed, no item of the test doubles
+  (`http_mock`, `k8s_mock`, `oci_mock`) is removed, and the two Rhai helpers `s3_get_yaml` and
+  `s3_list_keys` keep their exact behaviour, key handling included. The `oci-client` 0.15 → 0.18
+  bump re-exports the same `OciRegistryAuth` (`RegistryAuth` is identical in both versions), and
+  `reqwest` stays on 0.12 for `RestClient`. Error *texts* coming from `object_store` and `oci-client`
+  may differ.
+- **Migrating**: from 0.9.1, no source change is needed unless a `match` on `Error` is exhaustive
+  while `s3` is enabled. From 0.8.x, read the breaking changes of 0.9.0 and 0.9.1 below first.
+
 ## 0.9.1
 
 A consolidation of the 0.9.0 surface: the Rhai registrars are regrouped by domain into a
